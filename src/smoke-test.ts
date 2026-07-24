@@ -313,3 +313,68 @@ describe("11. Coding 智能体配置", () => {
     expect(matches.length).toBeGreaterThan(0);
   });
 });
+
+describe("12. Streaming + 终端模块", () => {
+  it("StreamChunk 类型可构造", () => {
+    const chunk = { type: "text" as const, content: "hello" };
+    expect(chunk.type).toBe("text");
+    expect(chunk.content).toBe("hello");
+  });
+
+  it("StreamChunk done 类型", () => {
+    const chunk = {
+      type: "done" as const,
+      finishReason: "stop" as const,
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+    };
+    expect(chunk.finishReason).toBe("stop");
+    expect(chunk.usage!.totalTokens).toBe(150);
+  });
+
+  it("ModelRouter 导出 completeStream", async () => {
+    const { ModelRouter } = await import("./core/model-router.js");
+    expect(typeof ModelRouter.prototype.completeStream).toBe("function");
+  });
+
+  it("ModelRouter 导出 getCurrentModel", async () => {
+    const { ModelRouter } = await import("./core/model-router.js");
+    expect(typeof ModelRouter.prototype.getCurrentModel).toBe("function");
+  });
+
+  it("runAgentLoopStream 从 agent-loop 导出", async () => {
+    const mod = await import("./core/agent-loop.js");
+    expect(typeof mod.runAgentLoopStream).toBe("function");
+  });
+
+  it("BaseAgent.runStream 方法存在", async () => {
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    expect(typeof DefaultAgent.prototype.runStream).toBe("function");
+  });
+
+  it("TerminalRenderer 单例可导出", async () => {
+    const { renderer } = await import("./terminal/renderer.js");
+    expect(renderer).toBeDefined();
+    expect(typeof renderer.write).toBe("function");
+    expect(typeof renderer.updateStatus).toBe("function");
+    expect(typeof renderer.destroy).toBe("function");
+  });
+
+  it("InputCollector 队列管理", async () => {
+    const { inputCollector } = await import("./terminal/input.js");
+    expect(inputCollector).toBeDefined();
+    expect(typeof inputCollector.startListening).toBe("function");
+    expect(typeof inputCollector.stopListening).toBe("function");
+    expect(typeof inputCollector.getQueueSize).toBe("function");
+    expect(inputCollector.getQueueSize()).toBe(0);
+  });
+
+  it("ANSI 工具函数存在", async () => {
+    const ansi = await import("./terminal/ansi.js");
+    expect(typeof ansi.hideCursor).toBe("function");
+    expect(typeof ansi.showCursor).toBe("function");
+    expect(typeof ansi.reverseVideo).toBe("function");
+    expect(typeof ansi.bold).toBe("function");
+    expect(ansi.reverseVideo("test")).toContain("[7m");
+    expect(ansi.bold("test")).toContain("[1m");
+  });
+});

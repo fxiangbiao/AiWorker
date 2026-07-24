@@ -2,7 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks
 
-## 当前状态：Phase 2 进行中
+## 当前状态：Phase 2 完成，Phase 3 待定
+
+> 最新测试: **59 项** all passed
 
 ### Phase 1 MVP ✅
 核心引擎已实现：
@@ -31,6 +33,13 @@
 - ✅ **Skills × 28**：6 data-analysis + 6 product-ops + 8 financial + 8 game-dev
 
 ### Phase 2 六大专家全部就位 🎉
+
+### Sprint 5 ✅
+- ✅ **流式响应**：逐 token 输出，实时感知 AI 思考过程
+- ✅ **底部状态栏**：模型 + 模式 + 上下文占用 + 快捷命令展示
+- ✅ **输入排队**：Agent 运行期间输入不丢失，自动缓存
+- ✅ **AbortSignal 中断**：Ctrl+C 优雅终止当前 LLM 调用
+- ✅ **终端渲染器**：`src/terminal/` — 零 UI 库依赖，纯 ANSI 转义码
 
 ---
 
@@ -129,7 +138,7 @@ aiworker/
 npm test
 ```
 
-**50 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器 (7 路)、MCP Manager、技能注册表。
+**59 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器 (7 路)、MCP Manager、技能注册表、Streaming + 终端模块。
 
 ---
 
@@ -139,6 +148,7 @@ npm test
 |------|------|------|
 | Phase 1 | 核心引擎 MVP | ✅ 完成 |
 | Phase 2 | 六大专家智能体 + Skills | ✅ 完成 |
+| Phase 2.5 | 终端交互升级 (Streaming + 状态栏 + 排队) | ✅ 完成 |
 | Phase 3 | 多智能体协作 + 长期记忆 | 待开发 |
 | Phase 4 | 自进化 + 生态 | 待开发 |
 

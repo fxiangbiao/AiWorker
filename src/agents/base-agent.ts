@@ -3,8 +3,8 @@
  * 所有预置智能体的公共逻辑
  */
 
-import type { AgentConfig, AgentRunResult, PermissionMode, Task } from "../types.js";
-import { runAgentLoop } from "../core/agent-loop.js";
+import type { AgentConfig, AgentRunResult, PermissionMode, Task, StreamCallbacks } from "../types.js";
+import { runAgentLoop, runAgentLoopStream } from "../core/agent-loop.js";
 import type { ModelRouter } from "../core/model-router.js";
 import type { ContextManager } from "../core/context-manager.js";
 import type { SessionStore } from "../memory/session-store.js";
@@ -106,5 +106,70 @@ export abstract class BaseAgent {
     });
 
     return { ...result, messages: [] }; // 不返回完整 messages 避免内存膨胀
+  }
+
+  /**
+   * 流式执行任务 — 支持 streaming 输出 + 工具回调 + AbortSignal
+   */
+  async runStream(
+    task: Task,
+    workingDir: string,
+    callbacks: StreamCallbacks,
+    signal?: AbortSignal
+  ): Promise<AgentRunResult> {
+    const sessionId = task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
+
+    await hookManager.trigger("onMessage", {
+      agentId: this.config.id,
+      sessionId,
+      data: { instruction: task.instruction, mode: task.mode ?? this.config.permissions.defaultMode },
+    });
+
+    if (task.mode) {
+      this.setMode(task.mode);
+    }
+
+    this.sessionStore.appendMessage(sessionId, { role: "user", content: task.instruction });
+
+    const result = await runAgentLoopStream(
+      this.config,
+      task.instruction,
+      {
+        modelRouter: this.modelRouter,
+        contextManager: this.contextManager,
+        sessionId,
+        workingDir: task.workingDir ?? workingDir,
+      },
+      callbacks,
+      signal
+    );
+
+    if (result.text) {
+      this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
+    }
+
+    this.contextManager.summarizeSession(result.messages, task.instruction)
+      .catch(() => {});
+
+    await hookManager.trigger("onTaskComplete", {
+      agentId: this.config.id,
+      sessionId,
+      data: {
+        iterations: result.iterations,
+        toolCallsExecuted: result.toolCallsExecuted,
+        truncated: result.truncated,
+      },
+    });
+
+    auditLogger.log({
+      timestamp: Date.now(),
+      agentId: this.config.id,
+      sessionId,
+      action: "task_complete",
+      result: "success",
+      detail: `iterations=${result.iterations}, toolCalls=${result.toolCallsExecuted}`,
+    });
+
+    return { ...result, messages: [] };
   }
 }

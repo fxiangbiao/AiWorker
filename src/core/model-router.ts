@@ -15,6 +15,7 @@ import type {
   Message,
   ToolCall,
   ToolDefinition,
+  StreamChunk,
 } from "../types.js";
 
 interface ModelProfile {
@@ -41,12 +42,12 @@ export class ModelRouter {
   private config: ModelsConfig;
   private clients = new Map<string, OpenAI>();
   private totalTokensUsed = 0;
+  private currentProfile = "";
 
   constructor(configPath?: string) {
     const path = configPath ?? resolve(__dirname, "../../config/models.json");
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw) as ModelsConfig;
-    // 展开 apiKey 环境变量
     parsed.default.apiKey = this.resolveEnv(parsed.default.apiKey);
     this.config = parsed;
   }
@@ -81,10 +82,6 @@ export class ModelRouter {
     return client;
   }
 
-  /**
-   * 调用模型完成
-   * 统一使用 OpenAI chat.completions 接口
-   */
   async complete(options: ModelCompleteOptions): Promise<ModelResponse> {
     const profile = this.getProfile(undefined);
     const model = options.model || profile.model;
@@ -136,7 +133,6 @@ export class ModelRouter {
     };
   }
 
-  /** 按偏好调用 */
   async completeWithProfile(
     preference: string,
     messages: Message[],
@@ -160,5 +156,102 @@ export class ModelRouter {
 
   resetTokenUsage(): void {
     this.totalTokensUsed = 0;
+  }
+
+  getCurrentModel(): string {
+    return this.currentProfile || this.config.default.model;
+  }
+
+  async *completeStream(
+    preference: string,
+    messages: Message[],
+    tools?: ToolDefinition[],
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
+  ): AsyncGenerator<StreamChunk> {
+    const profile = this.getProfile(preference);
+    this.currentProfile = profile.model;
+    const client = this.getClient(profile);
+
+    const requestParams: OpenAI.Chat.ChatCompletionCreateParams = {
+      model: profile.model,
+      messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      temperature: options?.temperature ?? profile.temperature,
+      max_tokens: options?.maxTokens ?? profile.maxTokens,
+      stream: true,
+      stream_options: { include_usage: true },
+    };
+
+    if (tools && tools.length > 0) {
+      requestParams.tools = tools as unknown as OpenAI.Chat.ChatCompletionTool[];
+    }
+
+    const stream = await client.chat.completions.create(requestParams, {
+      signal: options?.signal,
+    });
+
+    const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();
+    let finishReason: string = "stop";
+
+    try {
+      for await (const chunk of stream) {
+        const delta = chunk.choices?.[0]?.delta;
+        const choiceFinish = chunk.choices?.[0]?.finish_reason;
+
+        if (choiceFinish) {
+          finishReason = choiceFinish;
+        }
+
+        if (delta?.tool_calls) {
+          for (const tcDelta of delta.tool_calls) {
+            const idx = tcDelta.index;
+            if (!tcAcc.has(idx)) {
+              tcAcc.set(idx, { id: tcDelta.id ?? "", name: "", args: "" });
+            }
+            const acc = tcAcc.get(idx)!;
+            if (tcDelta.id) acc.id = tcDelta.id;
+            if (tcDelta.function?.name) {
+              acc.name = tcDelta.function.name;
+              yield { type: "tool_call_start", toolCallId: acc.id, toolName: acc.name };
+            }
+            if (tcDelta.function?.arguments) {
+              acc.args += tcDelta.function.arguments;
+              yield { type: "tool_call_delta", toolCallId: acc.id, content: tcDelta.function.arguments };
+            }
+          }
+        }
+
+        if (delta?.content) {
+          yield { type: "text", content: delta.content };
+        }
+
+        if (chunk.usage) {
+          this.totalTokensUsed += chunk.usage.total_tokens;
+        }
+      }
+
+      const resolvedToolCalls: ToolCall[] = [];
+      for (const [, acc] of tcAcc) {
+        if (acc.id && acc.name) {
+          resolvedToolCalls.push({
+            id: acc.id,
+            type: "function",
+            function: { name: acc.name, arguments: acc.args },
+          });
+        }
+      }
+
+      yield {
+        type: "done",
+        finishReason: finishReason as StreamChunk["finishReason"],
+        content: resolvedToolCalls.length > 0 ? JSON.stringify(resolvedToolCalls) : undefined,
+      };
+    } catch (err) {
+      const isAbort = (err as Error).name === "AbortError" || (err as Error).message?.includes("abort");
+      if (isAbort) {
+        yield { type: "error", error: "aborted" };
+      } else {
+        yield { type: "error", error: (err as Error).message };
+      }
+    }
   }
 }

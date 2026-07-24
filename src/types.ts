@@ -96,6 +96,24 @@ export interface ModelResponse {
 
 export type ModelProvider = (options: ModelCompleteOptions) => Promise<ModelResponse>;
 
+// ===== Streaming 响应 =====
+
+export interface StreamChunk {
+  type: "text" | "tool_call_start" | "tool_call_delta" | "tool_call_done" | "done" | "error";
+  content?: string;
+  toolCallId?: string;
+  toolName?: string;
+  finishReason?: "stop" | "tool_calls" | "length" | "content_filter";
+  error?: string;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+export interface StreamCallbacks {
+  onTextDelta?: (text: string) => void;
+  onToolCall?: (name: string, args: string, id: string) => void;
+  onToolResult?: (name: string, success: boolean, summary: string) => void;
+}
+
 // ===== 智能体 =====
 
 export type PermissionMode = "ask" | "plan" | "craft";

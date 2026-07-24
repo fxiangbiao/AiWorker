@@ -4,7 +4,7 @@
 ```bash
 npm run dev          # run CLI via tsx (no build needed)
 npm run build        # tsc → dist/
-npm test             # vitest run (smoke-test.ts, 50 tests)
+npm test             # vitest run (smoke-test.ts, 59 tests)
 ```
 
 - **No lint/formatter config** exists in this repo.

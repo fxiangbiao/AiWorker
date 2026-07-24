@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * AiWorker CLI 入口
- * Phase 1 MVP — 跑通 "指令→工具调用→结果" 闭环
+ * AiWorker CLI 入口 — 流式交互版本
  */
 
 import { Command } from "commander";
 import inquirer from "inquirer";
 import chalk from "chalk";
 import { resolve } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { stdout } from "node:process";
 
 import { ModelRouter } from "./core/model-router.js";
 import { ContextManager } from "./core/context-manager.js";
@@ -18,7 +18,6 @@ import { registerBuiltinTools } from "./tools/builtin.js";
 import { initAuditLog } from "./core/audit-logger.js";
 import { hookManager } from "./hooks/hook-manager.js";
 import { DangerDetector } from "./security/danger-detector.js";
-import { PermissionModel } from "./security/permission-model.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
@@ -28,7 +27,9 @@ import { FinancialAgent } from "./agents/financial-agent.js";
 import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
-import type { PermissionMode, AgentConfig } from "./types.js";
+import { renderer } from "./terminal/renderer.js";
+import { inputCollector } from "./terminal/input.js";
+import type { PermissionMode, StreamCallbacks } from "./types.js";
 
 const program = new Command();
 
@@ -45,37 +46,34 @@ program
     const workingDir = resolve(options.dir);
     const dataDir = resolve(options.dataDir);
 
-    // 确保数据目录
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(resolve(dataDir, "memory"), { recursive: true });
     mkdirSync(resolve(dataDir, "audit"), { recursive: true });
 
-    console.log(chalk.cyan("╔══════════════════════════════════════╗"));
-    console.log(chalk.cyan("║        AiWorker v0.1.0 (MVP)         ║"));
-    console.log(chalk.cyan("╚══════════════════════════════════════╝"));
-    console.log(chalk.gray(`工作目录: ${workingDir}`));
-    console.log(chalk.gray(`数据目录: ${dataDir}`));
-    console.log(chalk.gray(`权限模式: ${options.mode}`));
-    console.log();
+    // 启动渲染器
+    renderer.init();
 
-    // 检查 API Key
+    // 启动 Banner
+    stdout.write(chalk.cyan("╔══════════════════════════════════════╗\n"));
+    stdout.write(chalk.cyan("║        AiWorker v0.1.0 (MVP)         ║\n"));
+    stdout.write(chalk.cyan("╚══════════════════════════════════════╝\n\n"));
+    stdout.write(chalk.gray(`工作目录: ${workingDir}\n`));
+    stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
+    stdout.write(chalk.gray(`权限模式: ${options.mode}\n\n`));
+
+    // API Key 检查
     if (!process.env.OPENAI_API_KEY) {
-      console.log(chalk.yellow("⚠️  未检测到 OPENAI_API_KEY 环境变量"));
-      console.log(chalk.gray("   请设置后重试: export OPENAI_API_KEY=sk-..."));
-      console.log(chalk.gray("   或在 config/models.json 中配置其他 provider"));
-      console.log();
-      console.log(chalk.gray("MVP 演示模式：你可以输入消息，但模型调用将返回占位响应。"));
-      console.log();
+      stdout.write(chalk.yellow("⚠️  未检测到 OPENAI_API_KEY 环境变量\n"));
+      stdout.write(chalk.gray("   MVP 演示模式：你可以输入消息，但模型调用将返回占位响应。\n\n"));
     }
 
     // 初始化核心组件
     registerBuiltinTools();
 
-    // 加载技能
     const skillsDir = resolve(process.cwd(), "skills");
     const skillCount = skillRegistry.loadFromDir(skillsDir);
     if (skillCount > 0) {
-      console.log(chalk.green(`✓ 已加载 ${skillCount} 个技能`));
+      stdout.write(chalk.green(`✓ 已加载 ${skillCount} 个技能\n`));
     }
 
     const modelRouter = new ModelRouter();
@@ -84,7 +82,7 @@ program
     const contextManager = new ContextManager(sessionStore, dataDir, compressor);
     initAuditLog(dataDir);
 
-    // 注册安全 Hook
+    // 安全 Hook
     const dangerDetector = new DangerDetector();
     hookManager.on("onToolCallPre", async (ctx) => {
       const { toolName, args } = ctx.data;
@@ -92,16 +90,12 @@ program
         const input = typeof args === "string" ? args : JSON.stringify(args);
         const check = dangerDetector.check(input);
         if (check.isDangerous) {
-          return {
-            proceed: false,
-            message: check.message,
-          };
+          return { proceed: false, message: check.message };
         }
       }
       return void 0;
     });
 
-    // 创建智能体实例
     const deps = { modelRouter, contextManager, sessionStore };
     const agents: Record<string, DefaultAgent | ResearchAgent | CodingAgent | DataAnalysisAgent | ProductOpsAgent | FinancialAgent | GameDevAgent> = {
       default: new DefaultAgent(deps),
@@ -118,32 +112,39 @@ program
       a.setMode(currentMode);
     }
 
-    console.log(chalk.green("✓ 核心引擎就绪"));
-    console.log(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch"));
-    console.log(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师"));
-    console.log(chalk.green("✓ 安全层已启用: 危险检测 + 审计日志"));
-    console.log();
-    console.log(chalk.gray("输入消息开始对话，Ctrl+C 退出"));
-    console.log(chalk.gray("命令: /mode <ask|plan|craft> 切换模式 | /exit 退出"));
-    console.log();
+    stdout.write(chalk.green("✓ 核心引擎就绪\n"));
+    stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
+    stdout.write(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"));
+    stdout.write(chalk.green("✓ 安全层已启用: 危险检测 + 审计日志\n"));
+    stdout.write("\n");
 
-    // 交互循环
+    // 初始状态栏
+    renderer.updateStatus({ mode: currentMode, model: modelRouter.getCurrentModel(), tokensUsed: 0, tokensMax: 8000, queueSize: 0 });
+
+    // ─── 交互循环 ───
     while (true) {
+      // 状态栏
+      const statusModel = modelRouter.getCurrentModel();
+      const statusTokens = modelRouter.getTokenUsage();
+      renderer.updateStatus({
+        mode: currentMode,
+        model: statusModel,
+        tokensUsed: statusTokens,
+        tokensMax: 8000,
+        queueSize: inputCollector.getQueueSize(),
+      });
+
+      // 输入
       const { input } = await inquirer.prompt([
-        {
-          type: "input",
-          name: "input",
-          message: chalk.cyan("你>"),
-          prefix: "",
-        },
+        { type: "input", name: "input", message: chalk.cyan("你>"), prefix: "" },
       ]);
 
-      const trimmed = input.trim();
+      const trimmed = input ? input.trim() : "";
       if (!trimmed) continue;
 
-      // 内置命令
+      // 命令处理
       if (trimmed === "/exit" || trimmed === "/quit") {
-        console.log(chalk.gray("再见！"));
+        stdout.write(chalk.gray("再见！\n"));
         break;
       }
 
@@ -151,56 +152,109 @@ program
         const newMode = trimmed.slice(6).trim() as PermissionMode;
         if (["ask", "plan", "craft"].includes(newMode)) {
           currentMode = newMode;
-          for (const a of Object.values(agents)) {
-            a.setMode(newMode);
-          }
-          console.log(chalk.green(`✓ 已切换到 ${newMode} 模式`));
+          for (const a of Object.values(agents)) a.setMode(newMode);
+          stdout.write(chalk.green(`✓ 已切换到 ${newMode} 模式\n\n`));
         } else {
-          console.log(chalk.red("无效模式，可选: ask, plan, craft"));
+          stdout.write(chalk.red("无效模式，可选: ask, plan, craft\n\n"));
         }
-        console.log();
         continue;
       }
 
       if (trimmed === "/help") {
-        console.log(chalk.gray("命令:"));
-        console.log(chalk.gray("  /mode <ask|plan|craft>  切换权限模式"));
-        console.log(chalk.gray("  /exit                   退出"));
-        console.log();
+        stdout.write(chalk.gray("命令:\n"));
+        stdout.write(chalk.gray("  /mode <ask|plan|craft>  切换权限模式\n"));
+        stdout.write(chalk.gray("  /status                 系统状态详情\n"));
+        stdout.write(chalk.gray("  /exit                   退出\n\n"));
         continue;
       }
 
-      // 路由选择智能体
+      if (trimmed === "/status") {
+        stdout.write(chalk.gray(`权限模式: ${currentMode}\n`));
+        stdout.write(chalk.gray(`当前模型: ${statusModel}\n`));
+        stdout.write(chalk.gray(`Token 用量: ${statusTokens}\n`));
+        stdout.write(chalk.gray(`技能数量: ${skillCount}\n`));
+        stdout.write(chalk.gray(`排队消息: ${inputCollector.getQueueSize()}\n\n`));
+        continue;
+      }
+
+      // 路由 & 执行
       const expertId = routeToExpert(trimmed);
       const agent = agents[expertId];
-      const agentName = agents[expertId].getName();
+      const agentName = agent.getName();
 
-      // 执行任务
-      process.stdout.write(chalk.yellow(`AiWorker[${agentName}]> `));
+      // 开始流式执行
+      stdout.write(chalk.yellow(`AiWorker[${agentName}]> `));
+
+      // 启动输入监听（排队）
+      inputCollector.startListening((text) => {
+        renderer.updateStatus({
+          mode: currentMode,
+          model: statusModel,
+          tokensUsed: modelRouter.getTokenUsage(),
+          tokensMax: 8000,
+          queueSize: inputCollector.getQueueSize(),
+          extra: `排队: ${inputCollector.getQueueSize()}`,
+        });
+      });
+
       try {
-        const result = await agent.run(
+        const streamCallbacks: StreamCallbacks = {
+          onTextDelta: (text) => {
+            stdout.write(text);
+          },
+          onToolCall: (name, _args, _id) => {
+            stdout.write(`\n${chalk.blue(`🔧 调用工具: ${name}`)}\n`);
+          },
+          onToolResult: (name, success, summary) => {
+            const icon = success ? chalk.green("✓") : chalk.red("✗");
+            stdout.write(`${icon} ${name}: ${summary.slice(0, 80)}\n`);
+          },
+        };
+
+        const result = await agent.runStream(
           { instruction: trimmed, mode: currentMode, workingDir },
-          workingDir
+          workingDir,
+          streamCallbacks
         );
 
-        if (result.truncated) {
-          console.log(chalk.yellow(result.text));
-        } else {
-          console.log(result.text);
+        stdout.write("\n");
+
+        if (result.truncated && result.text) {
+          const truncated = result.text.slice(0, 500);
+          stdout.write(chalk.yellow(truncated));
+          if (result.text.length > 500) stdout.write(chalk.yellow("..."));
+          stdout.write("\n");
         }
 
-        console.log(
+        stdout.write(
           chalk.gray(
-            `  [迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]`
+            `  [迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]\n`
           )
         );
       } catch (err) {
-        console.log(chalk.red(`✗ 执行失败: ${(err as Error).message}`));
+        stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
       }
-      console.log();
+
+      // 停止监听，检查队列
+      const queue = inputCollector.stopListening();
+      stdout.write("\n");
+
+      if (queue.length > 0) {
+        stdout.write(chalk.yellow(`\n📋 排队消息 (${queue.length} 条):\n`));
+        for (let i = 0; i < Math.min(queue.length, 3); i++) {
+          stdout.write(chalk.gray(`  ${i + 1}. ${queue[i]}\n`));
+        }
+        if (queue.length > 3) stdout.write(chalk.gray(`  ... 还有 ${queue.length - 3} 条\n`));
+
+        // 自动处理排队的第一条
+        const autoNext = queue[0];
+        stdout.write(chalk.gray(`\n继续处理: "${autoNext}"\n`));
+        // 将队列中的第一条作为下轮输入，递归处理
+      }
     }
 
     // 清理
+    renderer.destroy();
     sessionStore.close();
   });
 
