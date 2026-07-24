@@ -41,31 +41,28 @@ export class TerminalRenderer {
   printStatus(status: StatusLine): void {
     if (!this.active) return;
     const { columns } = stdout;
-    const right = status.extra ?? "/help /status /exit";
-    const leftParts: string[] = [];
-    leftParts.push(chalk.cyan(status.mode));
-    if (status.model) leftParts.push(chalk.white(status.model));
-    if (status.tokensMax > 0) {
-      const pct = status.tokensMax > 0 ? Math.round((status.tokensUsed / status.tokensMax) * 100) : 0;
-      const tknColor = pct > 80 ? chalk.yellow : chalk.white;
-      leftParts.push(tknColor(`${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)}`));
-    }
-    if (status.queueSize > 0) {
-      leftParts.push(chalk.yellow(`排队: ${status.queueSize}`));
-    }
-    const left = leftParts.join(" · ");
 
-    // 计算无颜色文本长度，补齐到全宽
-    let line = left;
-    const plainLen = leftParts.join(" · ").length;
-    const padding = columns - plainLen - right.length - 4;
-    if (padding > 1) line += " ".repeat(padding);
-    line += right;
+    const pct = status.tokensMax > 0 ? Math.round((status.tokensUsed / status.tokensMax) * 100) : 0;
 
-    // 写入到最后一行
+    const line = [
+      chalk.bold.cyan(status.mode.toUpperCase()),
+      status.model ? chalk.white(status.model) : "",
+      status.tokensMax > 0
+        ? (pct > 80 ? chalk.yellow : chalk.white)(`${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)} tokens`)
+        : "",
+      status.queueSize > 0 ? chalk.yellow(`排队: ${status.queueSize}`) : "",
+    ]
+      .filter(Boolean)
+      .join(chalk.gray("  │  "));
+
+    const help = chalk.gray(status.extra ?? " /help /status /exit");
+
+    const raw = `${status.mode.toUpperCase()}  │  ${status.model}  │  ${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)} tokens`;
+    const pad = columns - raw.length - " /help /status /exit".length - 6;
+
     ansi.moveTo(stdout.rows + STATUSBAR_ROW, 1);
     ansi.clearLine();
-    stdout.write(ansi.reverseVideo(`  ${line}  `.slice(0, columns)));
+    stdout.write(`  ${line}${" ".repeat(Math.max(1, pad))}${help}  `);
   }
 
   /**
