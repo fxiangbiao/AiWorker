@@ -3,6 +3,18 @@
  * AiWorker CLI 入口 — 流式交互版本
  */
 
+// 屏蔽 openai → node-fetch → whatwg-url → punycode 的 DEP0040 弃用警告
+// Node 22 已内置原生 fetch()，此第三方 polyfill 多余但暂无法从其依赖链中移除
+{
+  const _orig = process.emitWarning as Function;
+  process.emitWarning = function (warning: string | Error, type?: string, code?: string) {
+    const warnCode = type === "DEP0040" || code === "DEP0040";
+    const msgCode = typeof warning === "object" && (warning as Error & { code?: string }).code === "DEP0040";
+    if (warnCode || msgCode) return;
+    return _orig.call(process, warning, type, code);
+  } as typeof process.emitWarning;
+}
+
 import { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
