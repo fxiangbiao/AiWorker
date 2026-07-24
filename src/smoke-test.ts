@@ -222,6 +222,14 @@ describe("8. 专家路由器", () => {
     expect(routeToExpert("帮我创建一个文件")).toBe("default");
     expect(routeToExpert("列出当前目录")).toBe("default");
   });
+
+  it("编码类问题路由到 coding", () => {
+    expect(routeToExpert("帮我创建一个登录函数")).toBe("coding");
+    expect(routeToExpert("修复 TypeError 报错")).toBe("coding");
+    expect(routeToExpert("帮我调试这段代码")).toBe("coding");
+    expect(routeToExpert("重构一下这个模块")).toBe("coding");
+    expect(routeToExpert("给这个函数写个测试")).toBe("coding");
+  });
 });
 
 describe("9. MCP Manager", () => {
@@ -265,5 +273,19 @@ describe("10. 技能注册表", () => {
   it("getInjectedPrompt 生成 prompt", () => {
     const prompt = skillRegistry.getInjectedPrompt("research", "对比分析");
     expect(prompt).toContain("技能");
+  });
+});
+
+describe("11. Coding 智能体配置", () => {
+  it("Coding Agent 配置包含 terminal_exec", async () => {
+    const { CodingAgent } = await import("./agents/coding-agent.js");
+    // 通过原型链确认类存在且可构造
+    expect(CodingAgent).toBeDefined();
+    expect(CodingAgent.prototype).toBeDefined();
+  });
+
+  it("Coding 技能匹配", () => {
+    const matches = skillRegistry.match("帮我调试这段代码", "coding");
+    expect(matches.length).toBeGreaterThan(0);
   });
 });

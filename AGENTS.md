@@ -4,7 +4,7 @@
 ```bash
 npm run dev          # run CLI via tsx (no build needed)
 npm run build        # tsc → dist/
-npm test             # vitest run (smoke-test.ts, 43 tests)
+npm test             # vitest run (smoke-test.ts, 46 tests)
 ```
 
 - **No lint/formatter config** exists in this repo.
@@ -61,8 +61,9 @@ Uses **Commander.js** for arg parsing and **Inquirer** for prompts.
 
 ## Expert agents & routing
 - `src/agents/router.ts` — keyword-based routing (`routeToExpert()`), with LLM fallback (`routeToExpertLLM()`).
-- Add new expert agents by extending `BaseAgent` (see `default-agent.ts` / `research-agent.ts` patterns) and adding route rules to `router.ts`.
-- Agent YAML configs in `config/agents/` (currently `research.yaml`).
+- Add new expert agents by extending `BaseAgent` (see `default-agent.ts` / `research-agent.ts` / `coding-agent.ts` patterns) and adding route rules to `router.ts`.
+- Agent YAML configs in `config/agents/` (currently `research.yaml`, `coding.yaml`).
+- Agent priority: coding (90) > research (80) > default (0).
 
 ## MCP Manager
 - Singleton `McpManager` at `src/mcp/mcp-manager.ts` — supports `stdio` and `HTTP` transports.

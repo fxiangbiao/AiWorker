@@ -21,7 +21,11 @@
 
 ### Sprint 2 ✅
 - ✅ **SkillRegistry**：YAML frontmatter 解析，正则触发匹配，运行时依赖降级
-- ✅ **Skills × 6**：深度搜索 / 竞品分析 / 趋势预测 / 报告生成 / 引用追踪 / 文件整理
+- ✅ **Skills × 9**：3 common + 6 research (含 web 深度搜索、竞品分析、趋势预测、报告生成、引用追踪、文件整理)
+
+### Sprint 3 ✅
+- ✅ **Coding Agent**：编码工程师智能体 (coding 模型，50 迭代上限)
+- ✅ **Coding Skills × 3**：code-review / debug / test-generation
 
 ---
 
@@ -62,16 +66,21 @@ aiworker/
 │   ├── mcp.json          # MCP 服务器配置
 │   ├── permissions.json  # 权限配置
 │   └── agents/
-│       └── research.yaml # Research Agent 配置
+│       ├── research.yaml # Research Agent 配置
+│       └── coding.yaml   # Coding Agent 配置
 ├── skills/               # 技能库 (SKILL.md)
 │   ├── common/
 │   │   └── file-organization/
-│   └── research/
-│       ├── web-deep-search/
-│       ├── competitive-analysis/
-│       ├── trend-forecasting/
-│       ├── report-generation/
-│       └── citation-tracking/
+│   ├── research/
+│   │   ├── web-deep-search/
+│   │   ├── competitive-analysis/
+│   │   ├── trend-forecasting/
+│   │   ├── report-generation/
+│   │   └── citation-tracking/
+│   └── coding/
+│       ├── code-review/
+│       ├── debug/
+│       └── test-generation/
 ├── src/
 │   ├── core/             # 核心引擎
 │   │   ├── agent-loop.ts        # Agent 循环
@@ -84,6 +93,7 @@ aiworker/
 │   │   ├── base-agent.ts        # 基类
 │   │   ├── default-agent.ts     # 通用助手
 │   │   ├── research-agent.ts    # 研究分析师
+│   │   ├── coding-agent.ts      # 编码工程师
 │   │   └── router.ts            # 专家路由器
 │   ├── mcp/              # MCP 协议
 │   │   └── mcp-manager.ts       # MCP 客户端 (stdio/HTTP)
@@ -114,7 +124,7 @@ aiworker/
 npm test
 ```
 
-**43 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器、MCP Manager、技能注册表。
+**46 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器 (含 coding)、MCP Manager、技能注册表 (含 coding skills)。
 
 ---
 

@@ -15,6 +15,22 @@ interface RouteRule {
 
 const rules: RouteRule[] = [
   {
+    agentId: "coding",
+    keywords: [
+      /编写|开发|实现|写代码|创建.*函数|新建.*组件|添加.*功能|修改.*代码/i,
+      /修复|调试|debug|bug|报错|解决.*错误|排错|排查/i,
+      /重构|refactor|优化.*代码|改进.*代码|简化/i,
+      /测试|test|用例|单元测试|集成测试|测试用例|覆盖率/i,
+      /编译|build|运行.*项目|启动.*项目|部署|deploy/i,
+      /code|develop|fix|implement|refactor|optimize|compile/i,
+      /function|component|module|class.*create|interface.*add/i,
+      /git|commit|branch|merge|pull.*request|push/i,
+      /npm|yarn|pnpm|package\.json|安装.*依赖|依赖.*安装/i,
+      /TypeScript|JavaScript|TS|JS|typescript|javascript/,
+    ],
+    weight: 90,
+  },
+  {
     agentId: "research",
     keywords: [
       /研究|调研|分析|报告|对比|比较|趋势|预测|行业|市场|竞品|综述|白皮书|论文|调查|评估/i,
@@ -61,10 +77,11 @@ export async function routeToExpertLLM(
       content: `你是一个任务路由器。根据用户输入判断应该分配给哪个专家智能体。
 
 可选的智能体：
+- coding: 编码工程师 — 编写代码、调试、重构、测试、编译部署
 - research: 研究分析师 — 研究、调研、对比分析、趋势预测、报告生成
 - default: 通用助手 — 文件操作、终端命令、日常问答
 
-只回复智能体 ID（如 "research" 或 "default"），不要回复其他内容。`,
+只回复智能体 ID（如 "coding"、"research" 或 "default"），不要回复其他内容。`,
     },
     {
       role: "user",
@@ -75,7 +92,7 @@ export async function routeToExpertLLM(
   try {
     const response = await modelRouter.completeWithProfile("lite", prompt);
     const agentId = response.text.trim().toLowerCase();
-    if (["research", "default"].includes(agentId)) {
+    if (["coding", "research", "default"].includes(agentId)) {
       return agentId;
     }
     return "default";
