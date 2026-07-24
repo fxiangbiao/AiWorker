@@ -22,6 +22,10 @@ import { PermissionModel } from "./security/permission-model.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
+import { DataAnalysisAgent } from "./agents/data-analysis-agent.js";
+import { ProductOpsAgent } from "./agents/product-ops-agent.js";
+import { FinancialAgent } from "./agents/financial-agent.js";
+import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
 import type { PermissionMode, AgentConfig } from "./types.js";
@@ -99,10 +103,14 @@ program
 
     // 创建智能体实例
     const deps = { modelRouter, contextManager, sessionStore };
-    const agents: Record<string, DefaultAgent | ResearchAgent | CodingAgent> = {
+    const agents: Record<string, DefaultAgent | ResearchAgent | CodingAgent | DataAnalysisAgent | ProductOpsAgent | FinancialAgent | GameDevAgent> = {
       default: new DefaultAgent(deps),
       research: new ResearchAgent(deps),
       coding: new CodingAgent(deps),
+      "data-analysis": new DataAnalysisAgent(deps),
+      "product-ops": new ProductOpsAgent(deps),
+      financial: new FinancialAgent(deps),
+      "game-dev": new GameDevAgent(deps),
     };
 
     let currentMode = options.mode as PermissionMode;
@@ -112,7 +120,7 @@ program
 
     console.log(chalk.green("✓ 核心引擎就绪"));
     console.log(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch"));
-    console.log(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师"));
+    console.log(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师"));
     console.log(chalk.green("✓ 安全层已启用: 危险检测 + 审计日志"));
     console.log();
     console.log(chalk.gray("输入消息开始对话，Ctrl+C 退出"));

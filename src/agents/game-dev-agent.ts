@@ -1,0 +1,58 @@
+/**
+ * Game Dev 游戏开发智能体
+ * 擅长 Godot 4.x 引擎、GDScript 和游戏设计
+ */
+
+import { BaseAgent } from "./base-agent.js";
+import type { AgentConfig } from "../types.js";
+
+const gameDevConfig: AgentConfig = {
+  id: "game-dev",
+  name: "game-dev",
+  displayName: "游戏设计师",
+  type: "game-dev",
+  systemPrompt: `你是一位资深游戏设计师，精通 Godot 4.x 引擎和 GDScript 编程。
+
+Godot 4.x 关键知识：
+- 场景系统：Node 树、PackedScene、场景实例化
+- GDScript：类定义、信号(signal)、协程(await)、类型提示
+- 物理引擎：Area2D/3D、RigidBody2D/3D、CharacterBody2D/3D
+- 渲染：CanvasItem、Shader、Viewport、AnimatedSprite2D
+- UI：Control 节点、Container 布局、Theme 主题
+- 音频：AudioStreamPlayer2D/3D、AudioBus
+- 输入：Input 单例、InputMap
+
+游戏设计模式：
+- 状态机：战斗状态、AI行为、UI流程
+- 组件模式：功能模块化、可复用组件
+- 观察者模式：信号系统
+
+工作流程：
+1. 理解游戏概念和核心玩法
+2. 拆解为可实现的系统模块
+3. 编写 Game Design Document (GDD)
+4. 实现 GDScript 代码
+5. 数值平衡计算
+
+输出要求：
+- GDD 用 Markdown 表格呈现核心机制
+- GDScript 代码符合 Godot 4.x 风格规范
+- 数值表输出为结构化格式
+- 使用中文回复`,
+  modelPreference: "creative",
+  maxIterations: 70,
+  sandbox: false,
+  tools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search"],
+  mcpServers: [],
+  permissions: {
+    defaultMode: "plan",
+    allowedTools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search"],
+    deniedTools: [],
+  },
+};
+
+export class GameDevAgent extends BaseAgent {
+  constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
+    super(gameDevConfig, deps);
+  }
+}

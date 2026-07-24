@@ -230,6 +230,30 @@ describe("8. 专家路由器", () => {
     expect(routeToExpert("重构一下这个模块")).toBe("coding");
     expect(routeToExpert("给这个函数写个测试")).toBe("coding");
   });
+
+  it("数据分析类问题路由到 data-analysis", () => {
+    expect(routeToExpert("帮我做一下数据清洗")).toBe("data-analysis");
+    expect(routeToExpert("画一个散点图")).toBe("data-analysis");
+    expect(routeToExpert("写个 SQL 查询")).toBe("data-analysis");
+  });
+
+  it("金融类问题路由到 financial", () => {
+    expect(routeToExpert("选股推荐")).toBe("financial");
+    expect(routeToExpert("看一下这只股票的 PE")).toBe("financial");
+    expect(routeToExpert("ETF 分析")).toBe("financial");
+  });
+
+  it("游戏设计类问题路由到 game-dev", () => {
+    expect(routeToExpert("设计一个游戏关卡")).toBe("game-dev");
+    expect(routeToExpert("用 Godot 写段代码")).toBe("game-dev");
+    expect(routeToExpert("角色平衡怎么调整")).toBe("game-dev");
+  });
+
+  it("产品运营类问题路由到 product-ops", () => {
+    expect(routeToExpert("帮我写个 PRD")).toBe("product-ops");
+    expect(routeToExpert("排个迭代计划")).toBe("product-ops");
+    expect(routeToExpert("写个内容运营方案")).toBe("product-ops");
+  });
 });
 
 describe("9. MCP Manager", () => {

@@ -23,9 +23,14 @@
 - ✅ **SkillRegistry**：YAML frontmatter 解析，正则触发匹配，运行时依赖降级
 - ✅ **Skills × 9**：3 common + 6 research (含 web 深度搜索、竞品分析、趋势预测、报告生成、引用追踪、文件整理)
 
-### Sprint 3 ✅
-- ✅ **Coding Agent**：编码工程师智能体 (coding 模型，50 迭代上限)
-- ✅ **Coding Skills × 3**：code-review / debug / test-generation
+### Sprint 4 ✅
+- ✅ **Data Analysis Agent**：数据分析师 (coding 模型，60 次迭代)
+- ✅ **Product Ops Agent**：产品运营专家 (writing 模型，40 次迭代)
+- ✅ **Financial Agent**：理财投资顾问 (reasoning 模型，A股惯例，默认 ask)
+- ✅ **Game Dev Agent**：游戏设计师 (creative 模型，Godot 4.x 知识库)
+- ✅ **Skills × 28**：6 data-analysis + 6 product-ops + 8 financial + 8 game-dev
+
+### Phase 2 六大专家全部就位 🎉
 
 ---
 
@@ -124,7 +129,7 @@ aiworker/
 npm test
 ```
 
-**46 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器 (含 coding)、MCP Manager、技能注册表 (含 coding skills)。
+**50 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器 (7 路)、MCP Manager、技能注册表。
 
 ---
 
@@ -133,7 +138,7 @@ npm test
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | Phase 1 | 核心引擎 MVP | ✅ 完成 |
-| Phase 2 | 六大专家智能体 + Skills | 🔄 进行中 |
+| Phase 2 | 六大专家智能体 + Skills | ✅ 完成 |
 | Phase 3 | 多智能体协作 + 长期记忆 | 待开发 |
 | Phase 4 | 自进化 + 生态 | 待开发 |
 
