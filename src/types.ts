@@ -192,3 +192,32 @@ export interface HookResult {
 }
 
 export type HookHandler = (ctx: HookContext) => Promise<HookResult | void>;
+
+// ===== MCP (Model Context Protocol) =====
+
+export type McpTransport = "stdio" | "http";
+
+export interface McpServerConfig {
+  name: string;
+  transport: McpTransport;
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+}
+
+export interface McpToolDef {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface McpServerStatus {
+  name: string;
+  transport: McpTransport;
+  connected: boolean;
+  toolCount: number;
+  error?: string;
+}

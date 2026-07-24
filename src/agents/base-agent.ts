@@ -80,6 +80,10 @@ export abstract class BaseAgent {
     // 持久化助手回复
     this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
 
+    // 总结会话并写入 MEMORY.md（有界 ≈2200 字符）
+    this.contextManager.summarizeSession(result.messages, task.instruction)
+      .catch(() => { /* 静默失败，不影响主流程 */ });
+
     // onTaskComplete Hook
     await hookManager.trigger("onTaskComplete", {
       agentId: this.config.id,

@@ -4,7 +4,7 @@
 ```bash
 npm run dev          # run CLI via tsx (no build needed)
 npm run build        # tsc → dist/
-npm test             # vitest run (smoke-test.ts, 39 assertions)
+npm test             # vitest run (smoke-test.ts, 38 tests)
 ```
 
 - **No lint/formatter config** exists in this repo.
@@ -58,3 +58,18 @@ Uses **Commander.js** for arg parsing and **Inquirer** for prompts.
 - `ToolResult` uses `success: boolean` + optional `error: string` everywhere.
 - `HookResult` uses `proceed: boolean` for short-circuiting.
 - Design doc in Chinese: `个人AI-Agent助手设计方案.md` (1278 lines).
+
+## Expert agents & routing
+- `src/agents/router.ts` — keyword-based routing (`routeToExpert()`), with LLM fallback (`routeToExpertLLM()`).
+- Add new expert agents by extending `BaseAgent` (see `default-agent.ts` / `research-agent.ts` patterns) and adding route rules to `router.ts`.
+- Agent YAML configs in `config/agents/` (currently `research.yaml`).
+
+## MCP Manager
+- Singleton `McpManager` at `src/mcp/mcp-manager.ts` — supports `stdio` and `HTTP` transports.
+- Loads config from `config/mcp.json` via `loadConfig()`.
+- Auto-registers discovered server tools into `ToolRegistry` with `mcp:{server}:{tool}` naming.
+- Gracefully degrades on connection failure — no hard startup errors.
+
+## Web search
+- `web_search` tool in `src/tools/builtin.ts` uses Bing (`cn.bing.com`) HTML scraping.
+- Zero API key required. Parses `<li class="b_algo">` blocks via regex.

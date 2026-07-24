@@ -199,18 +199,18 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   }
 };
 
-// ===== Web 搜索 (占位，实际需接入搜索 API) =====
+// ===== Web 搜索 =====
 
 const webSearchDef: ToolDefinition = {
   type: "function",
   function: {
     name: "web_search",
-    description: "搜索互联网获取信息。",
+    description: "搜索互联网获取信息。使用 Bing 搜索引擎。",
     parameters: {
       type: "object",
       properties: {
         query: { type: "string", description: "搜索关键词" },
-        max_results: { type: "number", description: "最大结果数，默认 5" },
+        max_results: { type: "number", description: "最大结果数，默认 5，最大 10" },
       },
       required: ["query"],
     },
@@ -218,13 +218,85 @@ const webSearchDef: ToolDefinition = {
 };
 
 const webSearchHandler: ToolHandler = async (args) => {
-  // MVP 占位：实际需接入搜索 API（如 Bing/Google）
-  return {
-    tool_call_id: "",
-    success: true,
-    content: `[Web搜索占位] 查询: "${args.query}"\n注意: MVP 阶段未接入搜索 API，请配置搜索服务后使用。`,
-  };
+  const query = args.query as string;
+  const maxResults = Math.min((args.max_results as number) ?? 5, 10);
+
+  const url = `https://cn.bing.com/search?q=${encodeURIComponent(query)}&count=${maxResults}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+      },
+    });
+
+    if (!response.ok) {
+      return {
+        tool_call_id: "",
+        success: false,
+        content: "",
+        error: `搜索请求失败: HTTP ${response.status}`,
+      };
+    }
+
+    const html = await response.text();
+    const results = parseBingResults(html, maxResults);
+
+    if (results.length === 0) {
+      return {
+        tool_call_id: "",
+        success: true,
+        content: `搜索 "${query}" 未找到结果。`,
+      };
+    }
+
+    const output = results
+      .map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`)
+      .join("\n\n");
+
+    return { tool_call_id: "", success: true, content: output };
+  } catch (err) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `搜索失败: ${(err as Error).message}`,
+    };
+  }
 };
+
+function parseBingResults(html: string, limit: number): Array<{ title: string; url: string; snippet: string }> {
+  const results: Array<{ title: string; url: string; snippet: string }> = [];
+
+  const algoRegex = /<li class="b_algo"[^>]*>([\s\S]*?)<\/li>/gi;
+  const titleRegex = /<h2[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/i;
+  const snippetRegex = /<p[^>]*>([\s\S]*?)<\/p>/i;
+  const tagRegex = /<[^>]+>/g;
+
+  let algoMatch: RegExpExecArray | null;
+  while ((algoMatch = algoRegex.exec(html)) !== null && results.length < limit) {
+    const block = algoMatch[1];
+
+    const titleMatch = titleRegex.exec(block);
+    if (!titleMatch) continue;
+
+    const url = titleMatch[1];
+    const title = titleMatch[2].replace(tagRegex, "").trim();
+
+    const snippetMatch = snippetRegex.exec(block);
+    const snippet = snippetMatch
+      ? snippetMatch[1].replace(tagRegex, "").replace(/\s+/g, " ").trim().slice(0, 400)
+      : "";
+
+    if (title && url) {
+      results.push({ title, url, snippet });
+    }
+  }
+
+  return results;
+}
 
 // ===== Web 抓取 =====
 

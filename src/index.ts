@@ -20,7 +20,9 @@ import { hookManager } from "./hooks/hook-manager.js";
 import { DangerDetector } from "./security/danger-detector.js";
 import { PermissionModel } from "./security/permission-model.js";
 import { DefaultAgent } from "./agents/default-agent.js";
-import type { PermissionMode } from "./types.js";
+import { ResearchAgent } from "./agents/research-agent.js";
+import { routeToExpert } from "./agents/router.js";
+import type { PermissionMode, AgentConfig } from "./types.js";
 
 const program = new Command();
 
@@ -86,18 +88,21 @@ program
       return void 0;
     });
 
-    // 创建默认智能体
-    const agent = new DefaultAgent({
-      modelRouter,
-      contextManager,
-      sessionStore,
-    });
+    // 创建智能体实例
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents: Record<string, DefaultAgent | ResearchAgent> = {
+      default: new DefaultAgent(deps),
+      research: new ResearchAgent(deps),
+    };
 
-    const mode = options.mode as PermissionMode;
-    agent.setMode(mode);
+    let currentMode = options.mode as PermissionMode;
+    for (const a of Object.values(agents)) {
+      a.setMode(currentMode);
+    }
 
     console.log(chalk.green("✓ 核心引擎就绪"));
     console.log(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch"));
+    console.log(chalk.green("✓ 专家智能体: 通用助手, 研究分析师"));
     console.log(chalk.green("✓ 安全层已启用: 危险检测 + 审计日志"));
     console.log();
     console.log(chalk.gray("输入消息开始对话，Ctrl+C 退出"));
@@ -127,7 +132,10 @@ program
       if (trimmed.startsWith("/mode ")) {
         const newMode = trimmed.slice(6).trim() as PermissionMode;
         if (["ask", "plan", "craft"].includes(newMode)) {
-          agent.setMode(newMode);
+          currentMode = newMode;
+          for (const a of Object.values(agents)) {
+            a.setMode(newMode);
+          }
           console.log(chalk.green(`✓ 已切换到 ${newMode} 模式`));
         } else {
           console.log(chalk.red("无效模式，可选: ask, plan, craft"));
@@ -144,11 +152,16 @@ program
         continue;
       }
 
+      // 路由选择智能体
+      const expertId = routeToExpert(trimmed);
+      const agent = agents[expertId];
+      const agentName = agents[expertId].getName();
+
       // 执行任务
-      process.stdout.write(chalk.yellow("AiWorker> "));
+      process.stdout.write(chalk.yellow(`AiWorker[${agentName}]> `));
       try {
         const result = await agent.run(
-          { instruction: trimmed, mode: agent.getMode(), workingDir },
+          { instruction: trimmed, mode: currentMode, workingDir },
           workingDir
         );
 

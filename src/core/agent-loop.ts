@@ -65,61 +65,88 @@ export async function runAgentLoop(
   };
 
   while (iterations < MAX_ITER) {
-    // 压缩检查 (92% 阈值)
-    const { messages: compressed, compressed: didCompress } =
-      await contextManager.maybeCompress(messages);
-    if (didCompress) {
-      messages = compressed;
-    }
+    try {
+      // 压缩检查 (92% 阈值)
+      const { messages: compressed, compressed: didCompress } =
+        await contextManager.maybeCompress(messages);
+      if (didCompress) {
+        messages = compressed;
+      }
 
-    // 获取可用工具
-    const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
+      // 获取可用工具
+      const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
 
-    // 根据权限模式决定是否传工具
-    const tools = mode === "ask" ? undefined : availableTools;
+      // 根据权限模式决定是否传工具
+      const tools = mode === "ask" ? undefined : availableTools;
 
-    // 1. 调用模型
-    const response = await modelRouter.completeWithProfile(
-      config.modelPreference,
-      messages,
-      tools
-    );
+      // 1. 调用模型
+      const response = await modelRouter.completeWithProfile(
+        config.modelPreference,
+        messages,
+        tools
+      );
 
-    // 2. 无工具调用 → 循环自然终止
-    if (!response.hasToolCalls) {
+      // 2. 无工具调用 → 循环自然终止
+      if (!response.hasToolCalls) {
+        return {
+          text: response.text,
+          messages,
+          iterations: iterations + 1,
+          truncated: false,
+          toolCallsExecuted,
+        };
+      }
+
+      // 3. 追加 assistant 消息 (含 tool_calls)
+      messages.push({
+        role: "assistant",
+        content: response.text,
+        tool_calls: response.toolCalls,
+      });
+
+      // 4. 执行工具调用 (可并行)
+      const toolResults = await Promise.all(
+        response.toolCalls.map((tc) => executeTool(tc, toolCtx, config))
+      );
+
+      toolCallsExecuted += toolResults.length;
+
+      // 5. 追加结果到消息历史
+      for (const result of toolResults) {
+        messages.push({
+          role: "tool",
+          content: result.success ? result.content : `Error: ${result.error}`,
+          tool_call_id: result.tool_call_id,
+        });
+      }
+
+      iterations++;
+    } catch (err) {
+      const errorMsg = (err as Error).message;
+      await hookManager.trigger("onError", {
+        agentId: config.id,
+        sessionId,
+        data: { error: errorMsg, iteration: iterations },
+      });
+
+      auditLogger.log({
+        timestamp: Date.now(),
+        agentId: config.id,
+        sessionId,
+        action: "loop_error",
+        target: errorMsg.slice(0, 200),
+        result: "error",
+        detail: `iteration=${iterations}`,
+      });
+
       return {
-        text: response.text,
+        text: `Agent 循环异常: ${errorMsg}`,
         messages,
         iterations: iterations + 1,
         truncated: false,
         toolCallsExecuted,
       };
     }
-
-    // 3. 追加 assistant 消息 (含 tool_calls)
-    messages.push({
-      role: "assistant",
-      content: response.text,
-      tool_calls: response.toolCalls,
-    });
-
-    // 4. 执行工具调用 (可并行)
-    const toolResults = await Promise.all(
-      response.toolCalls.map((tc) => executeTool(tc, toolCtx, config))
-    );
-
-    toolCallsExecuted += toolResults.length;
-
-    // 5. 追加结果到消息历史
-    for (const result of toolResults) {
-      messages.push({
-        role: "tool",
-        content: result.success ? result.content : `Error: ${result.error}`,
-        tool_call_id: result.tool_call_id,
-      });
-    }
-
-    iterations++;
   }
 
   return {

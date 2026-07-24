@@ -139,4 +139,19 @@ export class ContextManager {
     const bounded = content.slice(0, USER_MAX_CHARS);
     writeFileSync(path, bounded, "utf-8");
   }
+
+  /** 总结会话并写入 MEMORY.md（有界写入） */
+  async summarizeSession(messages: Message[], taskDescription: string): Promise<string> {
+    const { result } = await this.compressor.compress(messages);
+    if (!result.summary) return "";
+
+    const memoryContent = `# Agent 记忆\n\n` +
+      `> 上次任务: ${taskDescription.slice(0, 150)}\n\n` +
+      `## 对话摘要\n${result.summary}`;
+
+    const bounded = memoryContent.slice(0, MEMORY_MAX_CHARS);
+    const path = resolve(this.memoryDir, "MEMORY.md");
+    writeFileSync(path, bounded, "utf-8");
+    return bounded;
+  }
 }
