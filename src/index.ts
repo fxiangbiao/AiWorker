@@ -53,7 +53,7 @@ program
     // 启动渲染器
     renderer.init();
 
-    // 启动 Banner
+    // ─── Banner ───
     stdout.write(chalk.cyan("╔══════════════════════════════════════╗\n"));
     stdout.write(chalk.cyan("║        AiWorker v0.1.0 (MVP)         ║\n"));
     stdout.write(chalk.cyan("╚══════════════════════════════════════╝\n\n"));
@@ -67,7 +67,7 @@ program
       stdout.write(chalk.gray("   MVP 演示模式：你可以输入消息，但模型调用将返回占位响应。\n\n"));
     }
 
-    // 初始化核心组件
+    // ─── 初始化核心组件 ───
     registerBuiltinTools();
 
     const skillsDir = resolve(process.cwd(), "skills");
@@ -116,25 +116,19 @@ program
     stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
     stdout.write(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"));
     stdout.write(chalk.green("✓ 安全层已启用: 危险检测 + 审计日志\n"));
-    stdout.write("\n");
+    stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助\n\n"));
 
     // 初始状态栏
-    renderer.updateStatus({ mode: currentMode, model: modelRouter.getCurrentModel(), tokensUsed: 0, tokensMax: 8000, queueSize: 0 });
+    renderer.printStatus({
+      mode: currentMode,
+      model: modelRouter.getCurrentModel(),
+      tokensUsed: 0,
+      tokensMax: 8000,
+      queueSize: 0,
+    });
 
     // ─── 交互循环 ───
     while (true) {
-      // 状态栏
-      const statusModel = modelRouter.getCurrentModel();
-      const statusTokens = modelRouter.getTokenUsage();
-      renderer.updateStatus({
-        mode: currentMode,
-        model: statusModel,
-        tokensUsed: statusTokens,
-        tokensMax: 8000,
-        queueSize: inputCollector.getQueueSize(),
-      });
-
-      // 输入
       const { input } = await inquirer.prompt([
         { type: "input", name: "input", message: chalk.cyan("你>"), prefix: "" },
       ]);
@@ -170,8 +164,8 @@ program
 
       if (trimmed === "/status") {
         stdout.write(chalk.gray(`权限模式: ${currentMode}\n`));
-        stdout.write(chalk.gray(`当前模型: ${statusModel}\n`));
-        stdout.write(chalk.gray(`Token 用量: ${statusTokens}\n`));
+        stdout.write(chalk.gray(`当前模型: ${modelRouter.getCurrentModel()}\n`));
+        stdout.write(chalk.gray(`Token 用量: ${modelRouter.getTokenUsage()}\n`));
         stdout.write(chalk.gray(`技能数量: ${skillCount}\n`));
         stdout.write(chalk.gray(`排队消息: ${inputCollector.getQueueSize()}\n\n`));
         continue;
@@ -182,19 +176,11 @@ program
       const agent = agents[expertId];
       const agentName = agent.getName();
 
-      // 开始流式执行
-      stdout.write(chalk.yellow(`AiWorker[${agentName}]> `));
+      // 流式执行
+      stdout.write(chalk.yellow(`\nAiWorker[${agentName}]> `));
 
-      // 启动输入监听（排队）
-      inputCollector.startListening((text) => {
-        renderer.updateStatus({
-          mode: currentMode,
-          model: statusModel,
-          tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
-          queueSize: inputCollector.getQueueSize(),
-          extra: `排队: ${inputCollector.getQueueSize()}`,
-        });
+      inputCollector.startListening((_text) => {
+        // 状态栏会周期性刷新排队计数，这里只收集
       });
 
       try {
@@ -203,11 +189,11 @@ program
             stdout.write(text);
           },
           onToolCall: (name, _args, _id) => {
-            stdout.write(`\n${chalk.blue(`🔧 调用工具: ${name}`)}\n`);
+            stdout.write(`\n${chalk.blue(`  🔧 调用工具: ${name}`)}\n`);
           },
-          onToolResult: (name, success, summary) => {
-            const icon = success ? chalk.green("✓") : chalk.red("✗");
-            stdout.write(`${icon} ${name}: ${summary.slice(0, 80)}\n`);
+          onToolResult: (_name, success, summary) => {
+            const icon = success ? chalk.green("  ✓") : chalk.red("  ✗");
+            stdout.write(`${icon} ${summary.slice(0, 100)}\n`);
           },
         };
 
@@ -216,8 +202,6 @@ program
           workingDir,
           streamCallbacks
         );
-
-        stdout.write("\n");
 
         if (result.truncated && result.text) {
           const truncated = result.text.slice(0, 500);
@@ -228,29 +212,35 @@ program
 
         stdout.write(
           chalk.gray(
-            `  [迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]\n`
+            `\n  [迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]`
           )
         );
       } catch (err) {
-        stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
+        stdout.write(chalk.red(`✗ 执行失败: ${(err as Error).message}`));
       }
 
-      // 停止监听，检查队列
       const queue = inputCollector.stopListening();
-      stdout.write("\n");
+
+      // 状态栏 + 排队提示
+      stdout.write("\n\n");
+      renderer.printStatus({
+        mode: currentMode,
+        model: modelRouter.getCurrentModel(),
+        tokensUsed: modelRouter.getTokenUsage(),
+        tokensMax: 8000,
+        queueSize: queue.length,
+      });
 
       if (queue.length > 0) {
-        stdout.write(chalk.yellow(`\n📋 排队消息 (${queue.length} 条):\n`));
+        stdout.write(chalk.yellow(`\n📋 有 ${queue.length} 条排队消息:`));
         for (let i = 0; i < Math.min(queue.length, 3); i++) {
-          stdout.write(chalk.gray(`  ${i + 1}. ${queue[i]}\n`));
+          stdout.write(chalk.gray(`\n   ${i + 1}. ${queue[i].slice(0, 60)}`));
         }
-        if (queue.length > 3) stdout.write(chalk.gray(`  ... 还有 ${queue.length - 3} 条\n`));
-
-        // 自动处理排队的第一条
-        const autoNext = queue[0];
-        stdout.write(chalk.gray(`\n继续处理: "${autoNext}"\n`));
-        // 将队列中的第一条作为下轮输入，递归处理
+        if (queue.length > 3) stdout.write(chalk.gray(`\n   ... 还有 ${queue.length - 3} 条`));
+        stdout.write(chalk.gray("\n   按 Enter 继续, 输入新内容将覆盖排队\n"));
       }
+
+      stdout.write("\n");
     }
 
     // 清理

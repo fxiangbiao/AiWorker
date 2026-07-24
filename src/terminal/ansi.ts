@@ -50,6 +50,10 @@ export function clearLineFromCursor(): void {
   stdout.write("\x1b[K");
 }
 
+export function clearLineFromCursorStr(): string {
+  return "\x1b[K";
+}
+
 export function clearScreenDown(): void {
   stdout.write("\x1b[J");
 }
