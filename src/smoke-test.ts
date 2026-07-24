@@ -13,6 +13,7 @@ import { ContextCompressor } from "./memory/compressor.js";
 import { hookManager } from "./hooks/hook-manager.js";
 import { routeToExpert } from "./agents/router.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
+import { skillRegistry } from "./core/skill-registry.js";
 import type { PermissionConfig } from "./types.js";
 import { resolve } from "node:path";
 import { mkdirSync, rmSync } from "node:fs";
@@ -232,5 +233,37 @@ describe("9. MCP Manager", () => {
 
   it("dispose 不报错", () => {
     mcpManager.dispose();
+  });
+});
+
+describe("10. 技能注册表", () => {
+  beforeAll(() => {
+    const skillsDir = resolve(process.cwd(), "skills");
+    skillRegistry.loadFromDir(skillsDir);
+  });
+
+  it("技能加载成功", () => {
+    expect(skillRegistry.count).toBeGreaterThanOrEqual(5);
+  });
+
+  it("Research 技能匹配", () => {
+    const matches = skillRegistry.match("帮我研究一下市场趋势", "research");
+    expect(matches.length).toBeGreaterThan(0);
+  });
+
+  it("关键词匹配 web 搜索技能", () => {
+    const matches = skillRegistry.match("搜索一下最新 AI 资讯", "research");
+    const hasWebSearch = matches.some((s) => s.name === "web-deep-search");
+    expect(hasWebSearch).toBe(true);
+  });
+
+  it("不匹配其他智能体技能", () => {
+    const matches = skillRegistry.match("帮我做竞品分析", "default");
+    expect(matches.length).toBe(0);
+  });
+
+  it("getInjectedPrompt 生成 prompt", () => {
+    const prompt = skillRegistry.getInjectedPrompt("research", "对比分析");
+    expect(prompt).toContain("技能");
   });
 });

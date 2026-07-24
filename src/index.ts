@@ -22,6 +22,7 @@ import { PermissionModel } from "./security/permission-model.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { routeToExpert } from "./agents/router.js";
+import { skillRegistry } from "./core/skill-registry.js";
 import type { PermissionMode, AgentConfig } from "./types.js";
 
 const program = new Command();
@@ -64,6 +65,13 @@ program
 
     // 初始化核心组件
     registerBuiltinTools();
+
+    // 加载技能
+    const skillsDir = resolve(process.cwd(), "skills");
+    const skillCount = skillRegistry.loadFromDir(skillsDir);
+    if (skillCount > 0) {
+      console.log(chalk.green(`✓ 已加载 ${skillCount} 个技能`));
+    }
 
     const modelRouter = new ModelRouter();
     const sessionStore = new SessionStore(resolve(dataDir, "aiworker.db"));

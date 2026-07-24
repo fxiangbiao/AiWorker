@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import type { Message } from "../types.js";
 import type { SessionStore as SessionStoreClass } from "../memory/session-store.js";
 import { ContextCompressor } from "../memory/compressor.js";
+import { skillRegistry } from "./skill-registry.js";
 
 const MEMORY_MAX_CHARS = 2200; // 有界：~2200 字符
 const USER_MAX_CHARS = 1375; // 有界：~1375 字符
@@ -70,7 +71,8 @@ export class ContextManager {
   async assembleContext(
     systemPrompt: string,
     sessionId: string,
-    userMessage: string
+    userMessage: string,
+    agentId?: string
   ): Promise<Message[]> {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -99,6 +101,14 @@ export class ContextManager {
         .map((e) => `[${new Date(e.timestamp).toLocaleDateString()}] ${e.summary ?? e.content}`)
         .join("\n");
       fullSystemPrompt += `\n\n--- 相关历史记忆 ---\n${episodicText}`;
+    }
+
+    // 5. 技能列表 (SKILL.md 匹配)
+    if (agentId && skillRegistry.count > 0) {
+      const skillsPrompt = skillRegistry.getInjectedPrompt(agentId, userMessage);
+      if (skillsPrompt) {
+        fullSystemPrompt += skillsPrompt;
+      }
     }
 
     messages.push({ role: "system", content: fullSystemPrompt });

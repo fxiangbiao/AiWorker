@@ -221,3 +221,16 @@ export interface McpServerStatus {
   toolCount: number;
   error?: string;
 }
+
+// ===== Skills 系统 =====
+
+export interface SkillDef {
+  name: string;
+  version: string;
+  triggers: string[];
+  expert: string;
+  toolsRequired: string[];
+  modelPreference?: string;
+  body: string;
+  filePath: string;
+}

@@ -46,7 +46,8 @@ export async function runAgentLoop(
   let messages = await contextManager.assembleContext(
     config.systemPrompt,
     sessionId,
-    userMessage
+    userMessage,
+    config.id
   );
 
   // 持久化用户消息

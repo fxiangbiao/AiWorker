@@ -4,7 +4,7 @@
 ```bash
 npm run dev          # run CLI via tsx (no build needed)
 npm run build        # tsc → dist/
-npm test             # vitest run (smoke-test.ts, 38 tests)
+npm test             # vitest run (smoke-test.ts, 43 tests)
 ```
 
 - **No lint/formatter config** exists in this repo.
@@ -73,3 +73,10 @@ Uses **Commander.js** for arg parsing and **Inquirer** for prompts.
 ## Web search
 - `web_search` tool in `src/tools/builtin.ts` uses Bing (`cn.bing.com`) HTML scraping.
 - Zero API key required. Parses `<li class="b_algo">` blocks via regex.
+
+## Skills system
+- `src/core/skill-registry.ts` — singleton, loads `SKILL.md` files from `skills/` directory recursively.
+- Each skill = YAML frontmatter (`name`, `triggers`, `expert`, `tools_required`) + Markdown body.
+- `skillRegistry.match(input, agentId)` — regex trigger matching for relevant skills.
+- Injected into system prompt via `context-manager.ts` → `assembleContext()`.
+- Skills with missing tools are hidden at runtime (auto-degradation).
