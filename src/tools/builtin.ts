@@ -1,0 +1,282 @@
+/**
+ * 内置工具实现
+ * 文件系统读写 + 终端执行 + Web 搜索 + Web 抓取
+ */
+
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { resolve, dirname, relative, isAbsolute } from "node:path";
+import { execSync, type ExecSyncOptions } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import type {
+  ToolDefinition,
+  ToolHandler,
+  ToolResult,
+  RegisteredTool,
+  ToolContext,
+} from "../types.js";
+import { toolRegistry } from "../core/tool-registry.js";
+import { DangerDetector } from "../security/danger-detector.js";
+
+const detector = new DangerDetector();
+
+// ===== 文件读取 =====
+
+const readFileDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "fs_read",
+    description: "读取文件内容。支持文本文件。",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "文件路径（相对于工作目录或绝对路径）",
+        },
+        encoding: {
+          type: "string",
+          description: "文件编码，默认 utf-8",
+          enum: ["utf-8", "base64"],
+        },
+      },
+      required: ["path"],
+    },
+  },
+};
+
+const readFileHandler: ToolHandler = async (args) => {
+  const filePath = resolve(args.path as string);
+  if (!existsSync(filePath)) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `文件不存在: ${filePath}`,
+    };
+  }
+  const content = readFileSync(filePath, "utf-8");
+  return {
+    tool_call_id: "",
+    success: true,
+    content,
+  };
+};
+
+// ===== 文件写入 =====
+
+const writeFileDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "fs_write",
+    description: "写入文件内容。自动创建父目录。",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "文件路径" },
+        content: { type: "string", description: "写入内容" },
+      },
+      required: ["path", "content"],
+    },
+  },
+};
+
+const writeFileHandler: ToolHandler = async (args, ctx) => {
+  const filePath = resolve(args.path as string);
+
+  // 权限检查：Craft 模式下高危需确认
+  const dangerCheck = detector.check(`write ${filePath}`);
+  if (dangerCheck.isDangerous && ctx.permissions === "craft") {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `高危操作被拦截: ${dangerCheck.message}`,
+    };
+  }
+
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(filePath, args.content as string, "utf-8");
+  return {
+    tool_call_id: "",
+    success: true,
+    content: `已写入文件: ${filePath} (${(args.content as string).length} 字符)`,
+  };
+};
+
+// ===== 目录列表 =====
+
+const listDirDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "fs_list",
+    description: "列出目录内容。",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "目录路径，默认当前工作目录" },
+      },
+      required: [],
+    },
+  },
+};
+
+const listDirHandler: ToolHandler = async (args, ctx) => {
+  const dirPath = resolve((args.path as string) ?? ctx.workingDir);
+  if (!existsSync(dirPath)) {
+    return { tool_call_id: "", success: false, content: "", error: `目录不存在: ${dirPath}` };
+  }
+  const entries = readdirSync(dirPath, { withFileTypes: true });
+  const result = entries
+    .map((e) => {
+      const full = resolve(dirPath, e.name);
+      const stat = statSync(full);
+      const type = e.isDirectory() ? "[DIR] " : "      ";
+      return `${type} ${e.name} (${stat.size} bytes)`;
+    })
+    .join("\n");
+  return { tool_call_id: "", success: true, content: result };
+};
+
+// ===== 终端执行 =====
+
+const execCmdDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "terminal_exec",
+    description: "执行终端命令。返回 stdout 和 stderr。",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "要执行的命令" },
+        cwd: { type: "string", description: "工作目录，默认当前目录" },
+        timeout: { type: "number", description: "超时毫秒数，默认 30000" },
+      },
+      required: ["command"],
+    },
+  },
+};
+
+const execCmdHandler: ToolHandler = async (args, ctx) => {
+  const command = args.command as string;
+  const cwd = (args.cwd as string) ?? ctx.workingDir;
+  const timeout = (args.timeout as number) ?? 30000;
+
+  // 危险操作检测
+  const dangerCheck = detector.check(command);
+  if (dangerCheck.isDangerous) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `⚠️ 高危操作被拦截: ${dangerCheck.message}\n命令: ${command}`,
+    };
+  }
+
+  const options: ExecSyncOptions = {
+    cwd,
+    timeout,
+    encoding: "utf-8",
+    maxBuffer: 1024 * 1024 * 10, // 10MB
+    stdio: ["pipe", "pipe", "pipe"],
+  };
+
+  try {
+    const stdout = execSync(command, options) as string;
+    return {
+      tool_call_id: "",
+      success: true,
+      content: stdout || "(无输出)",
+    };
+  } catch (err) {
+    const error = err as { stderr?: string; stdout?: string; message: string };
+    return {
+      tool_call_id: "",
+      success: false,
+      content: error.stdout ?? "",
+      error: error.stderr ?? error.message,
+    };
+  }
+};
+
+// ===== Web 搜索 (占位，实际需接入搜索 API) =====
+
+const webSearchDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description: "搜索互联网获取信息。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "搜索关键词" },
+        max_results: { type: "number", description: "最大结果数，默认 5" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+const webSearchHandler: ToolHandler = async (args) => {
+  // MVP 占位：实际需接入搜索 API（如 Bing/Google）
+  return {
+    tool_call_id: "",
+    success: true,
+    content: `[Web搜索占位] 查询: "${args.query}"\n注意: MVP 阶段未接入搜索 API，请配置搜索服务后使用。`,
+  };
+};
+
+// ===== Web 抓取 =====
+
+const webFetchDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "web_fetch",
+    description: "获取网页内容并转为文本。",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "要抓取的 URL" },
+      },
+      required: ["url"],
+    },
+  },
+};
+
+const webFetchHandler: ToolHandler = async (args) => {
+  const url = args.url as string;
+  try {
+    const response = await fetch(url);
+    const text = await response.text();
+    // 简单 HTML 清理
+    const cleaned = text
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return {
+      tool_call_id: "",
+      success: true,
+      content: cleaned.slice(0, 10000), // 限制长度
+    };
+  } catch (err) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `抓取失败: ${(err as Error).message}`,
+    };
+  }
+};
+
+// ===== 注册所有内置工具 =====
+
+export function registerBuiltinTools(): void {
+  toolRegistry.register("fs_read", readFileDef, readFileHandler);
+  toolRegistry.register("fs_write", writeFileDef, writeFileHandler);
+  toolRegistry.register("fs_list", listDirDef, listDirHandler);
+  toolRegistry.register("terminal_exec", execCmdDef, execCmdHandler);
+  toolRegistry.register("web_search", webSearchDef, webSearchHandler);
+  toolRegistry.register("web_fetch", webFetchDef, webFetchHandler);
+}

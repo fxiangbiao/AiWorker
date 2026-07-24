@@ -1,0 +1,31 @@
+{
+  "default_mode": "ask",
+  "modes": {
+    "ask": {
+      "description": "纯问答，不执行任何工具",
+      "allow_tool_calls": false
+    },
+    "plan": {
+      "description": "先列计划，用户确认后再执行",
+      "allow_tool_calls": false,
+      "require_confirmation": true
+    },
+    "craft": {
+      "description": "自主执行，高危操作仍需确认",
+      "allow_tool_calls": true,
+      "high_risk_confirm": true
+    }
+  },
+  "allowed_dirs": [],
+  "denied_patterns": [
+    "rm -rf /",
+    "rm -rf ~",
+    "DROP TABLE",
+    "DROP DATABASE",
+    "git push --force",
+    "git reset --hard",
+    "format C:",
+    "shutdown",
+    "reboot"
+  ]
+}
