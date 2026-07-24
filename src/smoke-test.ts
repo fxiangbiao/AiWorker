@@ -3,16 +3,6 @@
  * 不依赖 LLM API，测试工具注册、安全检测、会话存储、权限模型
  */
 
-{
-  const _orig = process.emitWarning as Function;
-  process.emitWarning = function (warning: string | Error, type?: string, code?: string) {
-    const warnCode = type === "DEP0040" || code === "DEP0040";
-    const msgCode = typeof warning === "object" && (warning as Error & { code?: string }).code === "DEP0040";
-    if (warnCode || msgCode) return;
-    return _orig.call(process, warning, type, code);
-  } as typeof process.emitWarning;
-}
-
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { toolRegistry } from "./core/tool-registry.js";
 import { registerBuiltinTools } from "./tools/builtin.js";
