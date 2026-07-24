@@ -4,7 +4,6 @@
  */
 
 import { Command } from "commander";
-import inquirer from "inquirer";
 import chalk from "chalk";
 import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -50,7 +49,6 @@ program
     mkdirSync(resolve(dataDir, "memory"), { recursive: true });
     mkdirSync(resolve(dataDir, "audit"), { recursive: true });
 
-    // 启动渲染器
     renderer.init();
 
     // ─── Banner ───
@@ -61,7 +59,6 @@ program
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
     stdout.write(chalk.gray(`权限模式: ${options.mode}\n\n`));
 
-    // API Key 检查
     if (!process.env.OPENAI_API_KEY) {
       stdout.write(chalk.yellow("⚠️  未检测到 OPENAI_API_KEY 环境变量\n"));
       stdout.write(chalk.gray("   MVP 演示模式：你可以输入消息，但模型调用将返回占位响应。\n\n"));
@@ -82,7 +79,6 @@ program
     const contextManager = new ContextManager(sessionStore, dataDir, compressor);
     initAuditLog(dataDir);
 
-    // 安全 Hook
     const dangerDetector = new DangerDetector();
     hookManager.on("onToolCallPre", async (ctx) => {
       const { toolName, args } = ctx.data;
@@ -129,16 +125,22 @@ program
 
     // ─── 交互循环 ───
     while (true) {
-      const { input } = await inquirer.prompt([
-        { type: "input", name: "input", message: chalk.cyan("你>"), prefix: "" },
-      ]);
-
+      const input = await renderer.prompt();
       const trimmed = input ? input.trim() : "";
-      if (!trimmed) continue;
+      if (!trimmed) {
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          tokensMax: 8000,
+          queueSize: 0,
+        });
+        continue;
+      }
 
-      // 命令处理
+      // ─── 命令处理 ───
       if (trimmed === "/exit" || trimmed === "/quit") {
-        stdout.write(chalk.gray("再见！\n"));
+        stdout.write(chalk.gray("\n再见！\n"));
         break;
       }
 
@@ -147,53 +149,69 @@ program
         if (["ask", "plan", "craft"].includes(newMode)) {
           currentMode = newMode;
           for (const a of Object.values(agents)) a.setMode(newMode);
-          stdout.write(chalk.green(`✓ 已切换到 ${newMode} 模式\n\n`));
+          stdout.write(chalk.green(`✓ 已切换到 ${newMode} 模式\n`));
         } else {
-          stdout.write(chalk.red("无效模式，可选: ask, plan, craft\n\n"));
+          stdout.write(chalk.red("无效模式，可选: ask, plan, craft\n"));
         }
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          tokensMax: 8000,
+          queueSize: 0,
+        });
         continue;
       }
 
       if (trimmed === "/help") {
-        stdout.write(chalk.gray("命令:\n"));
-        stdout.write(chalk.gray("  /mode <ask|plan|craft>  切换权限模式\n"));
-        stdout.write(chalk.gray("  /status                 系统状态详情\n"));
-        stdout.write(chalk.gray("  /exit                   退出\n\n"));
+        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> 切换权限模式\n"));
+        stdout.write(chalk.gray("      /status  系统状态详情\n"));
+        stdout.write(chalk.gray("      /exit    退出\n"));
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          tokensMax: 8000,
+          queueSize: 0,
+        });
         continue;
       }
 
       if (trimmed === "/status") {
-        stdout.write(chalk.gray(`权限模式: ${currentMode}\n`));
-        stdout.write(chalk.gray(`当前模型: ${modelRouter.getCurrentModel()}\n`));
-        stdout.write(chalk.gray(`Token 用量: ${modelRouter.getTokenUsage()}\n`));
-        stdout.write(chalk.gray(`技能数量: ${skillCount}\n`));
-        stdout.write(chalk.gray(`排队消息: ${inputCollector.getQueueSize()}\n\n`));
+        stdout.write(chalk.gray(`权限模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()}\n`));
+        stdout.write(chalk.gray(`Token 用量: ${modelRouter.getTokenUsage()} | 技能: ${skillCount}\n`));
+        stdout.write(chalk.gray(`排队消息: ${inputCollector.getQueueSize()}\n`));
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          tokensMax: 8000,
+          queueSize: inputCollector.getQueueSize(),
+        });
         continue;
       }
 
-      // 路由 & 执行
+      // ─── 路由 & 执行 ───
       const expertId = routeToExpert(trimmed);
       const agent = agents[expertId];
       const agentName = agent.getName();
 
-      // 流式执行
-      stdout.write(chalk.yellow(`\nAiWorker[${agentName}]> `));
+      // 在内容区写 agent 前缀
+      stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
 
-      inputCollector.startListening((_text) => {
-        // 状态栏会周期性刷新排队计数，这里只收集
-      });
+      inputCollector.startListening(() => {});
 
       try {
         const streamCallbacks: StreamCallbacks = {
           onTextDelta: (text) => {
             stdout.write(text);
           },
-          onToolCall: (name, _args, _id) => {
-            stdout.write(`\n${chalk.blue(`  🔧 调用工具: ${name}`)}\n`);
+          onToolCall: (name) => {
+            stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`);
           },
           onToolResult: (_name, success, summary) => {
-            const icon = success ? chalk.green("  ✓") : chalk.red("  ✗");
-            stdout.write(`${icon} ${summary.slice(0, 100)}\n`);
+            const icon = success ? chalk.green("✓") : chalk.red("✗");
+            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
           },
         };
 
@@ -204,25 +222,31 @@ program
         );
 
         if (result.truncated && result.text) {
-          const truncated = result.text.slice(0, 500);
-          stdout.write(chalk.yellow(truncated));
+          const short = result.text.slice(0, 500);
+          stdout.write(`\n${chalk.yellow(short)}`);
           if (result.text.length > 500) stdout.write(chalk.yellow("..."));
-          stdout.write("\n");
         }
 
         stdout.write(
-          chalk.gray(
-            `\n  [迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]`
-          )
+          chalk.gray(`\n[迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]\n`)
         );
       } catch (err) {
-        stdout.write(chalk.red(`✗ 执行失败: ${(err as Error).message}`));
+        stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
       }
 
       const queue = inputCollector.stopListening();
 
-      // 状态栏 + 排队提示
-      stdout.write("\n\n");
+      // 排队提示
+      if (queue.length > 0) {
+        stdout.write(chalk.yellow(`\n📋 ${queue.length} 条排队:\n`));
+        for (let i = 0; i < Math.min(queue.length, 3); i++) {
+          stdout.write(chalk.gray(`  ${i + 1}. ${queue[i].slice(0, 60)}\n`));
+        }
+        if (queue.length > 3) stdout.write(chalk.gray(`  ... +${queue.length - 3}\n`));
+      }
+
+      // 重绘状态栏（在 content 之后，prompt 之前）
+      stdout.write("\n");
       renderer.printStatus({
         mode: currentMode,
         model: modelRouter.getCurrentModel(),
@@ -230,17 +254,6 @@ program
         tokensMax: 8000,
         queueSize: queue.length,
       });
-
-      if (queue.length > 0) {
-        stdout.write(chalk.yellow(`\n📋 有 ${queue.length} 条排队消息:`));
-        for (let i = 0; i < Math.min(queue.length, 3); i++) {
-          stdout.write(chalk.gray(`\n   ${i + 1}. ${queue[i].slice(0, 60)}`));
-        }
-        if (queue.length > 3) stdout.write(chalk.gray(`\n   ... 还有 ${queue.length - 3} 条`));
-        stdout.write(chalk.gray("\n   按 Enter 继续, 输入新内容将覆盖排队\n"));
-      }
-
-      stdout.write("\n");
     }
 
     // 清理
