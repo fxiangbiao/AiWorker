@@ -1,0 +1,17 @@
+{
+  "onMessage": [],
+  "onToolCallPre": [
+    { "handler": "dangerousCommandBlock", "tools": ["terminal_exec", "fs_write"] },
+    { "handler": "permissionCheck" }
+  ],
+  "onToolCallPost": [
+    { "handler": "auditLog" }
+  ],
+  "onTaskComplete": [
+    { "handler": "updateMemory" }
+  ],
+  "onError": [
+    { "handler": "retryWithBackoff", "options": { "maxRetries": 3 } },
+    { "handler": "fallbackModel" }
+  ]
+}

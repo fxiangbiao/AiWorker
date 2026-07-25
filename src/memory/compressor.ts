@@ -117,7 +117,7 @@ export class ContextCompressor {
     ];
 
     const response = await this.modelProvider({
-      model: "gpt-4o-mini",
+      model: "",
       messages: summaryRequest,
       temperature: 0.3,
       maxTokens: 1024,

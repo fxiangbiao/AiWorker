@@ -5,8 +5,9 @@
 
 import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
+import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const financialConfig: AgentConfig = {
+const financialConfig: AgentConfig = loadAgentConfig("financial") ?? {
   id: "financial",
   name: "financial",
   displayName: "理财投资顾问",

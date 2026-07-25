@@ -15,8 +15,9 @@ import { SessionStore } from "./memory/session-store.js";
 import { ContextCompressor } from "./memory/compressor.js";
 import { registerBuiltinTools } from "./tools/builtin.js";
 import { initAuditLog } from "./core/audit-logger.js";
-import { hookManager } from "./hooks/hook-manager.js";
 import { DangerDetector } from "./security/danger-detector.js";
+import { PermissionModel } from "./security/permission-model.js";
+import { loadHooksFromConfig } from "./hooks/hook-config-loader.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
@@ -28,7 +29,7 @@ import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
 import { renderer } from "./terminal/renderer.js";
 import { inputCollector } from "./terminal/input.js";
-import type { PermissionMode, StreamCallbacks } from "./types.js";
+import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
 
 const program = new Command();
 
@@ -75,22 +76,33 @@ program
 
     const modelRouter = new ModelRouter();
     const sessionStore = new SessionStore(resolve(dataDir, "aiworker.db"));
-    const compressor = new ContextCompressor();
+    const modelProvider: ModelProvider = (opts) => modelRouter.complete(opts);
+    const compressor = new ContextCompressor(modelProvider);
     const contextManager = new ContextManager(sessionStore, dataDir, compressor);
     initAuditLog(dataDir);
 
     const dangerDetector = new DangerDetector();
-    hookManager.on("onToolCallPre", async (ctx) => {
-      const { toolName, args } = ctx.data;
-      if (toolName === "terminal_exec" || toolName === "fs_write") {
-        const input = typeof args === "string" ? args : JSON.stringify(args);
-        const check = dangerDetector.check(input);
-        if (check.isDangerous) {
-          return { proceed: false, message: check.message };
-        }
-      }
-      return void 0;
+    const permissionModel = new PermissionModel({
+      defaultMode: options.mode as PermissionMode,
+      modes: {
+        ask: { description: "只读模式", allow_tool_calls: false, require_confirmation: true },
+        plan: { description: "计划模式（列出后确认执行）", allow_tool_calls: true, require_confirmation: true },
+        craft: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
+      },
+      allowedDirs: [workingDir],
+      deniedPatterns: [],
     });
+
+    const hooksDir = resolve(process.cwd(), "config");
+    const hooksCount = loadHooksFromConfig(resolve(hooksDir, "hooks.json"), {
+      dangerDetector,
+      permissionModel,
+      sessionStore,
+      modelRouter,
+    });
+    if (hooksCount > 0) {
+      stdout.write(chalk.green(`✓ 已加载 ${hooksCount} 个 Hook\n`));
+    }
 
     const deps = { modelRouter, contextManager, sessionStore };
     const agents: Record<string, DefaultAgent | ResearchAgent | CodingAgent | DataAnalysisAgent | ProductOpsAgent | FinancialAgent | GameDevAgent> = {

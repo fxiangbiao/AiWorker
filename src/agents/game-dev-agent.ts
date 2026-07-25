@@ -5,8 +5,9 @@
 
 import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
+import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const gameDevConfig: AgentConfig = {
+const gameDevConfig: AgentConfig = loadAgentConfig("game-dev") ?? {
   id: "game-dev",
   name: "game-dev",
   displayName: "游戏设计师",

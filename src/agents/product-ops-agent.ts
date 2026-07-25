@@ -5,8 +5,9 @@
 
 import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
+import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const productOpsConfig: AgentConfig = {
+const productOpsConfig: AgentConfig = loadAgentConfig("product-ops") ?? {
   id: "product-ops",
   name: "product-ops",
   displayName: "产品运营",

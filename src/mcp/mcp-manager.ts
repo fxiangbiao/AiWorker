@@ -8,6 +8,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { ToolResult, McpServerConfig, McpToolDef, McpServerStatus, ToolDefinition, ToolHandler } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
+import { McpConnectionPool } from "./connection-pool.js";
+import { McpHealthCheck } from "./health-check.js";
 
 interface McpConnection {
   config: McpServerConfig;
@@ -35,7 +37,17 @@ interface JsonRpcResponse {
 
 class McpManager {
   private connections: Map<string, McpConnection> = new Map();
+  private pool = new McpConnectionPool();
+  private healthCheck: McpHealthCheck;
   private static instance: McpManager;
+
+  private constructor() {
+    this.healthCheck = new McpHealthCheck(
+      this.pool,
+      (name) => this.ping(name),
+      (name) => this.reconnect(name)
+    );
+  }
 
   static getInstance(): McpManager {
     if (!McpManager.instance) {
@@ -71,6 +83,9 @@ class McpManager {
       return;
     }
 
+    this.pool.register(config.name, config);
+    this.pool.setState(config.name, "connecting");
+
     const conn: McpConnection = {
       config,
       pendingRequests: new Map(),
@@ -80,18 +95,25 @@ class McpManager {
       capabilities: {},
     };
 
-    if (config.transport === "stdio") {
-      await this.connectStdio(conn);
-    } else if (config.transport === "http") {
-      conn.initialized = true;
-    } else {
-      throw new Error(`不支持的传输协议: ${config.transport}`);
+    try {
+      if (config.transport === "stdio") {
+        await this.connectStdio(conn);
+      } else if (config.transport === "http") {
+        conn.initialized = true;
+      } else {
+        throw new Error(`不支持的传输协议: ${config.transport}`);
+      }
+
+      this.connections.set(config.name, conn);
+      this.pool.setState(config.name, "connected");
+      this.healthCheck.start(config.name);
+
+      await this.discoverAndRegisterTools(config.name);
+    } catch (err) {
+      this.pool.recordError(config.name, (err as Error).message);
+      this.pool.setState(config.name, "disconnected");
+      throw err;
     }
-
-    this.connections.set(config.name, conn);
-
-    // 发现并注册工具
-    await this.discoverAndRegisterTools(config.name);
   }
 
   private async connectStdio(conn: McpConnection): Promise<void> {
@@ -117,10 +139,19 @@ class McpManager {
 
     child.on("error", (err) => {
       conn.initialized = false;
+      this.pool.recordError(conn.config.name, err.message);
     });
 
     child.on("exit", () => {
       conn.initialized = false;
+      this.pool.setState(conn.config.name, "disconnected");
+      this.healthCheck.stop(conn.config.name);
+      if (this.pool.shouldRetry(conn.config.name)) {
+        const delay = this.pool.getReconnectDelay(conn.config.name);
+        setTimeout(() => {
+          this.reconnect(conn.config.name).catch(() => {});
+        }, delay);
+      }
     });
 
     // 发送 initialize 请求
@@ -232,7 +263,8 @@ class McpManager {
     const conn = this.connections.get(name);
     if (!conn) return;
 
-    // 注销该服务器注册的所有工具
+    this.healthCheck.stop(name);
+
     for (const tool of toolRegistry.getAll()) {
       if (tool.definition.function.name.startsWith(`mcp:${name}:`)) {
         toolRegistry.unregister(tool.definition.function.name);
@@ -241,11 +273,56 @@ class McpManager {
 
     conn.process?.kill();
     this.connections.delete(name);
+    this.pool.remove(name);
   }
 
   dispose(): void {
+    this.healthCheck.stopAll();
     for (const name of this.connections.keys()) {
       this.disconnectServer(name);
+    }
+  }
+
+  /**
+   * 健康检查 ping — 使用 tools/list 作为轻量级探测
+   */
+  private async ping(name: string): Promise<boolean> {
+    const conn = this.connections.get(name);
+    if (!conn || !conn.initialized) return false;
+    try {
+      await this.sendRequest(conn, "tools/list", {});
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 自动重连 — 关闭旧连接 → 重新连接 → 重新注册工具
+   */
+  private async reconnect(name: string): Promise<void> {
+    const oldConn = this.connections.get(name);
+    if (!oldConn) return;
+
+    oldConn.process?.kill();
+    this.connections.delete(name);
+
+    for (const tool of toolRegistry.getAll()) {
+      if (tool.definition.function.name.startsWith(`mcp:${name}:`)) {
+        toolRegistry.unregister(tool.definition.function.name);
+      }
+    }
+
+    try {
+      await this.connectServer(oldConn.config);
+    } catch {
+      // 重连失败时再次退避
+      if (this.pool.shouldRetry(name)) {
+        const delay = this.pool.getReconnectDelay(name);
+        setTimeout(() => {
+          this.reconnect(name).catch(() => {});
+        }, delay);
+      }
     }
   }
 

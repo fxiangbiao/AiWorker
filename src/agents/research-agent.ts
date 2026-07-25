@@ -5,8 +5,9 @@
 
 import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
+import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const researchConfig: AgentConfig = {
+const researchConfig: AgentConfig = loadAgentConfig("research") ?? {
   id: "research",
   name: "research",
   displayName: "研究分析师",

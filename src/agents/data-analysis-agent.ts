@@ -5,8 +5,9 @@
 
 import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
+import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const dataAnalysisConfig: AgentConfig = {
+const dataAnalysisConfig: AgentConfig = loadAgentConfig("data-analysis") ?? {
   id: "data-analysis",
   name: "data-analysis",
   displayName: "数据分析师",

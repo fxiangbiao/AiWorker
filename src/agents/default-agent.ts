@@ -5,8 +5,9 @@
 
 import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
+import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const defaultConfig: AgentConfig = {
+const defaultConfig: AgentConfig = loadAgentConfig("default") ?? {
   id: "default",
   name: "general",
   displayName: "通用助手",
