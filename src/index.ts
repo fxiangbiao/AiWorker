@@ -192,44 +192,39 @@ program
       const agent = agents[expertId];
       const agentName = agent.getName();
 
-            stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
-
-      // "思考中" spinner — 每轮 LLM 调用重新激活，用户输入时永久停止
+      // "思考中" spinner — 每轮 LLM 调用从新行开始，\r 只更新当前帧行
       const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
       let spinIdx = 0;
       let spinnerTimer: ReturnType<typeof setInterval> | null = null;
-      let spinnerDisabled = false; // 用户输入后永久禁用
+      let spinnerDisabled = false;
 
       const startSpinner = () => {
         if (spinnerDisabled || spinnerTimer) return;
         spinIdx = 0;
+        // 新行开始，保证 spinner 在自己独立的行上
+        stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[0])} ${chalk.dim("思考中...")}`);
         spinnerTimer = setInterval(() => {
           stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[spinIdx % frames.length])} ${chalk.dim("思考中...")}`);
           spinIdx++;
         }, 120);
-        stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[0])} ${chalk.dim("思考中...")}`);
       };
 
       const stopSpinner = (permanent = false) => {
-        if (spinnerTimer) {
-          clearInterval(spinnerTimer);
-          spinnerTimer = null;
-        }
         if (permanent) spinnerDisabled = true;
-        stdout.write(`\r${" ".repeat(50)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
+        if (!spinnerTimer) return;
+        clearInterval(spinnerTimer);
+        spinnerTimer = null;
+        // 清空 spinner 行，写入纯前缀，后续 token 从这行接着写
+        stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${" ".repeat(30)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
       };
 
-      // 初始启动 spinner
       startSpinner();
 
-      // 用户输入时永久停止 spinner
       inputCollector.startListening(() => stopSpinner(true));
 
       try {
         const streamCallbacks: StreamCallbacks = {
-          onThinkingStart: () => {
-            if (!spinnerDisabled) startSpinner();
-          },
+          onThinkingStart: () => { if (!spinnerDisabled) startSpinner(); },
           onTextDelta: (text) => {
             stopSpinner();
             stdout.write(text);
