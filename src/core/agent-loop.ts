@@ -228,6 +228,13 @@ export async function runAgentLoopStream(
             }
             break;
           case "tool_call_delta":
+            // 累积工具调用参数片段
+            for (const [, acc] of tcAcc) {
+              if (acc.id === chunk.toolCallId) {
+                acc.args += (chunk.content ?? "");
+                break;
+              }
+            }
             break;
           case "done":
             break;

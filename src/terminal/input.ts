@@ -4,6 +4,7 @@
  */
 
 import { stdin } from "node:process";
+import chalk from "chalk";
 
 export class InputCollector {
   private listening = false;
@@ -22,19 +23,33 @@ export class InputCollector {
     }
     stdin.resume();
 
+    let firstChar = true;
+
     this.handler = (data: Buffer) => {
       const s = data.toString("utf-8");
       for (const ch of s) {
         if (ch === "\r" || ch === "\n") {
           const line = this.buf.trim();
+          if (line) {
+            this.queue.push(line);
+            process.stdout.write(`\n${chalk.gray("(queued)")}\n`);
+          }
           this.buf = "";
-          if (line) this.queue.push(line);
+          firstChar = true;
         } else if (ch === "\x7f" || ch === "\b") {
-          if (this.buf.length > 0) this.buf = this.buf.slice(0, -1);
+          if (this.buf.length > 0) {
+            this.buf = this.buf.slice(0, -1);
+            process.stdout.write("\b \b");
+          }
         } else if (ch === "\x03") {
           // Ctrl+C — 忽略
         } else if (ch >= " ") {
+          if (firstChar) {
+            firstChar = false;
+            process.stdout.write(`\n${chalk.dim("▸ ")}`);
+          }
           this.buf += ch;
+          process.stdout.write(ch);
         }
       }
     };

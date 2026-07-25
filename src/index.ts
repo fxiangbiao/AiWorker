@@ -130,9 +130,9 @@ program
       let input: string;
       if (prefillQueue.length > 0) {
         const prefill = prefillQueue.shift()!;
-        stdout.write(chalk.yellow(`\n📋 排队消息:\n`));
-        stdout.write(chalk.gray(`  ${prefill.slice(0, 60)}\n`));
-        input = await renderer.promptWithText(prefill);
+        stdout.write(chalk.yellow(`\n📋 排队消息 → ${prefill.slice(0, 60)}\n`));
+        input = prefill;
+        // 直接消费排队消息，不阻塞等待输入
       } else {
         input = await renderer.prompt();
       }
