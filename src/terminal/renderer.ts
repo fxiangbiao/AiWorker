@@ -7,7 +7,7 @@
 import { enableVT } from "./ansi.js";
 import chalk from "chalk";
 import { createInterface } from "node:readline";
-import { stdout } from "node:process";
+import { stdin, stdout } from "node:process";
 
 export interface StatusLine {
   mode: string;
@@ -87,6 +87,8 @@ export class TerminalRenderer {
 
   async prompt(): Promise<string> {
     if (!this.active) return this.fallbackPrompt();
+
+    if (stdin.isPaused()) stdin.resume();
 
     const rl = createInterface({
       input: process.stdin,

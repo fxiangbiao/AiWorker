@@ -76,7 +76,9 @@ export class InputCollector {
     if (typeof stdin.setRawMode === "function") {
       stdin.setRawMode(false);
     }
-    stdin.pause();
+
+    // Don't pause — let readline manage stdin flow
+    // stdin.pause();
 
     const q = [...this.queue];
     this.queue = [];

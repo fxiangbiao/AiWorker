@@ -149,7 +149,7 @@ program
         input = await renderer.prompt();
       }
 
-      const trimmed = input ? input.trim() : "";
+      let trimmed = input ? input.trim() : "";
       if (!trimmed) {
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
@@ -181,7 +181,8 @@ program
       }
 
       if (trimmed === "/help") {
-        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /exit\n"));
+        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /exit | /<skill名>\n"));
+        stdout.write(chalk.gray("技能: /code-review /debug /report-generation /data-cleaning ... 等37个\n"));
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
@@ -197,6 +198,26 @@ program
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
         continue;
+      }
+
+      if (trimmed.startsWith("/")) {
+        const skillName = trimmed.slice(1).trim();
+        const skill = skillRegistry.getAll().find((s) =>
+          s.name.toLowerCase() === skillName.toLowerCase()
+        );
+        if (skill) {
+          stdout.write(chalk.cyan(`\n📋 调用技能: ${skill.name}\n`));
+          trimmed = `请使用 ${skill.name} 技能完成任务：\n\n${skill.body}\n\n用户任务：\n`;
+        } else {
+          stdout.write(chalk.yellow(`\n未找到技能 "${skillName}"\n`));
+          const allSkills = skillRegistry.getAll().map((s) => chalk.cyan(s.name));
+          stdout.write(chalk.gray(`可用技能: ${allSkills.join(", ")}\n\n`));
+          renderer.printStatus({
+            mode: currentMode, model: modelRouter.getCurrentModel(),
+            tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+          });
+          continue;
+        }
       }
 
       // ─── 路由 & 执行 ───
