@@ -124,16 +124,24 @@ program
     });
 
     // ─── 交互循环 ───
+    let prefillQueue: string[] = [];
+
     while (true) {
-      const input = await renderer.prompt();
+      let input: string;
+      if (prefillQueue.length > 0) {
+        const prefill = prefillQueue.shift()!;
+        stdout.write(chalk.yellow(`\n📋 排队消息:\n`));
+        stdout.write(chalk.gray(`  ${prefill.slice(0, 60)}\n`));
+        input = await renderer.promptWithText(prefill);
+      } else {
+        input = await renderer.prompt();
+      }
+
       const trimmed = input ? input.trim() : "";
       if (!trimmed) {
         renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
-          queueSize: 0,
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
         continue;
       }
@@ -154,39 +162,27 @@ program
           stdout.write(chalk.red("无效模式，可选: ask, plan, craft\n"));
         }
         renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
-          queueSize: 0,
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
         continue;
       }
 
       if (trimmed === "/help") {
-        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> 切换权限模式\n"));
-        stdout.write(chalk.gray("      /status  系统状态详情\n"));
-        stdout.write(chalk.gray("      /exit    退出\n"));
+        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /exit\n"));
         renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
-          queueSize: 0,
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
         continue;
       }
 
       if (trimmed === "/status") {
-        stdout.write(chalk.gray(`权限模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()}\n`));
-        stdout.write(chalk.gray(`Token 用量: ${modelRouter.getTokenUsage()} | 技能: ${skillCount}\n`));
-        stdout.write(chalk.gray(`排队消息: ${inputCollector.getQueueSize()}\n`));
+        stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()} | Token: ${modelRouter.getTokenUsage()}\n`));
+        stdout.write(chalk.gray(`技能: ${skillCount} | 排队: ${prefillQueue.length}\n`));
         renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
-          queueSize: inputCollector.getQueueSize(),
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
         continue;
       }
@@ -196,19 +192,15 @@ program
       const agent = agents[expertId];
       const agentName = agent.getName();
 
-      // 在内容区写 agent 前缀
       stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
 
+      // 启动输入捕获（raw stdin，不冲突 readline）
       inputCollector.startListening(() => {});
 
       try {
         const streamCallbacks: StreamCallbacks = {
-          onTextDelta: (text) => {
-            stdout.write(text);
-          },
-          onToolCall: (name) => {
-            stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`);
-          },
+          onTextDelta: (text) => { stdout.write(text); },
+          onToolCall: (name) => { stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`); },
           onToolResult: (_name, success, summary) => {
             const icon = success ? chalk.green("✓") : chalk.red("✗");
             stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
@@ -222,9 +214,8 @@ program
         );
 
         if (result.truncated && result.text) {
-          const short = result.text.slice(0, 500);
+          const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           stdout.write(`\n${chalk.yellow(short)}`);
-          if (result.text.length > 500) stdout.write(chalk.yellow("..."));
         }
 
         stdout.write(
@@ -235,24 +226,17 @@ program
       }
 
       const queue = inputCollector.stopListening();
+      // 将排队消息加入 prefill 队列
+      prefillQueue.push(...queue);
 
-      // 排队提示
-      if (queue.length > 0) {
-        stdout.write(chalk.yellow(`\n📋 ${queue.length} 条排队:\n`));
-        for (let i = 0; i < Math.min(queue.length, 3); i++) {
-          stdout.write(chalk.gray(`  ${i + 1}. ${queue[i].slice(0, 60)}\n`));
-        }
-        if (queue.length > 3) stdout.write(chalk.gray(`  ... +${queue.length - 3}\n`));
-      }
-
-      // 重绘状态栏（在 content 之后，prompt 之前）
+      // 状态栏
       stdout.write("\n");
       renderer.printStatus({
         mode: currentMode,
         model: modelRouter.getCurrentModel(),
         tokensUsed: modelRouter.getTokenUsage(),
         tokensMax: 8000,
-        queueSize: queue.length,
+        queueSize: prefillQueue.length,
       });
     }
 
