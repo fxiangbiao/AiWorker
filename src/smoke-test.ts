@@ -368,7 +368,7 @@ describe("12. Streaming + 终端模块", () => {
     expect(typeof inputCollector.getQueueSize).toBe("function");
     expect(inputCollector.getQueueSize()).toBe(0);
     // no readline conflict: startListening uses raw stdin, no readline
-    inputCollector.startListening(() => {});
+    inputCollector.startListening();
     const q = inputCollector.stopListening();
     expect(Array.isArray(q)).toBe(true);
   });

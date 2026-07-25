@@ -1,52 +1,66 @@
 /**
  * InputCollector — 输入收集器
- *
- * 不创建独立 readline 实例（避免与 renderer.prompt() 争抢 stdin）。
- * 使用 raw stdin data 事件捕获内容。
+ * Agent 运行期间用 raw 模式捕获 stdin，不冲突 readline。
  */
 
 import { stdin } from "node:process";
 
 export class InputCollector {
   private listening = false;
+  private buf = "";
   private queue: string[] = [];
-  private buffer = "";
-  private onData: ((chunk: string) => void) | null = null;
+  private handler: ((data: Buffer) => void) | null = null;
 
-  startListening(_onInput: (text: string) => void): void {
+  startListening(): void {
     if (this.listening) return;
     this.listening = true;
     this.queue = [];
-    this.buffer = "";
+    this.buf = "";
 
-    stdin.setEncoding("utf8");
+    if (typeof stdin.setRawMode === "function") {
+      stdin.setRawMode(true);
+    }
     stdin.resume();
 
-    this.onData = (chunk: string) => {
-      this.buffer += chunk;
-      const lines = this.buffer.split("\n");
-      this.buffer = lines.pop() ?? "";
-      for (const ln of lines) {
-        const t = ln.replace(/\r/g, "").trim();
-        if (t) this.queue.push(t);
+    this.handler = (data: Buffer) => {
+      const s = data.toString("utf-8");
+      for (const ch of s) {
+        if (ch === "\r" || ch === "\n") {
+          const line = this.buf.trim();
+          this.buf = "";
+          if (line) this.queue.push(line);
+        } else if (ch === "\x7f" || ch === "\b") {
+          if (this.buf.length > 0) this.buf = this.buf.slice(0, -1);
+        } else if (ch === "\x03") {
+          // Ctrl+C — 忽略
+        } else if (ch >= " ") {
+          this.buf += ch;
+        }
       }
     };
 
-    stdin.on("data", this.onData);
+    stdin.on("data", this.handler);
   }
 
   stopListening(): string[] {
+    if (!this.listening) return [];
     this.listening = false;
-    if (this.onData) {
-      stdin.removeListener("data", this.onData);
-      this.onData = null;
+
+    if (this.handler) {
+      stdin.removeListener("data", this.handler);
+      this.handler = null;
     }
-    // 刷新残留 buffer
-    if (this.buffer.trim()) {
-      this.queue.push(this.buffer.trim());
-      this.buffer = "";
+
+    if (this.buf.trim()) {
+      this.queue.push(this.buf.trim());
+      this.buf = "";
+    }
+
+    if (typeof stdin.setRawMode === "function") {
+      stdin.setRawMode(false);
     }
     stdin.pause();
+
     const q = [...this.queue];
     this.queue = [];
     return q;
@@ -57,7 +71,7 @@ export class InputCollector {
   }
 
   destroy(): void {
-    this.stopListening();
+    if (this.listening) this.stopListening();
   }
 }
 
