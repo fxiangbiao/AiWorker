@@ -112,6 +112,7 @@ export interface StreamCallbacks {
   onTextDelta?: (text: string) => void;
   onToolCall?: (name: string, args: string, id: string) => void;
   onToolResult?: (name: string, success: boolean, summary: string) => void;
+  onThinkingStart?: () => void;
 }
 
 // ===== 智能体 =====

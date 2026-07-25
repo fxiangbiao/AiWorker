@@ -192,30 +192,44 @@ program
       const agent = agents[expertId];
       const agentName = agent.getName();
 
-      stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
+            stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
 
-      // "思考中" spinner — 旋转直到首个 token 到达
+      // "思考中" spinner — 每轮 LLM 调用重新激活，用户输入时永久停止
       const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
       let spinIdx = 0;
-      let firstToken = true;
-      const spinnerInterval = setInterval(() => {
-        stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[spinIdx % frames.length])} ${chalk.dim("思考中...")}`);
-        spinIdx++;
-      }, 120);
+      let spinnerTimer: ReturnType<typeof setInterval> | null = null;
+      let spinnerDisabled = false; // 用户输入后永久禁用
 
-      const stopSpinner = () => {
-        clearInterval(spinnerInterval);
-        if (firstToken) {
-          firstToken = false;
-          stdout.write(`\r${" ".repeat(50)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
-        }
+      const startSpinner = () => {
+        if (spinnerDisabled || spinnerTimer) return;
+        spinIdx = 0;
+        spinnerTimer = setInterval(() => {
+          stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[spinIdx % frames.length])} ${chalk.dim("思考中...")}`);
+          spinIdx++;
+        }, 120);
+        stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[0])} ${chalk.dim("思考中...")}`);
       };
 
-      // 启动输入捕获（raw stdin，不冲突 readline）
-      inputCollector.startListening(stopSpinner);
+      const stopSpinner = (permanent = false) => {
+        if (spinnerTimer) {
+          clearInterval(spinnerTimer);
+          spinnerTimer = null;
+        }
+        if (permanent) spinnerDisabled = true;
+        stdout.write(`\r${" ".repeat(50)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
+      };
+
+      // 初始启动 spinner
+      startSpinner();
+
+      // 用户输入时永久停止 spinner
+      inputCollector.startListening(() => stopSpinner(true));
 
       try {
         const streamCallbacks: StreamCallbacks = {
+          onThinkingStart: () => {
+            if (!spinnerDisabled) startSpinner();
+          },
           onTextDelta: (text) => {
             stopSpinner();
             stdout.write(text);

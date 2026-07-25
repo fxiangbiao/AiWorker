@@ -198,6 +198,7 @@ export async function runAgentLoopStream(
       const tools = mode === "ask" ? undefined : availableTools;
 
       // 流式调用
+      callbacks.onThinkingStart?.();
       const stream = modelRouter.completeStream(
         config.modelPreference,
         messages,
