@@ -3,7 +3,7 @@
  * Agent 运行期间用 raw 模式捕获 stdin，不冲突 readline。
  */
 
-import { stdin } from "node:process";
+import { stdin, stdout } from "node:process";
 import chalk from "chalk";
 
 export class InputCollector {
@@ -12,7 +12,8 @@ export class InputCollector {
   private queue: string[] = [];
   private handler: ((data: Buffer) => void) | null = null;
 
-  startListening(): void {
+  /** onFirstKey: 首个可打印字符键入时调用（用于停止 spinner） */
+  startListening(onFirstKey?: () => void): void {
     if (this.listening) return;
     this.listening = true;
     this.queue = [];
@@ -32,24 +33,25 @@ export class InputCollector {
           const line = this.buf.trim();
           if (line) {
             this.queue.push(line);
-            process.stdout.write(`\n${chalk.gray("(queued)")}\n`);
+            stdout.write(` ${chalk.gray("→ 已排队")}\n`);
           }
           this.buf = "";
           firstChar = true;
         } else if (ch === "\x7f" || ch === "\b") {
           if (this.buf.length > 0) {
             this.buf = this.buf.slice(0, -1);
-            process.stdout.write("\b \b");
+            stdout.write("\b \b");
           }
         } else if (ch === "\x03") {
-          // Ctrl+C — 忽略
+          // Ctrl+C
         } else if (ch >= " ") {
           if (firstChar) {
             firstChar = false;
-            process.stdout.write(`\n${chalk.dim("▸ ")}`);
+            onFirstKey?.();
+            stdout.write(`\n${chalk.dim("▸ ")}`);
           }
           this.buf += ch;
-          process.stdout.write(ch);
+          stdout.write(ch);
         }
       }
     };

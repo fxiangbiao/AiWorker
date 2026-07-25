@@ -212,7 +212,7 @@ program
       };
 
       // 启动输入捕获（raw stdin，不冲突 readline）
-      inputCollector.startListening();
+      inputCollector.startListening(stopSpinner);
 
       try {
         const streamCallbacks: StreamCallbacks = {
