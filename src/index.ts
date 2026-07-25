@@ -194,13 +194,36 @@ program
 
       stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
 
+      // "思考中" spinner — 旋转直到首个 token 到达
+      const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+      let spinIdx = 0;
+      let firstToken = true;
+      const spinnerInterval = setInterval(() => {
+        stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[spinIdx % frames.length])} ${chalk.dim("思考中...")}`);
+        spinIdx++;
+      }, 120);
+
+      const stopSpinner = () => {
+        clearInterval(spinnerInterval);
+        if (firstToken) {
+          firstToken = false;
+          stdout.write(`\r${" ".repeat(50)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
+        }
+      };
+
       // 启动输入捕获（raw stdin，不冲突 readline）
       inputCollector.startListening(() => {});
 
       try {
         const streamCallbacks: StreamCallbacks = {
-          onTextDelta: (text) => { stdout.write(text); },
-          onToolCall: (name) => { stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`); },
+          onTextDelta: (text) => {
+            stopSpinner();
+            stdout.write(text);
+          },
+          onToolCall: (name) => {
+            stopSpinner();
+            stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`);
+          },
           onToolResult: (_name, success, summary) => {
             const icon = success ? chalk.green("✓") : chalk.red("✗");
             stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
@@ -213,6 +236,8 @@ program
           streamCallbacks
         );
 
+        stopSpinner();
+
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           stdout.write(`\n${chalk.yellow(short)}`);
@@ -222,6 +247,7 @@ program
           chalk.gray(`\n[迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]\n`)
         );
       } catch (err) {
+        stopSpinner();
         stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
       }
 
