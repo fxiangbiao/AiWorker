@@ -210,11 +210,10 @@ program
       };
 
       const stopSpinner = (permanent = false) => {
-        if (permanent) spinnerDisabled = true;
+        if (permanent) { spinnerDisabled = true; needReprefix = true; }
         if (!spinnerTimer) return;
         clearInterval(spinnerTimer);
         spinnerTimer = null;
-        // 清空 spinner 行，写入纯前缀，后续 token 从这行接着写
         stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${" ".repeat(30)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
       };
 
@@ -222,11 +221,22 @@ program
 
       inputCollector.startListening(() => stopSpinner(true));
 
+      // 标记：spinner 被用户打断后，首个 token 到达时重新建立输出行
+      let needReprefix = false;
+
       try {
         const streamCallbacks: StreamCallbacks = {
           onThinkingStart: () => { if (!spinnerDisabled) startSpinner(); },
           onTextDelta: (text) => {
-            stopSpinner();
+            if (spinnerTimer) {
+              // spinner 仍在运行 → 正常停止
+              stopSpinner();
+            } else if (needReprefix || spinnerDisabled) {
+              // spinner 已被用户打断 → 在新行重新建立前缀
+              stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
+              needReprefix = false;
+              spinnerDisabled = false; // 允许后续 thinking 阶段重启 spinner
+            }
             stdout.write(text);
           },
           onToolCall: (name) => {
