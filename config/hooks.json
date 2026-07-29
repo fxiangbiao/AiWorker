@@ -1,14 +1,22 @@
 {
-  "onMessage": [],
+  "onMessage": [
+    { "handler": "autoLoadProjectMemory" },
+    { "handler": "sensitiveDataFilter" }
+  ],
   "onToolCallPre": [
     { "handler": "dangerousCommandBlock", "tools": ["terminal_exec", "fs_write"] },
-    { "handler": "permissionCheck" }
+    { "handler": "permissionCheck" },
+    { "handler": "sensitiveDataFilter" },
+    { "handler": "confirmHighRisk" },
+    { "handler": "captureDiff" }
   ],
   "onToolCallPost": [
-    { "handler": "auditLog" }
+    { "handler": "auditLog" },
+    { "handler": "captureDiff" }
   ],
   "onTaskComplete": [
-    { "handler": "updateMemory" }
+    { "handler": "updateMemory" },
+    { "handler": "evaluateSkillCreation" }
   ],
   "onError": [
     { "handler": "retryWithBackoff", "options": { "maxRetries": 3 } },

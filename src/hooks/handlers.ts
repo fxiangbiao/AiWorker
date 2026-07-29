@@ -3,6 +3,9 @@
  * 设计依据：Section 3.5 — 11 个 lifecycle handler
  */
 
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { stdin, stdout } from "node:process";
 import type { HookHandler } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
@@ -97,39 +100,367 @@ export function createFallbackModel(deps: HandlerDependencies): HookHandler {
   };
 }
 
-// ── Stub handlers (未来 Sprint 实现) ──
+// ── Phase 3 Handlers ──
 
 /**
- * sensitiveDataFilter — 敏感信息脱敏 (stub)
+ * sensitiveDataFilter — 敏感信息脱敏
+ * 在工具调用和用户消息中检测 API Key、私钥等敏感信息并拦截
+ * Hook 事件: onToolCallPre, onMessage
  */
 export function createSensitiveDataFilter(): HookHandler {
-  return async () => { /* Phase 3 */ };
+  const patterns: RegExp[] = [
+    /sk-[a-zA-Z0-9]{20,}/,               // OpenAI / 类 OpenAI API keys
+    /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/i,
+    /ghp_[a-zA-Z0-9]{36}/,                // GitHub PAT
+    /gho_[a-zA-Z0-9]{36}/,                // GitHub OAuth
+    /xox[bpras]-[a-zA-Z0-9-]+/,          // Slack tokens
+    /AKIA[0-9A-Z]{16}/,                   // AWS access key
+    /(password|passwd|pwd)\s*[:=]\s*\S+/i,
+    /(api[_-]?key|apikey)\s*[:=]\s*\S+/i,
+  ];
+
+  return async (ctx) => {
+    let input = "";
+
+    if (ctx.event === "onToolCallPre") {
+      const toolName = ctx.data.toolName as string;
+      if (toolName === "terminal_exec" || toolName === "fs_write") {
+        input = typeof ctx.data.args === "string"
+          ? ctx.data.args
+          : JSON.stringify(ctx.data.args ?? {});
+      }
+    }
+
+    if (ctx.event === "onMessage") {
+      input = (ctx.data.instruction as string) ?? "";
+    }
+
+    if (!input) return;
+
+    for (const pattern of patterns) {
+      if (pattern.test(input)) {
+        const match = input.match(pattern)?.[0] ?? "";
+        const masked = match.length > 8
+          ? match.slice(0, 4) + "****" + match.slice(-4)
+          : "****";
+
+        return {
+          proceed: false,
+          message: `检测到敏感信息 (${masked})，已拦截。请使用环境变量或配置文件管理密钥。`,
+        };
+      }
+    }
+  };
 }
 
 /**
- * autoLoadProjectMemory — 自动加载项目记忆 (stub)
+ * autoLoadProjectMemory — 自动加载项目记忆
+ * 会话开始时自动扫描项目关键文件注入上下文
+ * Hook 事件: onMessage
  */
-export function createAutoLoadProjectMemory(): HookHandler {
-  return async () => { /* Phase 3 */ };
+export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHandler {
+  const loadedSessions = new Set<string>();
+
+  return async (ctx) => {
+    if (ctx.event !== "onMessage") return;
+    if (loadedSessions.has(ctx.sessionId)) return;
+
+    const projectFiles = [
+      "README.md", "package.json", "AGENTS.md", "CONTRIBUTING.md",
+      ".env.example", "tsconfig.json", "composer.json", "Cargo.toml",
+      "pyproject.toml", "go.mod", "Makefile", "Dockerfile",
+    ];
+
+    const loaded: string[] = [];
+    for (const file of projectFiles) {
+      try {
+        if (!existsSync(file)) continue;
+        const content = readFileSync(file, "utf-8");
+        loaded.push(`--- ${file} ---\n${content.slice(0, 2000)}`);
+      } catch {
+        // skip
+      }
+    }
+
+    if (loaded.length > 0) {
+      const combined = loaded.join("\n\n");
+
+      // 存储为情景记忆条目，供 context-manager 检索
+      if (deps.sessionStore) {
+        deps.sessionStore.saveEpisodic(ctx.sessionId, combined, "项目文件自动加载", 3.0);
+      }
+
+      try {
+        auditLogger.log({
+          timestamp: Date.now(),
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          action: "auto_load_project_memory",
+          target: `已加载 ${loaded.length} 个项目文件`,
+          result: "success",
+          detail: loaded.map((l) => l.split("\n")[0].replace("--- ", "").replace(" ---", "")).join(", "),
+        });
+      } catch { /* ignore */ }
+    }
+
+    loadedSessions.add(ctx.sessionId);
+  };
 }
 
 /**
- * confirmHighRisk — Craft 模式高危操作弹确认 (stub)
+ * confirmHighRisk — Craft 模式高危操作弹确认
+ * 执行高危工具前通过 stdin 交互确认
+ * Hook 事件: onToolCallPre
  */
-export function createConfirmHighRisk(): HookHandler {
-  return async () => { /* Phase 3 */ };
+export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
+  return async (ctx) => {
+    if (ctx.event !== "onToolCallPre") return;
+
+    const toolName = ctx.data.toolName as string;
+    const permissions = ctx.data.permissions as string;
+
+    if (permissions !== "craft") return;
+    if (toolName !== "terminal_exec" && toolName !== "fs_write") return;
+
+    const detector = deps.dangerDetector ?? new DangerDetector();
+    const input = typeof ctx.data.args === "string"
+      ? ctx.data.args
+      : JSON.stringify(ctx.data.args ?? {});
+    const check = detector.check(input);
+
+    // 仅高危或警告级别需要确认
+    if (check.level === "safe") return;
+
+    const confirmed = await interactiveConfirm(
+      `${check.isDangerous ? "高危" : "注意"}: ${check.message ?? toolName}。是否继续？`
+    );
+
+    if (!confirmed) {
+      return { proceed: false, message: "用户取消操作" };
+    }
+  };
 }
 
 /**
- * captureDiff — 文件变更快照 (stub)
+ * captureDiff — 文件变更快照
+ * 写文件前保存旧内容，写完成后计算并记录 diff
+ * 用于审计和潜在的回滚
+ * Hook 事件: onToolCallPre (存快照), onToolCallPost (算 diff)
  */
-export function createCaptureDiff(): HookHandler {
-  return async () => { /* Phase 3 */ };
+export function createCaptureDiff(_deps: HandlerDependencies): HookHandler {
+  // session -> (filePath -> oldContent)
+  const snapshots = new Map<string, Map<string, string>>();
+
+  return async (ctx) => {
+    if (ctx.event === "onToolCallPre") {
+      const toolName = ctx.data.toolName as string;
+      if (toolName !== "fs_write") return;
+
+      const filePath = extractFilePath(ctx.data.args);
+      if (!filePath) return;
+
+      let sessionSnap = snapshots.get(ctx.sessionId);
+      if (!sessionSnap) {
+        sessionSnap = new Map();
+        snapshots.set(ctx.sessionId, sessionSnap);
+      }
+
+      try {
+        if (existsSync(filePath)) {
+          sessionSnap.set(filePath, readFileSync(filePath, "utf-8"));
+        }
+      } catch {
+        // 无法读取旧内容，跳过
+      }
+    }
+
+    if (ctx.event === "onToolCallPost") {
+      const toolName = ctx.data.toolName as string;
+      if (toolName !== "fs_write") return;
+
+      const result = ctx.data.result as { success: boolean; content: string } | undefined;
+      if (!result?.success) return;
+
+      const filePath = extractFilePath(ctx.data.args);
+      if (!filePath) return;
+
+      const sessionSnap = snapshots.get(ctx.sessionId);
+      const oldContent = sessionSnap?.get(filePath);
+      if (oldContent === undefined) return; // 新文件，无 diff
+
+      // 读取新内容
+      let newContent = "";
+      try {
+        newContent = readFileSync(filePath, "utf-8");
+      } catch {
+        return;
+      }
+
+      const diff = computeSimpleDiff(oldContent, newContent);
+      if (!diff) return;
+
+      try {
+        auditLogger.log({
+          timestamp: Date.now(),
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          action: `file_diff:${filePath}`,
+          target: filePath.slice(0, 200),
+          result: "success",
+          detail: `+${diff.added} -${diff.removed} 行`,
+        });
+      } catch { /* ignore */ }
+
+      // 也保存快照到磁盘
+      try {
+        const snapDir = resolve(process.cwd(), "data", "snapshots", ctx.sessionId);
+        mkdirSync(snapDir, { recursive: true });
+        const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
+        writeFileSync(
+          resolve(snapDir, `${safeName}.diff`),
+          `${diff.text}\n---\nold: ${oldContent.length} chars\nnew: ${newContent.length} chars`,
+          "utf-8"
+        );
+      } catch {
+        // 静默失败
+      }
+    }
+  };
 }
 
+// ── Phase 4 Handler ──
+
 /**
- * evaluateSkillCreation — 复杂任务后评估是否沉淀技能 (stub)
+ * evaluateSkillCreation — 复杂任务后评估是否沉淀技能
+ * 当任务复杂度超过阈值时自动创建 SKILL.md 候选
+ * Hook 事件: onTaskComplete
  */
-export function createEvaluateSkillCreation(): HookHandler {
-  return async () => { /* Phase 4 */ };
+export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHandler {
+  return async (ctx) => {
+    if (ctx.event !== "onTaskComplete") return;
+
+    const iterations = ctx.data.iterations as number ?? 0;
+    const toolCalls = ctx.data.toolCallsExecuted as number ?? 0;
+
+    // 复杂度阈值：迭代 > 5 或工具调用 > 8
+    if (iterations < 5 && toolCalls < 8) return;
+
+    const skillName = `auto-${ctx.agentId}-${Date.now().toString(36)}`;
+    const body = [
+      "---",
+      `name: ${skillName}`,
+      `version: "1.0"`,
+      `triggers:` ,
+      `  - "${ctx.agentId}"`,
+      `expert: ${ctx.agentId}`,
+      "tools_required: []",
+      "---",
+      "",
+      `## 自动沉淀技能`,
+      "",
+      `由 ${ctx.agentId} 智能体在复杂任务中自动生成。`,
+      `迭代次数: ${iterations}`,
+      `工具调用: ${toolCalls}`,
+      "",
+      `会话: ${ctx.sessionId}`,
+      "",
+      "### 指令",
+      "",
+      "根据上下文复现此任务的执行流程。",
+      "",
+    ].join("\n");
+
+    try {
+      const pendingDir = resolve(process.cwd(), "skills", "pending");
+      mkdirSync(pendingDir, { recursive: true });
+      writeFileSync(resolve(pendingDir, `${skillName}.md`), body, "utf-8");
+
+      try {
+        auditLogger.log({
+          timestamp: Date.now(),
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          action: "evaluate_skill_creation",
+          target: skillName,
+          result: "success",
+          detail: `iterations=${iterations}, toolCalls=${toolCalls}`,
+        });
+      } catch { /* ignore */ }
+    } catch {
+      // 静默失败
+    }
+  };
+}
+
+// ── 工具函数 ──
+
+async function interactiveConfirm(message: string): Promise<boolean> {
+  // 临时退出 raw mode 进行交互确认
+  const rawMode = typeof stdin.setRawMode === "function";
+  if (rawMode) stdin.setRawMode(false);
+  stdin.resume();
+
+  return new Promise((resolve) => {
+    stdout.write(`\n⚠️  ${message} [y/N] `);
+
+    const handler = (data: Buffer) => {
+      const input = data.toString("utf-8").trim().toLowerCase();
+      stdin.removeListener("data", handler);
+      if (rawMode) stdin.setRawMode(true);
+      stdout.write("\n");
+      resolve(input === "y" || input === "yes");
+    };
+
+    stdin.once("data", handler);
+
+    // 超时安全阀（10 秒后自动拒绝）
+    setTimeout(() => {
+      stdin.removeListener("data", handler);
+      if (rawMode) stdin.setRawMode(true);
+      stdout.write("\n");
+      resolve(false);
+    }, 10000);
+  });
+}
+
+function extractFilePath(args: unknown): string | null {
+  const parsed = typeof args === "string" ? tryParseJson(args) : args;
+  if (parsed && typeof parsed === "object" && "path" in parsed) {
+    return resolve(String((parsed as Record<string, unknown>).path));
+  }
+  return null;
+}
+
+function tryParseJson(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function computeSimpleDiff(oldText: string, newText: string): { added: number; removed: number; text: string } | null {
+  if (oldText === newText) return null;
+
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  let added = 0;
+  let removed = 0;
+
+  // 简单逐行比较
+  const maxLen = Math.max(oldLines.length, newLines.length);
+  const diffLines: string[] = [];
+
+  for (let i = 0; i < maxLen; i++) {
+    if (i >= oldLines.length) {
+      diffLines.push(`+ ${newLines[i]}`);
+      added++;
+    } else if (i >= newLines.length) {
+      diffLines.push(`- ${oldLines[i]}`);
+      removed++;
+    } else if (oldLines[i] !== newLines[i]) {
+      diffLines.push(`- ${oldLines[i]}`);
+      diffLines.push(`+ ${newLines[i]}`);
+      added++;
+      removed++;
+    }
+  }
+
+  return { added, removed, text: diffLines.join("\n") };
 }

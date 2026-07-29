@@ -27,6 +27,7 @@ import { FinancialAgent } from "./agents/financial-agent.js";
 import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
+import { TeamCoordinator } from "./core/team-coordinator.js";
 import { renderer } from "./terminal/renderer.js";
 import { inputCollector } from "./terminal/input.js";
 import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
@@ -115,6 +116,8 @@ program
       "game-dev": new GameDevAgent(deps),
     };
 
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
     let currentMode = options.mode as PermissionMode;
     for (const a of Object.values(agents)) {
       a.setMode(currentMode);
@@ -123,8 +126,8 @@ program
     stdout.write(chalk.green("✓ 核心引擎就绪\n"));
     stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
     stdout.write(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"));
-    stdout.write(chalk.green("✓ 安全层已启用: 危险检测 + 审计日志\n"));
-    stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助\n\n"));
+    stdout.write(chalk.green("✓ Team 协调器已就绪: 支持多专家协作\n"));
+    stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助, /plan <描述> 使用多专家协作\n\n"));
 
     // 初始状态栏
     renderer.printStatus({
@@ -182,6 +185,7 @@ program
 
       if (trimmed === "/help") {
         stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /exit | /<skill名>\n"));
+        stdout.write(chalk.gray("多专家协作: /plan <描述> 自动编排多个专家协作完成任务\n"));
         stdout.write(chalk.gray("技能: /code-review /debug /report-generation /data-cleaning ... 等37个\n"));
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
@@ -218,6 +222,70 @@ program
           });
           continue;
         }
+      }
+
+      // ─── 多专家协作（/plan 命令） ───
+      if (trimmed.startsWith("/plan ")) {
+        const planDesc = trimmed.slice(6).trim();
+        if (!planDesc) {
+          stdout.write(chalk.red("请输入任务描述，例如: /plan 开发一款放置类手游\n"));
+          renderer.printStatus({
+            mode: currentMode, model: modelRouter.getCurrentModel(),
+            tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+          });
+          continue;
+        }
+
+        stdout.write(chalk.cyan(`\n🔗 Team 协调器正在规划...\n`));
+        stdout.write(chalk.gray("分析任务 → 生成执行计划\n"));
+
+        let planResult;
+        try {
+          planResult = await coordinator.plan(planDesc);
+        } catch (err) {
+          stdout.write(chalk.red(`\n✗ 规划失败: ${(err as Error).message}\n`));
+          renderer.printStatus({
+            mode: currentMode, model: modelRouter.getCurrentModel(),
+            tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+          });
+          continue;
+        }
+
+        const plan = planResult.plan;
+        stdout.write(chalk.green(`✓ 计划已生成 (${plan.steps.length} 步, ${planResult.source})\n`));
+
+        // 展示计划
+        for (const step of plan.steps) {
+          const deps = step.dependsOn.length > 0 ? chalk.gray(` ← ${step.dependsOn.join(", ")}`) : "";
+          stdout.write(`  ${chalk.cyan(step.id)}: ${chalk.yellow(step.expertId)} — ${step.description}${deps}\n`);
+        }
+
+        stdout.write("\n");
+
+        const callbacks: StreamCallbacks = {
+          onToolCall: (expertId, desc) => {
+            stdout.write(`${chalk.blue(`🔧 ${expertId}`)}: ${desc}\n`);
+          },
+          onToolResult: (_name, success, summary) => {
+            const icon = success ? chalk.green("✓") : chalk.red("✗");
+            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+          },
+        };
+
+        try {
+          const result = await coordinator.execute(plan, workingDir, callbacks);
+          stdout.write(chalk.cyan("\n📋 汇总报告:\n"));
+          stdout.write(result.text);
+          stdout.write(`\n`);
+        } catch (err) {
+          stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
+        }
+
+        renderer.printStatus({
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+        });
+        continue;
       }
 
       // ─── 路由 & 执行 ───

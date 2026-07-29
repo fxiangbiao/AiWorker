@@ -253,3 +253,34 @@ export interface SkillDef {
   body: string;
   filePath: string;
 }
+
+// ===== Team Coordinator =====
+
+export interface ExecutionStep {
+  id: string;
+  description: string;
+  expertId: string;
+  dependsOn: string[];
+  critical: boolean;
+}
+
+export interface ExecutionPlan {
+  steps: ExecutionStep[];
+  goal: string;
+  estimatedSteps: number;
+}
+
+export interface PlanTemplate {
+  id: string;
+  name: string;
+  matchPattern: RegExp[];
+  steps: ExecutionStep[];
+}
+
+export interface CoordinatorResult {
+  text: string;
+  plan: ExecutionPlan;
+  stepResults: Map<string, string>;
+  failedSteps: string[];
+  source: "template" | "llm";
+}

@@ -4,7 +4,7 @@
 ```bash
 npm run dev          # run CLI via tsx (no build needed)
 npm run build        # tsc → dist/
-npm test             # vitest run (smoke-test.ts, 59 tests)
+npm test             # vitest run (smoke-test.ts, 76 tests)
 ```
 
 - **No lint/formatter config** exists in this repo.
@@ -40,7 +40,7 @@ Three modes: **ask** (read-only), **plan** (list before executing), **craft** (a
 
 ## Testing
 - Only test file: `src/smoke-test.ts` (lives inside `src/`, not a separate `tests/` dir).
-- Uses a custom `assert()` helper, **not** vitest's `expect`/`describe`/`it` DSL.
+- Uses vitest's `expect`/`describe`/`it` DSL.
 - Creates `data-test/` at runtime and cleans up on exit.
 - Vitest has no config file — runs with defaults.
 - Tests are excluded from `tsc` compilation (`tsconfig.json` excludes `tests` dir, but `smoke-test.ts` is in `src/` so it compiles anyway).
@@ -74,6 +74,14 @@ Uses **Commander.js** for arg parsing and **Inquirer** for prompts.
 ## Web search
 - `web_search` tool in `src/tools/builtin.ts` uses Bing (`cn.bing.com`) HTML scraping.
 - Zero API key required. Parses `<li class="b_algo">` blocks via regex.
+
+## Team Coordinator
+- `src/core/team-coordinator.ts` — multi-agent DAG orchestration.
+- `/plan <task>` CLI command: generates execution plan (template match or LLM-based), executes steps in topological order with configurable parallelism.
+- 4 built-in templates: game-dev-pipeline, product-analysis, full-stack-feature, investment-analysis.
+- Failure tolerance: non-critical steps skip on error; critical steps abort.
+- Step isolation: each sub-agent gets a fresh session, independent iteration budget.
+- Type definitions in `src/types.ts`: `ExecutionStep`, `ExecutionPlan`, `PlanTemplate`.
 
 ## Skills system
 - `src/core/skill-registry.ts` — singleton, loads `SKILL.md` files from `skills/` directory recursively.

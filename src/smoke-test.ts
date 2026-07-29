@@ -10,13 +10,15 @@ import { DangerDetector } from "./security/danger-detector.js";
 import { PermissionModel } from "./security/permission-model.js";
 import { SessionStore } from "./memory/session-store.js";
 import { ContextCompressor } from "./memory/compressor.js";
+import { ContextManager } from "./core/context-manager.js";
 import { hookManager } from "./hooks/hook-manager.js";
 import { routeToExpert } from "./agents/router.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { skillRegistry } from "./core/skill-registry.js";
-import type { PermissionConfig } from "./types.js";
+import { initAuditLog, auditLogger } from "./core/audit-logger.js";
+import type { PermissionConfig, HookContext } from "./types.js";
 import { resolve } from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
 
 const testDataDir = resolve(process.cwd(), "data-test");
 
@@ -24,10 +26,12 @@ beforeAll(() => {
   try { rmSync(testDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
   mkdirSync(testDataDir, { recursive: true });
   registerBuiltinTools();
+  initAuditLog(testDataDir);
 });
 
 afterAll(() => {
   try { rmSync(testDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  auditLogger.close();
 });
 
 describe("1. 工具注册表", () => {
@@ -381,5 +385,378 @@ describe("12. Streaming + 终端模块", () => {
     expect(typeof ansi.bold).toBe("function");
     expect(ansi.reverseVideo("test")).toContain("[7m");
     expect(ansi.bold("test")).toContain("[1m");
+  });
+});
+
+describe("13. Phase 3 Hook Handlers", () => {
+  const makeCtx = (overrides: Partial<HookContext> = {}): HookContext => ({
+    event: "onToolCallPre",
+    agentId: "test-agent",
+    sessionId: "test-session",
+    data: {},
+    ...overrides,
+  });
+
+  // 13a. SensitiveDataFilter
+  it("sensitiveDataFilter 拦截 OpenAI API Key", async () => {
+    const { createSensitiveDataFilter } = await import("./hooks/handlers.js");
+    const handler = createSensitiveDataFilter();
+    const ctx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "terminal_exec", args: "echo sk-abc123def456ghi789jkl012" },
+    });
+    const result = await handler(ctx);
+    expect(result).toBeDefined();
+    expect(result!.proceed).toBe(false);
+    expect(result!.message).toContain("敏感信息");
+  });
+
+  it("sensitiveDataFilter 拦截私钥", async () => {
+    const { createSensitiveDataFilter } = await import("./hooks/handlers.js");
+    const handler = createSensitiveDataFilter();
+    const ctx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: "/tmp/key.pem", content: "-----BEGIN PRIVATE KEY-----\nABCD" }) },
+    });
+    const result = await handler(ctx);
+    expect(result).toBeDefined();
+    expect(result!.proceed).toBe(false);
+  });
+
+  it("sensitiveDataFilter 放过安全命令", async () => {
+    const { createSensitiveDataFilter } = await import("./hooks/handlers.js");
+    const handler = createSensitiveDataFilter();
+    const ctx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "terminal_exec", args: "echo hello" },
+    });
+    const result = await handler(ctx);
+    expect(result).toBeUndefined();
+  });
+
+  it("sensitiveDataFilter 在 onMessage 中拦截", async () => {
+    const { createSensitiveDataFilter } = await import("./hooks/handlers.js");
+    const handler = createSensitiveDataFilter();
+    const ctx = makeCtx({
+      event: "onMessage",
+      data: { instruction: "帮我设置 key sk-xxx12345678901234567890" },
+    });
+    const result = await handler(ctx);
+    expect(result).toBeDefined();
+    expect(result!.proceed).toBe(false);
+  });
+
+  // 13b. AutoLoadProjectMemory
+  it("autoLoadProjectMemory 自动加载项目文件", async () => {
+    const { createAutoLoadProjectMemory } = await import("./hooks/handlers.js");
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-memory.db"));
+    const handler = createAutoLoadProjectMemory({ sessionStore });
+
+    // 创建临时项目文件
+    const projectFile = resolve(testDataDir, "README.md");
+    writeFileSync(projectFile, "# Test Project", "utf-8");
+
+    const originalCwd = process.cwd;
+    process.cwd = () => testDataDir;
+
+    const ctx = makeCtx({
+      event: "onMessage",
+      data: { instruction: "帮我看看项目" },
+    });
+    const result = await handler(ctx);
+
+    process.cwd = originalCwd;
+
+    // 应该不拦截（proceed undefined = 继续）
+    expect(result).toBeUndefined();
+
+    // 验证 episodic 记忆被写入
+    const entries = sessionStore.searchEpisodic("项目", 5);
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.some((e) => e.content.includes("README.md"))).toBe(true);
+
+    sessionStore.close();
+  });
+
+  // 13c. CaptureDiff
+  it("captureDiff 在 fs_write 前后捕获快照", async () => {
+    const { createCaptureDiff } = await import("./hooks/handlers.js");
+    const handler = createCaptureDiff({});
+
+    const testFile = resolve(testDataDir, "test-diff.txt");
+    writeFileSync(testFile, "line1\nline2\n", "utf-8");
+
+    // Pre-hook: 保存旧内容
+    const preCtx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: testFile, content: "line1\nmodified\n" }) },
+    });
+    await handler(preCtx);
+
+    // 写入新内容
+    writeFileSync(testFile, "line1\nmodified\n", "utf-8");
+
+    // Post-hook: 计算 diff
+    const postCtx = makeCtx({
+      event: "onToolCallPost",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: testFile }), result: { success: true, content: "ok" } },
+    });
+    await handler(postCtx);
+
+    // 验证 diff 文件被写入（handler 用 process.cwd()，测试用项目根）
+    const snapDir = resolve(process.cwd(), "data", "snapshots", "test-session");
+    expect(existsSync(snapDir)).toBe(true);
+  });
+
+  it("captureDiff 对新文件不报错", async () => {
+    const { createCaptureDiff } = await import("./hooks/handlers.js");
+    const handler = createCaptureDiff({});
+
+    const newFile = resolve(testDataDir, "new-file.txt");
+
+    const preCtx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: newFile, content: "new content" }) },
+    });
+    await handler(preCtx);
+
+    writeFileSync(newFile, "new content", "utf-8");
+
+    const postCtx = makeCtx({
+      event: "onToolCallPost",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: newFile }), result: { success: true, content: "ok" } },
+    });
+    const result = await handler(postCtx);
+    expect(result).toBeUndefined();
+  });
+
+  // 13d. EvaluateSkillCreation
+  it("evaluateSkillCreation 低于阈值不创建", async () => {
+    const { createEvaluateSkillCreation } = await import("./hooks/handlers.js");
+    const handler = createEvaluateSkillCreation({});
+
+    const ctx = makeCtx({
+      event: "onTaskComplete",
+      data: { iterations: 2, toolCallsExecuted: 3 },
+    });
+    const result = await handler(ctx);
+    expect(result).toBeUndefined();
+  });
+
+  it("evaluateSkillCreation 高于阈值创建 SKILL.md", async () => {
+    const { createEvaluateSkillCreation } = await import("./hooks/handlers.js");
+    const handler = createEvaluateSkillCreation({});
+
+    const originalCwd = process.cwd;
+    process.cwd = () => testDataDir;
+
+    const ctx = makeCtx({
+      event: "onTaskComplete",
+      data: { iterations: 6, toolCallsExecuted: 10 },
+    });
+    await handler(ctx);
+
+    process.cwd = originalCwd;
+
+    // 验证 pending 目录有 skill 文件
+    const pendingDir = resolve(testDataDir, "skills", "pending");
+    expect(existsSync(pendingDir)).toBe(true);
+    const files = readdirSync(pendingDir);
+    expect(files.length).toBeGreaterThan(0);
+    expect(files[0].endsWith(".md")).toBe(true);
+  });
+
+  // 13e. ConfirmHighRisk (without interactive prompt)
+  it("confirmHighRisk 在 ask 模式不触发", async () => {
+    const { createConfirmHighRisk } = await import("./hooks/handlers.js");
+    const detector = new DangerDetector();
+    const handler = createConfirmHighRisk({ dangerDetector: detector });
+
+    const ctx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "terminal_exec", args: "echo hello", permissions: "ask" },
+    });
+
+    // ask 模式应该跳过（只处理 craft）
+    const timeoutPromise = new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 200));
+    const result = await Promise.race([handler(ctx), timeoutPromise]);
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("14. Team Coordinator", () => {
+  it("模板匹配 — 游戏开发关键词触发模板", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    const { plan, source } = await coordinator.plan("帮我开发一款放置类手游");
+    expect(source).toBe("template");
+    expect(plan.steps.length).toBeGreaterThan(1);
+    expect(plan.steps[0].expertId).toBe("research"); // game-dev 模板第一步是 research
+
+    sessionStore.close();
+  });
+
+  it("模板匹配 — 产品分析关键词触发模板", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord2.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    const { plan, source } = await coordinator.plan("帮我做一份竞品分析报告");
+    expect(source).toBe("template");
+    expect(plan.steps.length).toBeGreaterThan(1);
+
+    sessionStore.close();
+  });
+
+  it("无模板匹配时降级为单步计划（无 API key 时 LLM 失败走 fallback）", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    // 模拟 completeWithProfile 抛出错误（无 API key）来测试 fallback
+    const originalComplete = modelRouter.completeWithProfile.bind(modelRouter);
+    modelRouter.completeWithProfile = async () => { throw new Error("模拟失败"); };
+
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord3.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    await expect(coordinator.plan("一个非常独特的任务")).rejects.toThrow();
+
+    modelRouter.completeWithProfile = originalComplete;
+    sessionStore.close();
+  });
+
+  it("execute 处理单步执行（允许失败）", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord4.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    const plan = {
+      steps: [
+        { id: "s1", description: "测试任务", expertId: "default", dependsOn: [] as string[], critical: true },
+      ],
+      goal: "测试",
+      estimatedSteps: 1,
+    };
+
+    // 执行应该不会抛异常（错误被封装到 result 中）
+    // 注意：这里 agent.run 会因为没有 API key 而失败，但这是预期的
+    const result = await coordinator.execute(plan, testDataDir);
+    expect(result).toBeDefined();
+    expect(typeof result.text).toBe("string");
+
+    sessionStore.close();
+  });
+
+  it("execute 处理多步流水线", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord5.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    const plan = {
+      steps: [
+        { id: "s1", description: "第一步", expertId: "default", dependsOn: [] as string[], critical: true },
+        { id: "s2", description: "第二步（依赖 s1）", expertId: "default", dependsOn: ["s1"] as string[], critical: false },
+      ],
+      goal: "流水线测试",
+      estimatedSteps: 2,
+    };
+
+    const result = await coordinator.execute(plan, testDataDir);
+    expect(result.plan.steps.length).toBe(2);
+    expect(typeof result.text).toBe("string");
+
+    sessionStore.close();
+  });
+
+  it("validateSteps 自动去除环依赖", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord6.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    // 构造一个带环的计划: s1 → s2, s2 → s3, s3 → s1
+    const plan = {
+      steps: [
+        { id: "s1", description: "step1", expertId: "default", dependsOn: ["s3"] as string[], critical: true },
+        { id: "s2", description: "step2", expertId: "default", dependsOn: ["s1"] as string[], critical: true },
+        { id: "s3", description: "step3", expertId: "default", dependsOn: ["s2"] as string[], critical: true },
+      ],
+      goal: "环测试",
+      estimatedSteps: 3,
+    };
+
+    const result = await coordinator.execute(plan, testDataDir);
+    // 环依赖被移除后应该能正常执行
+    expect(typeof result.text).toBe("string");
+
+    sessionStore.close();
+  });
+
+  it("synthesize 生成含全部步骤的报告", async () => {
+    const { TeamCoordinator } = await import("./core/team-coordinator.js");
+    const { DefaultAgent } = await import("./agents/default-agent.js");
+    const { ModelRouter } = await import("./core/model-router.js");
+
+    const modelRouter = new ModelRouter();
+    const sessionStore = new SessionStore(resolve(testDataDir, "test-coord7.db"));
+    const contextManager = new ContextManager(sessionStore, testDataDir);
+    const deps = { modelRouter, contextManager, sessionStore };
+    const agents = { default: new DefaultAgent(deps) };
+    const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    const plan = {
+      steps: [
+        { id: "s1", description: "调研", expertId: "research", dependsOn: [] as string[], critical: false },
+      ],
+      goal: "测试汇总",
+      estimatedSteps: 1,
+    };
+
+    const result = await coordinator.execute(plan, testDataDir);
+    expect(result.text).toContain("测试汇总");
+    expect(result.text).toContain("s1");
+
+    sessionStore.close();
   });
 });

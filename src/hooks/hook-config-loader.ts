@@ -13,6 +13,11 @@ import {
   createUpdateMemory,
   createRetryWithBackoff,
   createFallbackModel,
+  createSensitiveDataFilter,
+  createAutoLoadProjectMemory,
+  createConfirmHighRisk,
+  createCaptureDiff,
+  createEvaluateSkillCreation,
   type HandlerDependencies,
 } from "./handlers.js";
 
@@ -37,6 +42,11 @@ const handlerFactories: Record<string, (deps: HandlerDependencies) => import("..
   updateMemory: (deps) => createUpdateMemory(deps),
   retryWithBackoff: (deps) => createRetryWithBackoff(deps),
   fallbackModel: (deps) => createFallbackModel(deps),
+  sensitiveDataFilter: () => createSensitiveDataFilter(),
+  autoLoadProjectMemory: (deps) => createAutoLoadProjectMemory(deps),
+  confirmHighRisk: (deps) => createConfirmHighRisk(deps),
+  captureDiff: (deps) => createCaptureDiff(deps),
+  evaluateSkillCreation: (deps) => createEvaluateSkillCreation(deps),
 };
 
 export function loadHooksFromConfig(configPath: string, deps: HandlerDependencies): number {
