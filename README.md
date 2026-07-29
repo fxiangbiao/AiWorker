@@ -4,7 +4,7 @@
 
 ## 当前状态：Phase 3 进行中
 
-> 最新测试: **76 项** all passed
+> 最新测试: **85 项** all passed
 
 ### Phase 1 MVP ✅
 核心引擎已实现：
@@ -44,6 +44,18 @@
 - ✅ **4 种协作模板**：游戏开发流水线、产品分析报告、全栈功能开发、投资分析
 - ✅ **拓扑 DAG 执行**：失败容忍 + 步间上下文控制
 - ✅ **5 个 Hook 实现**：敏感数据过滤、项目记忆加载、高危确认、Diff 快照、技能评估
+
+### Sprint 8 ✅
+- ✅ **FTS5 中文分词**：`Intl.Segmenter` 词级检索，零依赖
+- ✅ **时间衰减权重**：每天 15%，自动过滤 7 天以上旧记忆
+- ✅ **MEMORY.md 双段结构**：项目信息段（固定）+ 会话历史段（自动滚动）
+- ✅ **自适应压缩**：`KEEP_RECENT = max(4, min(20, 20%))`
+- ✅ **USER.md 自动更新**：从对话中提取技术栈/偏好
+
+### Sprint 9 ✅
+- ✅ **MCP 内置服务器**：`math_eval` / `uuid_gen` / `json_format` / `timestamp_convert` 4 个新工具
+- ✅ **MCP 管道端到端**：spawn → initialize → tools/list → 注册 → 调用
+- ✅ **CLI 状态展示**：启动时显示 MCP 服务器连接状态
 
 ---
 
@@ -115,7 +127,10 @@ aiworker/
 │   │   ├── coding-agent.ts      # 编码工程师
 │   │   └── router.ts            # 专家路由器
 │   ├── mcp/              # MCP 协议
-│   │   └── mcp-manager.ts       # MCP 客户端 (stdio/HTTP)
+│   │   ├── mcp-manager.ts       # MCP 客户端 (stdio/HTTP)
+│   │   ├── builtin-server.ts    # 内置 MCP 工具服务器 (math_eval 等)
+│   │   ├── connection-pool.ts   # 连接池
+│   │   └── health-check.ts      # 健康检查
 │   ├── memory/           # 记忆系统
 │   │   ├── session-store.ts     # SQLite + WAL + FTS5
 │   │   └── compressor.ts        # 92% 压缩
@@ -143,7 +158,7 @@ aiworker/
 npm test
 ```
 
-**76 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器 (7 路)、MCP Manager、技能注册表、Streaming + 终端模块、Phase 3 Hook 处理器、Team 协调器。
+**85 项测试**覆盖：工具注册、危险检测、权限模型、会话存储、FTS5、压缩、Hooks、工具执行、路由器、MCP Manager、技能注册表、Streaming + 终端、Phase 3 Hook 处理器、Team 协调器、记忆系统增强、MCP 工具服务器。
 
 ---
 

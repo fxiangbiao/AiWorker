@@ -9,6 +9,24 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message, SessionRecord, EpisodicEntry } from "../types.js";
 
+const segmenter = typeof Intl !== "undefined" && Intl.Segmenter
+  ? new Intl.Segmenter("zh-CN", { granularity: "word" })
+  : null;
+
+function segmentChinese(text: string): string {
+  if (!segmenter) return "";
+  const tokens: string[] = [];
+  for (const s of segmenter.segment(text)) {
+    if (s.isWordLike) tokens.push(s.segment);
+  }
+  return tokens.join(" ");
+}
+
+function getDecayFactor(timestamp: number): number {
+  const daysAgo = (Date.now() - timestamp) / 86400000;
+  return Math.max(0.1, 1 - daysAgo * 0.15);
+}
+
 export class SessionStore {
   private db: DBType;
 
@@ -124,31 +142,17 @@ export class SessionStore {
     this.db.prepare(`UPDATE sessions SET summary = ? WHERE id = ?`).run(summary, sessionId);
   }
 
-  /** FTS5 跨会话检索（含 LIKE 兜底） */
+  /** FTS5 跨会话检索（三阶段：原始 → 分词 → LIKE + 时间衰减） */
   searchEpisodic(query: string, limit = 5): EpisodicEntry[] {
-    // 先尝试 FTS5 MATCH
-    let rows: Array<{
-      session_id: string;
-      content: string;
-      summary: string;
-      timestamp: string;
-      weight: string;
-    }> = [];
+    let rows = this.tryFts5Match(query, limit);
 
-    try {
-      const ftsStmt = this.db.prepare(
-        `SELECT session_id, content, summary, timestamp, weight
-         FROM episodic_memory
-         WHERE episodic_memory MATCH ?
-         ORDER BY rank, weight DESC
-         LIMIT ?`
-      );
-      rows = ftsStmt.all(query, limit) as typeof rows;
-    } catch {
-      // FTS5 查询语法错误时降级
+    if (rows.length === 0) {
+      const segmented = segmentChinese(query);
+      if (segmented) {
+        rows = this.tryFts5Match(segmented, limit);
+      }
     }
 
-    // FTS5 无结果时用 LIKE 兜底（中文 tokenizer 兼容）
     if (rows.length === 0) {
       const likeStmt = this.db.prepare(
         `SELECT session_id, content, summary, timestamp, weight
@@ -160,23 +164,58 @@ export class SessionStore {
       rows = likeStmt.all(`%${query}%`, `%${query}%`, limit) as typeof rows;
     }
 
-    return rows.map((row) => ({
-      id: "",
-      sessionId: row.session_id,
-      timestamp: parseInt(row.timestamp),
-      content: row.content,
-      summary: row.summary,
-      weight: parseFloat(row.weight),
-    }));
+    const entries = rows.map((row) => {
+      const ts = parseInt(row.timestamp);
+      const decay = getDecayFactor(ts);
+      return {
+        id: "",
+        sessionId: row.session_id,
+        timestamp: ts,
+        content: row.content,
+        summary: row.summary,
+        weight: parseFloat(row.weight),
+        decayFactor: decay,
+      } satisfies EpisodicEntry;
+    });
+
+    // 按 effectiveWeight 降序，低于 0.05 过滤
+    return entries
+      .filter((e) => (e.weight * (e.decayFactor ?? 0)) >= 0.05)
+      .sort((a, b) => (b.weight * (b.decayFactor ?? 0)) - (a.weight * (a.decayFactor ?? 0)))
+      .slice(0, limit);
   }
 
-  /** 写入情景记忆 */
+  /** 写入情景记忆（追加中文分词 token 增强 FTS5 索引） */
   saveEpisodic(sessionId: string, content: string, summary: string, weight = 1.0): void {
+    const segmented = segmentChinese(content);
+    const enriched = segmented ? `${content} ${segmented}` : content;
+
     const stmt = this.db.prepare(
       `INSERT INTO episodic_memory (session_id, content, summary, timestamp, weight)
        VALUES (?, ?, ?, ?, ?)`
     );
-    stmt.run(sessionId, content, summary, Date.now().toString(), weight.toString());
+    stmt.run(sessionId, enriched, summary, Date.now().toString(), weight.toString());
+  }
+
+  private tryFts5Match(query: string, limit: number): Array<{
+    session_id: string;
+    content: string;
+    summary: string;
+    timestamp: string;
+    weight: string;
+  }> {
+    try {
+      const stmt = this.db.prepare(
+        `SELECT session_id, content, summary, timestamp, weight
+         FROM episodic_memory
+         WHERE episodic_memory MATCH ?
+         ORDER BY rank
+         LIMIT ?`
+      );
+      return stmt.all(query, limit) as ReturnType<typeof this.tryFts5Match>;
+    } catch {
+      return [];
+    }
   }
 
   close(): void {

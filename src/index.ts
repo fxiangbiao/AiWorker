@@ -28,6 +28,7 @@ import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
 import { TeamCoordinator } from "./core/team-coordinator.js";
+import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { inputCollector } from "./terminal/input.js";
 import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
@@ -123,10 +124,27 @@ program
       a.setMode(currentMode);
     }
 
+    // ─── MCP 服务器 ───
+    const mcpConfigPath = resolve(process.cwd(), "config", "mcp.json");
+    mcpManager.loadConfig(mcpConfigPath).catch(() => {});
+
+    // 等待初始化完成（stdio 服务器需要时间启动）
+    await new Promise((r) => setTimeout(r, 500));
+
+    const mcpStatuses = mcpManager.getStatuses();
+    const mcpServers = Object.values(mcpStatuses);
+
     stdout.write(chalk.green("✓ 核心引擎就绪\n"));
     stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
     stdout.write(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"));
     stdout.write(chalk.green("✓ Team 协调器已就绪: 支持多专家协作\n"));
+
+    if (mcpServers.length > 0) {
+      for (const s of mcpServers) {
+        const icon = s.connected ? chalk.green("✓") : chalk.yellow("⚠");
+        stdout.write(icon + chalk.green(` MCP: ${s.name} (${s.toolCount} 工具${s.connected ? "" : ", 连接失败"})\n`));
+      }
+    }
     stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助, /plan <描述> 使用多专家协作\n\n"));
 
     // 初始状态栏

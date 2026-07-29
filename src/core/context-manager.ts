@@ -16,6 +16,11 @@ import { skillRegistry } from "./skill-registry.js";
 
 const MEMORY_MAX_CHARS = 2200; // 有界：~2200 字符
 const USER_MAX_CHARS = 1375; // 有界：~1375 字符
+const PROJECT_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.4);
+const HISTORY_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.6);
+
+const SECTION_PROJECT = "## 项目信息";
+const SECTION_HISTORY = "## 会话历史";
 
 export class ContextManager {
   private sessionStore: SessionStoreClass;
@@ -38,10 +43,10 @@ export class ContextManager {
     const memoryPath = resolve(this.memoryDir, "MEMORY.md");
     const userPath = resolve(this.memoryDir, "USER.md");
     if (!existsSync(memoryPath)) {
-      writeFileSync(memoryPath, "# Agent 记忆\n\n_(有界管理，自动更新)_\n");
+      writeFileSync(memoryPath, `# Agent 记忆\n\n${SECTION_PROJECT}\n\n_(在此记录项目信息)_\n\n${SECTION_HISTORY}\n\n_(自动滚动，最近优先)_\n`);
     }
     if (!existsSync(userPath)) {
-      writeFileSync(userPath, "# 用户画像\n\n_(有界管理，自动更新)_\n");
+      writeFileSync(userPath, "# 用户画像\n\n_(自动更新，有界管理)_\n");
     }
   }
 
@@ -137,31 +142,129 @@ export class ContextManager {
     return { messages, compressed: false };
   }
 
-  /** 更新语义记忆 (有界写入) */
+  /** 写入项目信息段（不影响会话历史） */
   updateMemory(content: string): void {
-    const path = resolve(this.memoryDir, "MEMORY.md");
-    const bounded = content.slice(0, MEMORY_MAX_CHARS);
-    writeFileSync(path, bounded, "utf-8");
+    this.writeProjectSection(content);
   }
 
+  /** 写入 USER.md */
   updateUserProfile(content: string): void {
     const path = resolve(this.memoryDir, "USER.md");
     const bounded = content.slice(0, USER_MAX_CHARS);
     writeFileSync(path, bounded, "utf-8");
   }
 
-  /** 总结会话并写入 MEMORY.md（有界写入） */
+  /** 总结会话并更新会话历史段 */
   async summarizeSession(messages: Message[], taskDescription: string): Promise<string> {
     const { result } = await this.compressor.compress(messages);
     if (!result.summary) return "";
 
-    const memoryContent = `# Agent 记忆\n\n` +
-      `> 上次任务: ${taskDescription.slice(0, 150)}\n\n` +
-      `## 对话摘要\n${result.summary}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = `- [${today}] ${taskDescription.slice(0, 120)}`;
 
-    const bounded = memoryContent.slice(0, MEMORY_MAX_CHARS);
+    this.appendHistoryEntry(entry);
+
+    // 自动更新用户画像
+    const profile = this.extractUserProfile(messages);
+    if (profile) this.mergeUserProfile(profile);
+
+    return result.summary;
+  }
+
+  // ── 双段 MEMORY.md 管理 ──
+
+  private readMemoryFile(): string {
     const path = resolve(this.memoryDir, "MEMORY.md");
-    writeFileSync(path, bounded, "utf-8");
-    return bounded;
+    if (!existsSync(path)) return "";
+    return readFileSync(path, "utf-8");
+  }
+
+  private parseSections(): { projectInfo: string; sessionHistory: string } {
+    const content = this.readMemoryFile();
+    const projectIdx = content.indexOf(SECTION_PROJECT);
+    const historyIdx = content.indexOf(SECTION_HISTORY);
+
+    let projectInfo = "";
+    let sessionHistory = "";
+
+    if (projectIdx !== -1 && historyIdx !== -1) {
+      projectInfo = content.slice(projectIdx + SECTION_PROJECT.length, historyIdx).trim();
+      sessionHistory = content.slice(historyIdx + SECTION_HISTORY.length).trim();
+    } else {
+      // 旧格式或损坏，取全部内容作为项目信息
+      projectInfo = content;
+    }
+
+    return { projectInfo, sessionHistory };
+  }
+
+  private writeSections(projectInfo: string, sessionHistory: string): void {
+    const path = resolve(this.memoryDir, "MEMORY.md");
+    const boundedProject = projectInfo.slice(0, PROJECT_MAX_CHARS);
+    const boundedHistory = sessionHistory.slice(0, HISTORY_MAX_CHARS);
+
+    const lines = [
+      "# Agent 记忆",
+      "",
+      SECTION_PROJECT,
+      "",
+      boundedProject || "_(待记录)_",
+      "",
+      SECTION_HISTORY,
+      "",
+      boundedHistory || "_(暂无历史)_",
+    ];
+    writeFileSync(path, lines.join("\n"), "utf-8");
+  }
+
+  private writeProjectSection(content: string): void {
+    const { sessionHistory } = this.parseSections();
+    this.writeSections(content, sessionHistory);
+  }
+
+  private appendHistoryEntry(entry: string): void {
+    const { projectInfo, sessionHistory } = this.parseSections();
+    const lines = sessionHistory
+      .split("\n")
+      .filter((l) => l.trim())
+      .slice(0, 20); // 保留最多 20 条
+    lines.unshift(entry);
+    this.writeSections(projectInfo, lines.join("\n"));
+  }
+
+  // ── 用户画像提取 ──
+
+  private extractUserProfile(messages: Message[]): string | null {
+    const userMessages = messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.content)
+      .join(" ");
+
+    const patterns: { regex: RegExp; label: string }[] = [
+      { regex: /习惯用|常用|一直用|一直在用/g, label: "常用工具" },
+      { regex: /先写测试|TDD|测试驱动/g, label: "测试习惯" },
+      { regex: /用中文|中文回复|用英文/g, label: "语言偏好" },
+      { regex: /React|Vue|Angular|Svelte|Next|Nuxt/g, label: "前端框架" },
+      { regex: /Python|TypeScript|Go|Rust|Java/g, label: "编程语言" },
+    ];
+
+    const tags: string[] = [];
+    for (const { label } of patterns) {
+      const matches = userMessages.match(patterns.find((p) => p.label === label)?.regex ?? /(?!)/);
+      if (matches) {
+        const unique = [...new Set(matches)].join(", ");
+        tags.push(`- ${label}: ${unique}`);
+      }
+    }
+
+    if (tags.length === 0) return null;
+
+    const today = new Date().toISOString().slice(0, 10);
+    return `# 用户画像\n> 上次更新: ${today}\n\n${tags.join("\n")}`;
+  }
+
+  private mergeUserProfile(newProfile: string): void {
+    // 简单覆盖（有界截断），后续可改为智能合并
+    this.updateUserProfile(newProfile);
   }
 }

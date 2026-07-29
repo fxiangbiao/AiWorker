@@ -4,7 +4,7 @@
 ```bash
 npm run dev          # run CLI via tsx (no build needed)
 npm run build        # tsc → dist/
-npm test             # vitest run (smoke-test.ts, 76 tests)
+npm test             # vitest run (smoke-test.ts, 85 tests)
 ```
 
 - **No lint/formatter config** exists in this repo.
@@ -70,6 +70,8 @@ Uses **Commander.js** for arg parsing and **Inquirer** for prompts.
 - Loads config from `config/mcp.json` via `loadConfig()`.
 - Auto-registers discovered server tools into `ToolRegistry` with `mcp:{server}:{tool}` naming.
 - Gracefully degrades on connection failure — no hard startup errors.
+- `src/mcp/builtin-server.ts` — built-in MCP stdio server with 4 utility tools (math_eval, uuid_gen, json_format, timestamp_convert). Spawned via `tsx` on startup.
+- Windows: `shell: true` is set on `spawn()` for `.cmd` resolution.
 
 ## Web search
 - `web_search` tool in `src/tools/builtin.ts` uses Bing (`cn.bing.com`) HTML scraping.

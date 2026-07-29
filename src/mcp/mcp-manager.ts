@@ -124,6 +124,7 @@ class McpManager {
     const child = spawn(conn.config.command, conn.config.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...conn.config.env },
+      shell: process.platform === "win32",
     });
 
     conn.process = child;

@@ -7,7 +7,10 @@ import type { Message, ModelProvider } from "../types.js";
 
 const CONTEXT_WINDOW = 128000; // 默认上下文窗口大小
 const COMPRESS_THRESHOLD = 0.92; // 92% 触发压缩
-const KEEP_RECENT = 6; // 压缩后保留最近 N 条消息
+
+function calcKeepRecent(totalCount: number): number {
+  return Math.max(4, Math.min(20, Math.ceil(totalCount * 0.2)));
+}
 
 // 粗略 token 估算 (英文 ~4 字符/token，中文 ~2 字符/token)
 function estimateTokens(messages: Message[]): number {
@@ -54,8 +57,9 @@ export class ContextCompressor {
    */
   async compress(messages: Message[]): Promise<{ messages: Message[]; result: CompressResult }> {
     const originalTokens = estimateTokens(messages);
+    const keepCount = calcKeepRecent(messages.length);
 
-    if (messages.length <= KEEP_RECENT + 1) {
+    if (messages.length <= keepCount + 1) {
       return {
         messages,
         result: { compressed: false, originalTokens, compressedTokens: originalTokens },
@@ -67,8 +71,8 @@ export class ContextCompressor {
     const conversation = messages.filter((m) => m.role !== "system");
 
     // 保留最近的对话
-    const toCompress = conversation.slice(0, conversation.length - KEEP_RECENT);
-    const toKeep = conversation.slice(conversation.length - KEEP_RECENT);
+    const toCompress = conversation.slice(0, conversation.length - keepCount);
+    const toKeep = conversation.slice(conversation.length - keepCount);
 
     let summary = "";
 

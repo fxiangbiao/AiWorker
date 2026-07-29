@@ -1,9 +1,10 @@
 {
-  "servers": {},
-  "builtin": {
-    "filesystem": { "enabled": true },
-    "terminal": { "enabled": true },
-    "web-search": { "enabled": true },
-    "web-fetch": { "enabled": true }
+  "servers": {
+    "builtin": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["tsx", "src/mcp/builtin-server.ts"],
+      "enabled": true
+    }
   }
 }

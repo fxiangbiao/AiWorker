@@ -186,6 +186,7 @@ export interface EpisodicEntry {
   content: string;
   summary?: string;
   weight: number; // 时间衰减加权
+  decayFactor?: number; // 查询时动态计算的衰减系数
 }
 
 // ===== Hooks =====
