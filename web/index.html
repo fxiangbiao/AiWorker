@@ -31,6 +31,8 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 #topbar select{padding:6px 10px;border:1px solid var(--border);border-radius:20px;background:var(--surface);color:var(--text);font-family:var(--font-ui);font-size:12px;cursor:pointer;outline:none}
 #topbar select:focus{border-color:var(--primary)}
 #topbar .spacer{flex:1}
+#topbar .dirs{display:flex;align-items:center;gap:12px;font-size:11px;color:var(--dim)}
+#topbar .dirs span{max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #topbar .conn{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
 #topbar .conn-dot{width:7px;height:7px;border-radius:50%}
 #topbar .conn-dot.online{background:var(--success)}
@@ -47,7 +49,6 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 #sidebar .s-item.active{background:var(--primary-light);border:1px solid rgba(217,119,6,.15)}
 #sidebar .s-item .s-title{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sidebar .s-item .s-meta{font-size:11px;color:var(--dim);margin-top:2px}
-#sidebar .s-bottom{padding:12px;border-top:1px solid var(--border);font-size:11px;color:var(--dim);display:flex;flex-direction:column;gap:4px}
 /* main panel */
 #main-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
 #msg-list{flex:1;overflow-y:auto;padding:24px 32px;scroll-behavior:smooth;max-width:800px;margin:0 auto;width:100%}
@@ -121,6 +122,7 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
     <button data-mode="craft">Craft</button>
   </div>
   <select id="agent-select"></select>
+  <div class="dirs"><span id="dir-work">--</span><span id="dir-out">--</span></div>
   <div class="spacer"></div>
   <div class="conn"><div class="conn-dot offline" id="conn-dot"></div><span id="conn-label">离线</span></div>
 </div>
@@ -128,9 +130,6 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
   <div id="sidebar">
     <div class="s-top"><button id="new-chat-btn">+ 新对话</button></div>
     <div class="s-list" id="chat-list"></div>
-    <div class="s-bottom" id="sidebar-info">
-      <span>工作目录: --</span><span>输出目录: --</span>
-    </div>
   </div>
   <div id="main-panel">
     <div id="msg-list">
@@ -186,7 +185,7 @@ function updateStatusBar(){
   const used=totalTokens||0;$('#sb-tokens').textContent=`tokens: ${fmtN(used)} / 8000`;
   const pc=(used*(PRICING.prompt+PRICING.completion))/1e6;$('#sb-cost').textContent=`cost: ¥${pc.toFixed(4)}`;
   $('#sb-model').textContent=`model: ${currentModel||'--'}`;
-  $('#sidebar-info').innerHTML=`<span>工作目录: ${esc(workingDir||'--')}</span><span>输出目录: ${esc(projectDir||'--')}</span>`;
+  $('#dir-work').textContent=workingDir||'--';$('#dir-out').textContent=projectDir||'--';
 }
 function loadAgents(){
   fetch('/agents').then(r=>r.json()).then(d=>{
