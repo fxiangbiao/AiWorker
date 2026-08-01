@@ -1,6 +1,5 @@
 /**
  * 默认通用智能体
- * MVP 阶段用于验证 "指令→工具调用→结果" 闭环
  */
 
 import { BaseAgent } from "./base-agent.js";

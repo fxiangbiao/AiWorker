@@ -63,7 +63,7 @@ program
 
     // ─── Banner ───
     stdout.write(chalk.cyan("╔══════════════════════════════════════╗\n"));
-    stdout.write(chalk.cyan("║        AiWorker v0.1.0 (MVP)         ║\n"));
+    stdout.write(chalk.cyan("║        AiWorker v0.1.0              ║\n"));
     stdout.write(chalk.cyan("╚══════════════════════════════════════╝\n\n"));
     stdout.write(chalk.gray(`工作目录: ${workingDir}\n`));
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
