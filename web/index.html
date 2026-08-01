@@ -55,11 +55,11 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 #msg-list{flex:1;overflow-y:auto;padding:24px 48px;scroll-behavior:smooth;max-width:960px;margin:0 auto;width:100%;scrollbar-width:none}
 #msg-list::-webkit-scrollbar{display:none}
 /* message */
-.msg{margin-bottom:24px}
+.msg{margin-bottom:28px}
 .msg.user{margin-bottom:20px}
 .msg.user .content{font-size:14px;line-height:1.7;color:var(--text);background:var(--hover-bg);padding:12px 16px;border-radius:var(--radius);display:inline-block;max-width:85%}
 .msg.agent-card{margin-bottom:24px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);overflow:hidden}
-.answer-block{padding:14px 16px;border-top:1px solid var(--border)}
+.answer-block{padding:18px 20px;border-top:1px solid var(--border)}
 .answer-block .content{font-size:14px;line-height:1.7;color:var(--text)}
 .answer-block .content p{margin:8px 0}
 .answer-block .content pre{background:var(--hover-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;overflow-x:auto;font-family:var(--font-mono);font-size:12px;position:relative;margin:8px 0}
@@ -72,10 +72,9 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 .answer-block .content th{background:var(--hover-bg);font-weight:600}
 /* thinking */
 .think-block{margin:0;border:none;border-bottom:1px solid var(--border);border-left:3px solid #A78BFA;overflow:hidden;background:transparent}
-.think-block .think-toggle{padding:8px 14px;font-size:12px;color:#7C3AED;cursor:pointer;display:flex;align-items:center;gap:6px;font-weight:500}
+.think-block .think-toggle{padding:10px 18px;font-size:12px;color:#7C3AED;cursor:pointer;display:flex;align-items:center;gap:6px;font-weight:500}
 .think-block .think-toggle .arrow{font-size:10px;transition:transform .2s}
-.think-block.open .think-toggle .arrow{transform:rotate(90deg)}
-.think-block .think-body{display:none;padding:8px 14px 12px;font-size:12px;color:var(--dim);border-top:1px solid var(--border);white-space:pre-wrap;max-height:200px;overflow-y:auto;scrollbar-width:none}
+.think-block .think-body{display:none;padding:12px 18px 14px;font-size:12px;color:var(--dim);border-top:1px solid var(--border);white-space:pre-wrap;max-height:200px;overflow-y:auto;scrollbar-width:none}
 .think-block .think-body::-webkit-scrollbar{display:none}
 .think-block.open .think-body{display:block}
 /* tool cards */
@@ -83,7 +82,7 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 .tools-group .tools-toggle{padding:8px 14px;font-size:11px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:4px;user-select:none}
 .tools-group .tools-toggle .arrow{font-size:10px;transition:transform .2s}
 .tools-group.open .tools-toggle .arrow{transform:rotate(90deg)}
-.tools-group .tools-body{display:none}
+.tools-group .tools-body{display:none;padding:0 18px 8px}
 .tools-group.open .tools-body{display:block}
 .tool-card{margin:6px 0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;background:var(--surface);box-shadow:var(--shadow)}
 .tool-card .tc-header{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--dim)}
