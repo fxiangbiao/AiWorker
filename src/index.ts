@@ -476,6 +476,7 @@ program
       // 思考内容跟踪
       let thinkingStarted = false;
       let thinkingFirstLine = "";
+      let thinkingLineCaptured = false;
       let needThinkingBreak = false;
 
       try {
@@ -484,6 +485,7 @@ program
             if (!showThinking) return;
             thinkingStarted = false;
             thinkingFirstLine = "";
+            thinkingLineCaptured = false;
             needThinkingBreak = true;
             if (spinnerTimer) stopSpinner();
             stopLiveStatus();
@@ -493,9 +495,14 @@ program
             if (showThinking) {
               if (!thinkingStarted) thinkingStarted = true;
               stdout.write(chalk.dim(text));
-            } else if (!thinkingFirstLine) {
+            } else if (!thinkingLineCaptured) {
               const firstBreak = text.indexOf("\n");
-              thinkingFirstLine = firstBreak !== -1 ? text.slice(0, firstBreak) : thinkingFirstLine + text;
+              if (firstBreak !== -1) {
+                thinkingFirstLine += text.slice(0, firstBreak);
+                thinkingLineCaptured = true;
+              } else {
+                thinkingFirstLine += text;
+              }
             }
           },
           onTextDelta: (text) => {
@@ -510,6 +517,7 @@ program
             if (!showThinking && thinkingFirstLine) {
               stdout.write(`\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}\n`);
               thinkingFirstLine = "";
+              thinkingLineCaptured = false;
             } else if (needThinkingBreak) {
               stdout.write("\n");
               needThinkingBreak = false;
