@@ -89,14 +89,15 @@ export class TerminalRenderer {
       stdin.setRawMode(false);
     }
 
-    // Yield a tick to let the previous readline close fully (avoids stdin hang on Windows)
-    await new Promise<void>((r) => setImmediate(r));
-
     return new Promise<string>((resolve) => {
       const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
       rl.question(chalk.cyan("你> "), (answer) => {
+        // Wait for close to fully settle before resolving.
+        // rl.close() cleanup includes removing data listeners and restoring
+        // stdin console mode; resolving early causes raw-mode conflicts with
+        // inputCollector that freeze stdin on Windows.
+        rl.on("close", () => resolve(answer));
         rl.close();
-        resolve(answer);
       });
     });
   }
