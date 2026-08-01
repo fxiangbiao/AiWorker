@@ -32,7 +32,7 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 #topbar select:focus{border-color:var(--primary)}
 #topbar .spacer{flex:1}
 #topbar .dirs{display:flex;align-items:center;gap:12px;font-size:11px;color:var(--dim)}
-#topbar .dirs span{max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#topbar .dirs span{max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #topbar .conn{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
 #topbar .conn-dot{width:7px;height:7px;border-radius:50%}
 #topbar .conn-dot.online{background:var(--success)}
@@ -165,6 +165,7 @@ const STATE={mode:'craft',agentId:'default',chatId:null,chats:[],messages:[],sen
 const PRICING={prompt:1,completion:2};
 let totalTokens=0,currentModel='',workingDir='',projectDir='';
 function fmtN(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
+function basename(p){if(!p)return'';const s=p.replace(/[\\/]+$/,'').split(/[\\/]/);return s[s.length-1]||p}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function loadChats(){try{STATE.chats=JSON.parse(localStorage.getItem('aiworker_chats')||'[]')}catch(e){STATE.chats=[]}}
 function saveChats(){localStorage.setItem('aiworker_chats',JSON.stringify(STATE.chats))}
@@ -185,7 +186,8 @@ function updateStatusBar(){
   const used=totalTokens||0;$('#sb-tokens').textContent=`tokens: ${fmtN(used)} / 8000`;
   const pc=(used*(PRICING.prompt+PRICING.completion))/1e6;$('#sb-cost').textContent=`cost: ¥${pc.toFixed(4)}`;
   $('#sb-model').textContent=`model: ${currentModel||'--'}`;
-  $('#dir-work').textContent=workingDir||'--';$('#dir-out').textContent=projectDir||'--';
+  $('#dir-work').textContent=basename(workingDir)||'--';$('#dir-work').title='工作目录: '+(workingDir||'--');
+  $('#dir-out').textContent=basename(projectDir)||'--';$('#dir-out').title='输出目录: '+(projectDir||'--');
 }
 function loadAgents(){
   fetch('/agents').then(r=>r.json()).then(d=>{
