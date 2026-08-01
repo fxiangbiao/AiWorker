@@ -82,7 +82,7 @@ export abstract class BaseAgent {
     this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
 
     // 总结会话并写入 MEMORY.md（有界 ≈2200 字符）
-    this.contextManager.summarizeSession(result.messages, task.instruction)
+    this.contextManager.summarizeSession(result.messages, task.instruction, sessionId)
       .catch(() => { /* 静默失败，不影响主流程 */ });
 
     // onTaskComplete Hook
@@ -151,7 +151,7 @@ export abstract class BaseAgent {
       this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
     }
 
-    this.contextManager.summarizeSession(result.messages, task.instruction)
+    this.contextManager.summarizeSession(result.messages, task.instruction, sessionId)
       .catch(() => {});
 
     await hookManager.trigger("onTaskComplete", {

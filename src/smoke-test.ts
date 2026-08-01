@@ -838,7 +838,8 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
     // 写入会话历史
     await mgr.summarizeSession(
       [{ role: "user", content: "帮我实现一个组件" }],
-      "实现 React 组件"
+      "实现 React 组件",
+      "test-session-1"
     );
 
     const content = readFileSync(resolve(testDataDir, "memory", "MEMORY.md"), "utf-8");
@@ -864,7 +865,8 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
     for (let i = 0; i < 5; i++) {
       await mgr.summarizeSession(
         [{ role: "user", content: `任务 ${i}` }],
-        `任务 ${i}`
+        `任务 ${i}`,
+        `test-session-${i}`
       );
     }
 
@@ -893,7 +895,7 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
       { role: "assistant" as const, content: "明白了" },
     ];
 
-    await mgr.summarizeSession(messages, "技术栈偏好测试");
+    await mgr.summarizeSession(messages, "技术栈偏好测试", "test-user-profile");
 
     const userContent = readFileSync(resolve(testDataDir, "memory", "USER.md"), "utf-8");
     // 用户画像文件应该更新

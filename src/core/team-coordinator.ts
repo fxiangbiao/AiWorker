@@ -114,7 +114,11 @@ export class TeamCoordinator {
       if (signal?.aborted) break;
 
       const ready = remaining.filter((s) => s.dependsOn.every((d) => stepResults.has(d)));
-      if (ready.length === 0) break;
+      if (ready.length === 0) {
+        const blocked = remaining.map((s) => `${s.id}(缺: ${s.dependsOn.filter((d) => !stepResults.has(d)).join(",")})`);
+        const text = `执行计划失败: 步骤间存在循环依赖或死锁 — ${blocked.join(", ")}`;
+        return { text, plan, stepResults, failedSteps: remaining.map((s) => s.id), source: "llm" as const };
+      }
 
       const batch = ready.slice(0, MAX_PARALLEL);
 
@@ -178,6 +182,96 @@ export class TeamCoordinator {
    */
   getAvailableAgents(): string[] {
     return Object.keys(this.agents);
+  }
+
+  /**
+   * debate — 辩论模式
+   * 两个专家各自独立分析同一问题，互审结论，最终汇总为多角度报告
+   */
+  async debate(
+    instruction: string,
+    agentA: string,
+    agentB: string,
+    workingDir: string,
+    projectDir: string,
+    callbacks?: StreamCallbacks,
+    signal?: AbortSignal
+  ): Promise<CoordinatorResult> {
+    const agent1 = this.agents[agentA];
+    const agent2 = this.agents[agentB];
+    if (!agent1 || !agent2) {
+      return {
+        text: `辩论模式需要两个有效专家，当前可用: ${Object.keys(this.agents).join(", ")}`,
+        plan: { steps: [], goal: instruction, estimatedSteps: 0 },
+        stepResults: new Map(),
+        failedSteps: [],
+        source: "llm",
+      };
+    }
+
+    callbacks?.onToolCall?.(agentA, "第一轮分析", "debate-a1");
+    const r1 = await agent1.run({ instruction, mode: "craft" }, workingDir, projectDir);
+    if (signal?.aborted) {
+      return { text: "辩论已中断", plan: { steps: [], goal: instruction, estimatedSteps: 0 }, stepResults: new Map(), failedSteps: [], source: "llm" };
+    }
+
+    callbacks?.onToolCall?.(agentB, "第一轮分析", "debate-b1");
+    const r2 = await agent2.run({ instruction, mode: "craft" }, workingDir, projectDir);
+    if (signal?.aborted) {
+      return { text: "辩论已中断", plan: { steps: [], goal: instruction, estimatedSteps: 0 }, stepResults: new Map(), failedSteps: [], source: "llm" };
+    }
+
+    // 互审: 每个 agent 审视对方结论
+    const critiqueA = `请批判性地审视以下来自 ${agentA} 的分析，指出遗漏、矛盾或可改进之处:\n\n${r1.text.slice(0, 3000)}`;
+    callbacks?.onToolCall?.(agentB, "审视对方结论", "debate-b2");
+    const cr2 = await agent2.run({ instruction: critiqueA, mode: "craft" }, workingDir, projectDir);
+
+    const critiqueB = `请批判性地审视以下来自 ${agentB} 的分析，指出遗漏、矛盾或可改进之处:\n\n${r2.text.slice(0, 3000)}`;
+    callbacks?.onToolCall?.(agentA, "审视对方结论", "debate-a2");
+    const cr1 = await agent1.run({ instruction: critiqueB, mode: "craft" }, workingDir, projectDir);
+
+    // 综合报告
+    const text = this.synthesizeDebate(
+      instruction, agentA, agentB,
+      r1.text, r2.text, cr1.text, cr2.text
+    );
+
+    const stepResults = new Map<string, string>();
+    stepResults.set("debate-a1", r1.text);
+    stepResults.set("debate-b1", r2.text);
+    stepResults.set("debate-a2", cr1.text);
+    stepResults.set("debate-b2", cr2.text);
+
+    return { text, plan: { steps: [], goal: instruction, estimatedSteps: 0 }, stepResults, failedSteps: [], source: "llm" };
+  }
+
+  private synthesizeDebate(
+    goal: string,
+    agentA: string,
+    agentB: string,
+    a1: string,
+    b1: string,
+    a2: string,
+    b2: string
+  ): string {
+    const parts: string[] = [];
+    parts.push(`# 辩论分析: ${goal.slice(0, 100)}`);
+    parts.push("");
+    parts.push(`## 正方观点 (${agentA})`);
+    parts.push(a1.length > 1500 ? a1.slice(0, 1500) + "..." : a1);
+    parts.push("");
+    parts.push(`## 反方观点 (${agentB})`);
+    parts.push(b1.length > 1500 ? b1.slice(0, 1500) + "..." : b1);
+    parts.push("");
+    parts.push(`## ${agentB} 对 ${agentA} 的质疑`);
+    parts.push(a2.length > 1000 ? a2.slice(0, 1000) + "..." : a2);
+    parts.push("");
+    parts.push(`## ${agentA} 对 ${agentB} 的质疑`);
+    parts.push(b2.length > 1000 ? b2.slice(0, 1000) + "..." : b2);
+    parts.push("");
+    parts.push("---");
+    parts.push("辩论完成。请基于双方观点和互审意见做出最终判断。");
+    return parts.join("\n");
   }
 
   /**
@@ -301,8 +395,13 @@ export class TeamCoordinator {
     }
 
     if (count !== steps.length) {
-      // 有环，移除所有依赖重新开始
-      for (const s of steps) s.dependsOn = [];
+      const cycleNodes = steps
+        .filter((s) => (inDegree.get(s.id) ?? 0) > 0)
+        .map((s) => s.id);
+      throw new Error(
+        `检测到循环依赖: ${cycleNodes.join(" → ")}。` +
+        `请手动指定步骤顺序或使用 /plan --linear 选项将步骤展平为线性执行。`
+      );
     }
   }
 

@@ -225,6 +225,48 @@ program
         continue;
       }
 
+      // ─── 多专家辩论（/debate 命令） ───
+      if (trimmed.startsWith("/debate ")) {
+        const topic = trimmed.slice(8).trim();
+        if (!topic) {
+          stdout.write(chalk.red("请输入辩论话题，例如: /debate React vs Vue 技术选型\n"));
+          renderer.printStatus({
+            mode: currentMode, model: modelRouter.getCurrentModel(),
+            tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+          });
+          continue;
+        }
+
+        const { agentA, agentB } = pickDebateAgents(topic, coordinator.getAvailableAgents());
+        stdout.write(chalk.cyan(`\n⚔  辩论模式: ${agentA} vs ${agentB}\n`));
+        stdout.write(chalk.gray(`话题: ${topic}\n\n`));
+
+        const debateCallbacks: StreamCallbacks = {
+          onToolCall: (expertId, desc) => {
+            stdout.write(`${chalk.blue(`🔧 ${expertId}`)}: ${desc}\n`);
+          },
+          onToolResult: (_name, success, summary) => {
+            const icon = success ? chalk.green("✓") : chalk.red("✗");
+            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+          },
+        };
+
+        try {
+          const result = await coordinator.debate(topic, agentA, agentB, workingDir, projectDir, debateCallbacks);
+          stdout.write(chalk.cyan("\n📋 辩论报告:\n"));
+          stdout.write(result.text);
+          stdout.write(`\n`);
+        } catch (err) {
+          stdout.write(chalk.red(`\n✗ 辩论失败: ${(err as Error).message}\n`));
+        }
+
+        renderer.printStatus({
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+        });
+        continue;
+      }
+
       // ─── 多专家协作（/plan 命令，必须在 /skill 之前） ───
       if (trimmed.startsWith("/plan ")) {
         const planDesc = trimmed.slice(6).trim();
@@ -414,5 +456,34 @@ program
     renderer.destroy();
     sessionStore.close();
   });
+
+function pickDebateAgents(
+  topic: string,
+  available: string[]
+): { agentA: string; agentB: string } {
+  const defaultPair = { agentA: "research", agentB: "coding" };
+
+  if (available.length < 2) return defaultPair;
+
+  const has = (id: string) => available.includes(id);
+
+  if (/投资|股票|基金|理财|财务|资产/i.test(topic) && has("financial") && has("data-analysis")) {
+    return { agentA: "financial", agentB: "data-analysis" };
+  }
+  if (/游戏/i.test(topic) && has("game-dev") && has("product-ops")) {
+    return { agentA: "game-dev", agentB: "product-ops" };
+  }
+  if (/(?:技术选型|架构|框架|语言.*选择|React.*Vue|前后端)/i.test(topic) && has("coding") && has("research")) {
+    return { agentA: "coding", agentB: "research" };
+  }
+  if (/(?:产品|运营|用户|市场|PRD)/i.test(topic) && has("product-ops") && has("research")) {
+    return { agentA: "product-ops", agentB: "research" };
+  }
+  if (/数据|分析|统计|报表/i.test(topic) && has("data-analysis") && has("research")) {
+    return { agentA: "data-analysis", agentB: "research" };
+  }
+
+  return defaultPair;
+}
 
 program.parse();

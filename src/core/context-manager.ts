@@ -164,7 +164,7 @@ export class ContextManager {
   }
 
   /** 总结会话并更新会话历史段 */
-  async summarizeSession(messages: Message[], taskDescription: string): Promise<string> {
+  async summarizeSession(messages: Message[], taskDescription: string, sessionId: string): Promise<string> {
     const { result } = await this.compressor.compress(messages);
     if (!result.summary) return "";
 
@@ -172,6 +172,14 @@ export class ContextManager {
     const entry = `- [${today}] ${taskDescription.slice(0, 120)}`;
 
     await this.appendHistoryEntry(entry);
+
+    // 存入 FTS5 跨会话检索
+    this.sessionStore.saveEpisodic(
+      sessionId,
+      taskDescription,
+      result.summary,
+      1.0
+    );
 
     // 自动更新用户画像
     const profile = this.extractUserProfile(messages);
