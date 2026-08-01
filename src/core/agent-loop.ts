@@ -230,8 +230,10 @@ export async function runAgentLoopStream(
       let streamFinishReason = "";
       const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();
 
+      let chunkSeq = 0;
       for await (const chunk of stream) {
         if (signal?.aborted) break;
+        chunkSeq++;
 
         switch (chunk.type) {
           case "text":
@@ -356,6 +358,16 @@ export async function runAgentLoopStream(
         agentId: config.id,
         sessionId,
         data: { error: errorMsg, iteration: iterations },
+      });
+
+      auditLogger.log({
+        timestamp: Date.now(),
+        agentId: config.id,
+        sessionId,
+        action: "loop_error",
+        target: errorMsg.slice(0, 200),
+        result: "error",
+        detail: `iteration=${iterations}, toolCalls=${toolCallsExecuted}`,
       });
 
       return {

@@ -378,6 +378,9 @@ program
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           stdout.write(`\n${chalk.yellow(short)}`);
+        } else if (result.text && result.text.startsWith("Agent")) {
+          const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
+          stdout.write(`\n${chalk.red(short)}`);
         }
 
         stdout.write(
