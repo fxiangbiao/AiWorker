@@ -414,6 +414,26 @@ program
 
       startSpinner();
 
+      // 启动实时状态栏
+      let statusDebounce: ReturnType<typeof setTimeout> | null = null;
+      const pushStatus = (extra?: Partial<{ toolName: string; iteration: number }>) => {
+        if (statusDebounce) return;
+        statusDebounce = setTimeout(() => {
+          statusDebounce = null;
+          renderer.updateLiveStatus({
+            mode: currentMode,
+            model: modelRouter.getCurrentModel(),
+            tokensUsed: modelRouter.getTokenUsage(),
+            tokensMax: 8000,
+            queueSize: prefillQueue.length + inputCollector.getQueueSize(),
+            toolName: extra?.toolName,
+            iteration: extra?.iteration,
+            maxIter: agents[expertId]?.getConfig().maxIterations,
+          });
+        }, 150);
+      };
+      pushStatus();
+
       inputCollector.startListening(() => stopSpinner(true));
 
       // 标记：spinner 被用户打断后，首个 token 到达时重新建立输出行
@@ -430,16 +450,14 @@ program
             thinkingStarted = false;
             thinkingFirstLine = "";
             if (spinnerTimer) stopSpinner();
-            stdout.write(`\n${chalk.dim("🧠 思考: ")}`);
+            renderer.writeContentLine(chalk.dim("🧠 思考: "));
+            pushStatus();
           },
           onThinkingDelta: (text) => {
             if (showThinking) {
-              if (!thinkingStarted) {
-                thinkingStarted = true;
-              }
-              stdout.write(chalk.dim(text));
+              if (!thinkingStarted) thinkingStarted = true;
+              renderer.writeStreamText(chalk.dim(text));
             } else if (!thinkingFirstLine) {
-              // 折叠模式：只捕获首行展示一行摘要
               const firstBreak = text.indexOf("\n");
               if (firstBreak !== -1) {
                 thinkingFirstLine = text.slice(0, firstBreak);
@@ -450,28 +468,28 @@ program
           },
           onTextDelta: (text) => {
             if (spinnerTimer) {
-              // spinner 仍在运行 → 正常停止
               stopSpinner();
             } else if (needReprefix || spinnerDisabled) {
-              // spinner 已被用户打断 → 在新行重新建立前缀
               stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
               needReprefix = false;
-              spinnerDisabled = false; // 允许后续 thinking 阶段重启 spinner
+              spinnerDisabled = false;
             }
-            // 折叠模式下收到正式输出时，输出思考首行摘要
             if (!showThinking && thinkingFirstLine) {
               stdout.write(`\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}`);
               thinkingFirstLine = "";
             }
-            stdout.write(text);
+            renderer.writeStreamText(text);
+            pushStatus();
           },
           onToolCall: (name) => {
             stopSpinner();
-            stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`);
+            renderer.writeContentLine(`  ${chalk.blue(`🔧 ${name}`)}`);
+            pushStatus({ toolName: name });
           },
           onToolResult: (_name, success, summary) => {
             const icon = success ? chalk.green("✓") : chalk.red("✗");
-            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+            renderer.writeContentLine(`  ${icon} ${summary.slice(0, 80)}`);
+            pushStatus();
           },
         };
 
@@ -484,6 +502,9 @@ program
 
         stopSpinner();
 
+        if (statusDebounce) { clearTimeout(statusDebounce); statusDebounce = null; }
+        renderer.clearStatusLine();
+
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           stdout.write(`\n${chalk.yellow(short)}`);
@@ -493,7 +514,7 @@ program
         }
 
         stdout.write(
-          chalk.gray(`\n[迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}]\n`)
+          chalk.gray(`\n[迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}]\n`)
         );
       } catch (err) {
         stopSpinner();
