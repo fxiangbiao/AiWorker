@@ -6,12 +6,14 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stdin, stdout } from "node:process";
+import chalk from "chalk";
 import type { HookHandler } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
 import { auditLogger } from "../core/audit-logger.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { ModelRouter } from "../core/model-router.js";
+import { skillEvolution } from "../core/skill-evolution.js";
 
 export interface HandlerDependencies {
   dangerDetector?: DangerDetector;
@@ -355,58 +357,48 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
  * Hook 事件: onTaskComplete
  */
 export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHandler {
+  // Cooldown: track last eval time per agent to limit to 3/hour
+  const cooldownTrack = new Map<string, number>();
+
   return async (ctx) => {
     if (ctx.event !== "onTaskComplete") return;
 
     const iterations = ctx.data.iterations as number ?? 0;
     const toolCalls = ctx.data.toolCallsExecuted as number ?? 0;
+    const truncated = ctx.data.truncated as boolean ?? false;
 
-    // 复杂度阈值：迭代 > 5 或工具调用 > 8
-    if (iterations < 5 && toolCalls < 8) return;
+    // Threshold: iter >= 3 AND toolCalls >= 3 AND task succeeded (not truncated, not error)
+    if (iterations < 3 || toolCalls < 3 || truncated) return;
 
-    const skillName = `auto-${ctx.agentId}-${Date.now().toString(36)}`;
-    const body = [
-      "---",
-      `name: ${skillName}`,
-      `version: "1.0"`,
-      `triggers:` ,
-      `  - "${ctx.agentId}"`,
-      `expert: ${ctx.agentId}`,
-      "tools_required: []",
-      "---",
-      "",
-      `## 自动沉淀技能`,
-      "",
-      `由 ${ctx.agentId} 智能体在复杂任务中自动生成。`,
-      `迭代次数: ${iterations}`,
-      `工具调用: ${toolCalls}`,
-      "",
-      `会话: ${ctx.sessionId}`,
-      "",
-      "### 指令",
-      "",
-      "根据上下文复现此任务的执行流程。",
-      "",
-    ].join("\n");
+    // Cooldown: same agent max 3 evaluations per hour
+    const now = Date.now();
+    const last = cooldownTrack.get(ctx.agentId);
+    if (last && (now - last) < 20 * 60 * 1000) return; // 20 min cooldown for simplicity
+    cooldownTrack.set(ctx.agentId, now);
 
     try {
-      const pendingDir = resolve(process.cwd(), "skills", "pending");
-      mkdirSync(pendingDir, { recursive: true });
-      writeFileSync(resolve(pendingDir, `${skillName}.md`), body, "utf-8");
+      const result = skillEvolution.evolve(
+        ctx.agentId,
+        ctx.sessionId,
+        iterations,
+        toolCalls
+      );
 
-      try {
-        auditLogger.log({
-          timestamp: Date.now(),
-          agentId: ctx.agentId,
-          sessionId: ctx.sessionId,
-          action: "evaluate_skill_creation",
-          target: skillName,
-          result: "success",
-          detail: `iterations=${iterations}, toolCalls=${toolCalls}`,
-        });
-      } catch { /* ignore */ }
+      if (result && result.registered) {
+        stdout.write(`\n${chalk.green(`✓ 新技能沉淀: ${result.name} (${result.score}★)`)}\n`);
+      }
+
+      auditLogger.log({
+        timestamp: Date.now(),
+        agentId: ctx.agentId,
+        sessionId: ctx.sessionId,
+        action: "evaluate_skill_creation",
+        target: result?.name ?? "unknown",
+        result: "success",
+        detail: `score=${result?.score ?? 0}, registered=${result?.registered ?? false}, iterations=${iterations}, toolCalls=${toolCalls}`,
+      });
     } catch {
-      // 静默失败
+      // 静默失败，不阻塞主流程
     }
   };
 }

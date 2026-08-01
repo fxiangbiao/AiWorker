@@ -134,6 +134,20 @@ class SkillRegistry {
   clear(): void {
     this.skills = [];
   }
+
+  /** 热加载单个 SKILL.md 文件 */
+  reloadSkill(filePath: string): SkillDef | null {
+    try {
+      const skill = this.parseSkillFile(filePath);
+      // Remove existing entry with the same name
+      const idx = this.skills.findIndex((s) => s.name === skill.name);
+      if (idx >= 0) this.skills.splice(idx, 1);
+      this.skills.push(skill);
+      return skill;
+    } catch {
+      return null;
+    }
+  }
 }
 
 export const skillRegistry = SkillRegistry.getInstance();
