@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AiWorker</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#1a1b26;--surface:#24283b;--border:#3b4261;--text:#c0caf5;
+  --dim:#565f89;--cyan:#7dcfff;--green:#9ece6a;--yellow:#e0af68;
+  --red:#f7768e;--blue:#7aa2f7;--purple:#bb9af7;--orange:#ff9e64;
+  --input-bg:#1f2335;--hover:#3b4261;--font:'JetBrains Mono',Consolas,monospace;
+  --sidebar-w:240px;--right-w:260px;
+}
+html,body{height:100%;overflow:hidden}
+body{font-family:var(--font);font-size:13px;background:var(--bg);color:var(--text);display:flex;flex-direction:column}
+a{color:var(--cyan)}
+/* top bar */
+#topbar{height:40px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 12px;gap:12px;flex-shrink:0}
+#topbar .logo{color:var(--cyan);font-weight:700;font-size:14px;white-space:nowrap}
+#topbar .modes{display:flex;gap:2px;background:var(--bg);border-radius:6px;padding:2px}
+#topbar .modes button{padding:4px 12px;border:none;border-radius:4px;background:transparent;color:var(--dim);font-family:var(--font);font-size:12px;cursor:pointer;transition:all .15s}
+#topbar .modes button.active{background:var(--surface);color:var(--text)}
+#topbar .modes button:hover{color:var(--text)}
+#topbar select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-family:var(--font);font-size:12px;cursor:pointer}
+#topbar .spacer{flex:1}
+#topbar .conn-dot{width:8px;height:8px;border-radius:50%}
+#topbar .conn-dot.online{background:var(--green)}
+#topbar .conn-dot.offline{background:var(--red)}
+/* layout */
+#main{display:flex;flex:1;overflow:hidden}
+/* sidebar */
+#sidebar{width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+#sidebar .s-top{padding:8px}
+#sidebar .s-top button{width:100%;padding:6px;background:var(--cyan);color:var(--bg);border:none;border-radius:4px;font-family:var(--font);font-size:12px;font-weight:700;cursor:pointer}
+#sidebar .s-list{flex:1;overflow-y:auto;padding:0 8px}
+#sidebar .s-item{padding:8px;border-radius:4px;cursor:pointer;margin-bottom:2px;border-left:2px solid transparent}
+#sidebar .s-item:hover{background:var(--hover)}
+#sidebar .s-item.active{border-left-color:var(--cyan);background:var(--bg)}
+#sidebar .s-item .s-title{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+#sidebar .s-item .s-meta{color:var(--dim);font-size:11px}
+#sidebar .s-bottom{padding:8px;border-top:1px solid var(--border);font-size:11px;color:var(--dim);display:flex;flex-direction:column;gap:2px}
+/* main panel */
+#main-panel{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#msg-list{flex:1;overflow-y:auto;padding:12px}
+#msg-list .msg{margin-bottom:12px}
+/* user msg */
+#msg-list .msg.user{text-align:right}
+#msg-list .msg.user .role-label{color:var(--dim);font-size:11px;margin-bottom:2px}
+#msg-list .msg.user .content{display:inline-block;text-align:left;max-width:80%;background:var(--surface);padding:8px 12px;border-radius:6px;border:1px solid var(--border)}
+/* agent msg */
+#msg-list .msg.agent .role-label{color:var(--blue);font-size:12px;font-weight:700;margin-bottom:4px}
+#msg-list .msg.agent .content{padding-left:16px;line-height:1.6}
+#msg-list .msg.agent .content p{margin:4px 0}
+#msg-list .msg.agent .content pre{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:10px;overflow-x:auto;font-size:12px;position:relative}
+#msg-list .msg.agent .content pre .copy-btn{position:absolute;top:4px;right:4px;background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;padding:2px 6px;font-family:var(--font);font-size:11px;cursor:pointer}
+#msg-list .msg.agent .content code{font-family:var(--font);font-size:12px}
+#msg-list .msg.agent .content :not(pre)>code{background:var(--bg);padding:1px 4px;border-radius:2px}
+#msg-list .msg.agent .content table{border-collapse:collapse;width:100%}
+#msg-list .msg.agent .content td,.msg.agent .content th{border:1px solid var(--border);padding:4px 8px}
+/* thinking block */
+.think-block{margin:4px 0;border:1px solid var(--border);border-left:2px solid var(--purple);border-radius:0 4px 4px 0;overflow:hidden}
+.think-block .think-toggle{background:var(--surface);padding:4px 10px;font-size:11px;color:var(--purple);cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px}
+.think-block .think-toggle .arrow{transition:transform .15s;font-size:10px}
+.think-block.open .think-toggle .arrow{transform:rotate(90deg)}
+.think-block .think-body{display:none;padding:6px 10px;font-size:12px;color:var(--dim);background:rgba(187,154,247,.05);max-height:200px;overflow-y:auto;white-space:pre-wrap}
+.think-block.open .think-body{display:block}
+/* tool card */
+.tool-card{margin:4px 0;border:1px solid var(--border);border-left:2px solid var(--blue);border-radius:0 4px 4px 0;padding:6px 10px;font-size:12px;background:var(--bg)}
+.tool-card.executing{border-left-color:var(--blue);animation:pulse 1.5s ease-in-out infinite}
+.tool-card.success{border-left-color:var(--green)}
+.tool-card.error{border-left-color:var(--red)}
+.tool-card .tc-header{display:flex;align-items:center;gap:6px;color:var(--blue)}
+.tool-card .tc-header .tc-icon{font-size:14px}
+.tool-card .tc-args{color:var(--dim);margin-top:2px;font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:60px;overflow-y:auto}
+.tool-card .tc-result{margin-top:4px;font-size:11px}
+.tool-card .tc-result .diff-link{cursor:pointer;color:var(--cyan);margin-top:2px;display:inline-block}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+/* input area */
+#input-area{padding:8px 12px;border-top:1px solid var(--border);background:var(--surface)}
+#input-area .input-row{display:flex;align-items:flex-end;gap:6px;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px}
+#input-area .input-row .prompt{color:var(--cyan);font-weight:700;font-size:13px;white-space:nowrap;padding-bottom:2px}
+#input-area textarea{flex:1;background:transparent;border:none;color:var(--text);font-family:var(--font);font-size:13px;resize:none;outline:none;min-height:24px;max-height:120px;line-height:1.5;padding:0}
+#input-area textarea::placeholder{color:var(--dim)}
+#input-area .send-btn{background:var(--cyan);color:var(--bg);border:none;border-radius:4px;padding:4px 10px;font-family:var(--font);font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
+#input-area .send-btn:disabled{opacity:.4;cursor:default}
+/* right panel */
+#right-panel{width:var(--right-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;padding:8px;font-size:11px}
+#right-panel .rp-section{margin-bottom:12px}
+#right-panel .rp-title{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
+#right-panel .diff-file{padding:4px 6px;border-radius:3px;margin-bottom:2px;display:flex;align-items:center;gap:4px}
+#right-panel .diff-file .df-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#right-panel .diff-file .df-add{color:var(--green)}
+#right-panel .diff-file .df-rem{color:var(--red)}
+/* status bar */
+#statusbar{height:28px;background:var(--surface);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 12px;gap:16px;font-size:11px;color:var(--dim);flex-shrink:0}
+#statusbar .sb-warn{color:var(--orange)}
+/* responsive */
+@media(max-width:1024px){#right-panel{display:none}}
+@media(max-width:768px){#sidebar{display:none}}
+/* error */
+.error-banner{background:rgba(247,118,142,.1);border:1px solid var(--red);border-radius:4px;padding:8px 12px;margin-bottom:8px;color:var(--red);font-size:12px}
+/* empty state */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--dim);gap:12px}
+.empty-state .logo-big{font-size:48px;opacity:.3}
+/* loading dots */
+.dot-pulse::after{content:'';animation:dots 1.5s steps(4,end) infinite}
+@keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}100%{content:''}}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <span class="logo">AiWorker</span>
+  <div class="modes" id="mode-tabs">
+    <button data-mode="ask">ask</button>
+    <button data-mode="plan">plan</button>
+    <button data-mode="craft">craft</button>
+  </div>
+  <select id="agent-select"></select>
+  <div class="spacer"></div>
+  <div class="conn-dot offline" id="conn-dot" title="disconnected"></div>
+</div>
+<div id="main">
+  <div id="sidebar">
+    <div class="s-top"><button id="new-chat-btn">+ 新对话</button></div>
+    <div class="s-list" id="chat-list"></div>
+    <div class="s-bottom" id="sidebar-info">
+      <span>model: --</span>
+      <span>tokens: 0/8000</span>
+      <span>cost: ¥0.0000</span>
+    </div>
+  </div>
+  <div id="main-panel">
+    <div id="msg-list">
+      <div class="empty-state">
+        <div class="logo-big">&#9632;</div>
+        <div>AiWorker — 个人 AI Agent 助手</div>
+      </div>
+    </div>
+    <div id="input-area">
+      <div class="input-row">
+        <span class="prompt">aiworker&gt;</span>
+        <textarea id="inp" rows="1" placeholder="输入消息, Enter 发送, Shift+Enter 换行..." disabled></textarea>
+        <button class="send-btn" id="send-btn" disabled>&#9654;</button>
+      </div>
+    </div>
+  </div>
+  <div id="right-panel">
+    <div class="rp-section"><div class="rp-title">&#9654; 文件变更</div><div id="diff-list"></div></div>
+    <div class="rp-section"><div class="rp-title">&#9670; 激活技能</div><div id="skill-list"></div></div>
+  </div>
+</div>
+<div id="statusbar">
+  <span id="sb-model">model: --</span>
+  <span id="sb-tokens">tokens: 0/8000</span>
+  <span id="sb-cost">cost: ¥0.0000</span>
+  <span id="sb-agent">agent: default</span>
+</div>
+
+<script>
+marked.setOptions({breaks:true,gfm:true});
+
+const $=(s)=>document.querySelector(s);
+const $$=(s)=>document.querySelectorAll(s);
+
+const STATE={mode:'craft',agentId:'default',chatId:null,chats:[],messages:[],sending:false,abort:null,diffs:[]};
+const PRICING={prompt:1,completion:2};
+
+function loadChats(){try{const d=localStorage.getItem('aiworker_chats');if(d)STATE.chats=JSON.parse(d)}catch(e){STATE.chats=[]}}
+function saveChats(){localStorage.setItem('aiworker_chats',JSON.stringify(STATE.chats))}
+function loadMsgs(id){try{const d=localStorage.getItem('aiworker_msgs_'+id);return d?JSON.parse(d):[]}catch(e){return[]}}
+function saveMsgs(id,msgs){if(id)localStorage.setItem('aiworker_msgs_'+id,JSON.stringify(msgs))}
+function loadSettings(){try{const d=localStorage.getItem('aiworker_settings');if(d){const s=JSON.parse(d);if(s.mode)STATE.mode=s.mode;if(s.agentId)STATE.agentId=s.agentId}}catch(e){}}
+function saveSettings(){localStorage.setItem('aiworker_settings',JSON.stringify({mode:STATE.mode,agentId:STATE.agentId}))}
+
+function updateStatusBar(){
+  const used=totalTokens||0;
+  $('#sb-tokens').textContent=`tokens: ${fmtN(used)}/8000`;
+  const pc=used*(PRICING.prompt+PRICING.completion)/1e6;
+  $('#sb-cost').textContent=`cost: ¥${pc.toFixed(4)}`;
+  $('#sb-model').textContent=`model: ${currentModel||'--'}`;
+  $('#sidebar-info').innerHTML=`<span>model: ${currentModel||'--'}</span><span>tokens: ${fmtN(used)}/8000</span><span>cost: ¥${pc.toFixed(4)}</span>`;
+}
+function fmtN(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
+
+let totalTokens=0,currentModel='';
+
+function renderChatList(){
+  const el=$('#chat-list');
+  el.innerHTML=STATE.chats.map(c=>{
+    const active=c.id===STATE.chatId?'active':'';
+    return `<div class="s-item ${active}" data-cid="${c.id}"><div class="s-title">${esc(c.title)}</div><div class="s-meta">${c.turns||0} 轮 &middot; ${c.agentId||'default'}</div></div>`;
+  }).join('');
+  el.querySelectorAll('.s-item').forEach(el=>el.addEventListener('click',()=>switchChat(el.dataset.cid)));
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+function switchChat(id){
+  if(STATE.abort){STATE.abort.abort();STATE.abort=null}
+  STATE.chatId=id;STATE.messages=loadMsgs(id);STATE.diffs=[];
+  renderAll();renderChatList();
+}
+
+function newChat(){
+  if(STATE.abort){STATE.abort.abort();STATE.abort=null}
+  const id='c'+Date.now().toString(36);
+  const chat={id,title:'新对话',agentId:STATE.agentId,turns:0,createdAt:Date.now()};
+  STATE.chats.unshift(chat);STATE.chatId=id;STATE.messages=[];STATE.diffs=[];
+  saveChats();renderAll();renderChatList();
+}
+
+function loadAgents(){
+  fetch('/agents').then(r=>r.json()).then(data=>{
+    const sel=$('#agent-select');
+    sel.innerHTML=(data.agents||[]).map(a=>`<option value="${a.id}" ${a.id===STATE.agentId?'selected':''}>${esc(a.name||a.id)}</option>`).join('');
+    sel.addEventListener('change',()=>{STATE.agentId=sel.value;saveSettings()});
+    if(!sel.innerHTML){sel.innerHTML='<option value="default">default</option>'}
+  }).catch(()=>{});
+}
+
+function xfetch(url,opts){return fetch(url,opts).then(r=>{if(!r.ok)throw new Error(r.statusText);return r})}
+
+function updateStatus(){
+  xfetch('/status').then(r=>r.json()).then(d=>{
+    totalTokens=d.tokenUsage?.total||0;currentModel=d.model;
+    updateStatusBar();
+    const dot=$('#conn-dot');dot.className='conn-dot online';dot.title='connected';
+  }).catch(()=>{
+    $('#conn-dot').className='conn-dot offline';$('#conn-dot').title='disconnected';
+  });
+}
+
+function initModes(){
+  $$('#mode-tabs button').forEach(b=>{
+    if(b.dataset.mode===STATE.mode)b.classList.add('active');
+    b.addEventListener('click',()=>{
+      STATE.mode=b.dataset.mode;saveSettings();
+      $$('#mode-tabs button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+    });
+  });
+}
+
+function setInputState(sending){
+  STATE.sending=sending;
+  $('#inp').disabled=sending; $('#send-btn').disabled=sending;
+  if(sending){$('#inp').placeholder='AiWorker 正在处理...'}
+  else{$('#inp').placeholder='输入消息, Enter 发送, Shift+Enter 换行...';$('#inp').focus()}
+}
+
+function scrollBottom(){
+  const el=$('#msg-list');el.scrollTop=el.scrollHeight;
+}
+
+function renderMessages(){
+  const el=$('#msg-list');
+  if(STATE.messages.length===0){
+    el.innerHTML=`<div class="empty-state"><div class="logo-big">&#9632;</div><div>AiWorker — 个人 AI Agent 助手</div></div>`;
+    return;
+  }
+  let html='';
+  for(const m of STATE.messages){
+    if(m.role==='user'){
+      html+=`<div class="msg user"><div class="role-label">You</div><div class="content">${esc(m.content)}</div></div>`;
+    }else if(m.role==='assistant'||m.role==='agent'){
+      html+=`<div class="msg agent"><div class="role-label">&#x1F916; ${esc(m.agentId||'agent')}</div><div class="content">${renderMarkdown(m.content||'')}</div></div>`;
+    }else if(m.role==='tool_call'){
+      html+=renderToolCard(m);
+    }else if(m.role==='tool_result'){
+      // tool_results are rendered inline with tool_calls
+    }else if(m.role==='thinking'){
+      html+=renderThinkingBlock(m.content||'',m.steps||0,true);
+    }else if(m.role==='system'){
+      // skip
+    }
+  }
+  el.innerHTML=html;
+  scrollBottom();
+}
+
+function renderMarkdown(text){
+  try{return marked.parse(text)}catch(e){return esc(text)}
+}
+
+function renderToolCard(m){
+  const icon='&#x2699;';const cls='success';
+  let args='';try{args=typeof m.args==='string'?m.args:JSON.stringify(m.args,null,2)}catch(e){}
+  let result='';
+  if(m.result){result=`<div class="tc-result"><span style="color:var(--green)">&#10003; 执行成功`+(m.duration?` &middot; ${m.duration}ms`:``)+`</span></div>`}
+  if(m.resultPreview){result+=`<div class="tc-result">${esc(m.resultPreview.slice(0,200))}</div>`}
+  if(m.filePath){
+    result+=`<div class="tc-result"><span class="diff-link" data-file="${esc(m.filePath)}">&#9654; ${esc(m.filePath)}</span></div>`;
+  }
+  return `<div class="tool-card ${cls}"><div class="tc-header"><span class="tc-icon">${icon}</span><span>${esc(m.name||'tool')}</span></div><div class="tc-args">${esc(args)}</div>${result}</div>`;
+}
+
+function renderThinkingBlock(text,steps,open){
+  return `<div class="think-block ${open?'open':''}"><div class="think-toggle"><span class="arrow">&#9654;</span>&#x1F4AD; 思考`+(steps?` (${steps} 步)`:``)+`</div><div class="think-body">${esc(text)}</div></div>`;
+}
+
+function renderDiffs(){
+  const el=$('#diff-list');
+  if(STATE.diffs.length===0){el.innerHTML='<div style="color:var(--dim)">暂无变更</div>';return}
+  el.innerHTML=STATE.diffs.map(d=>{
+    const name=d.filePath.split(/[\\/]/).pop();
+    return `<div class="diff-file"><span class="df-name">${esc(name)}</span><span class="df-add">+${d.added||0}</span><span class="df-rem">−${d.removed||0}</span></div>`;
+  }).join('');
+}
+
+function renderAll(){
+  renderMessages();renderDiffs();updateStatusBar();
+}
+
+// SSE streaming
+function addMsg(msg){STATE.messages.push(msg)}
+function updateLastMsg(updater){
+  if(STATE.messages.length===0)return;
+  const last=STATE.messages[STATE.messages.length-1];
+  updater(last);
+}
+
+function sendMessage(){
+  const inp=$('#inp');const text=inp.value.trim();if(!text||STATE.sending)return;
+  inp.value='';inp.style.height='auto';
+  // ensure chat exists
+  if(!STATE.chatId)newChat();
+  // add user msg
+  addMsg({role:'user',content:text});
+  // update chat title from first msg
+  const chat=STATE.chats.find(c=>c.id===STATE.chatId);
+  if(chat&&(!chat.turns||chat.turns===0)){chat.title=text.slice(0,50);chat.turns=1}
+  else if(chat){chat.turns=(chat.turns||0)+1}
+  saveChats();renderAll();renderChatList();scrollBottom();
+  // prepare SSE
+  setInputState(true);
+  const abort=new AbortController();STATE.abort=abort;
+  const agentMsg={role:'assistant',agentId:STATE.agentId,content:''};
+  addMsg(agentMsg);renderAll();scrollBottom();
+  let toolCallsCount=0;
+  fetch('/chat',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message:text,mode:STATE.mode,agentId:STATE.agentId}),
+    signal:abort.signal
+  }).then(async resp=>{
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    const reader=resp.body.getReader();const dec=new TextDecoder();let buf='';
+    while(true){
+      const{done,value}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\n');buf=lines.pop()||'';
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;
+        try{const data=JSON.parse(line.slice(6));handleSSE(data)}catch(e){}
+      }
+    }
+  }).catch(e=>{
+    if(e.name!=='AbortError'){
+      const errDiv=document.createElement('div');
+      errDiv.className='error-banner';errDiv.textContent='错误: '+e.message;
+      $('#msg-list').appendChild(errDiv);scrollBottom();
+    }
+  }).finally(()=>{
+    setInputState(false);STATE.abort=null;
+    saveMsgs(STATE.chatId,STATE.messages);
+    updateStatus();
+  });
+}
+
+function handleSSE(data){
+  switch(data.type){
+    case 'thinking':{
+      let last=STATE.messages.filter(m=>m.role==='thinking').pop();
+      if(!last){last={role:'thinking',content:'',steps:0};addMsg(last)}
+      last.content+=data.content||'';last.steps=(last.steps||0)+1;
+      renderAll();scrollBottom();break;
+    }
+    case 'text':{
+      const last=STATE.messages[STATE.messages.length-1];
+      if(last&&last.role==='assistant'){last.content+=data.content||'';renderAll();scrollBottom()}
+      break;
+    }
+    case 'tool_call':{
+      addMsg({role:'tool_call',name:data.name,args:data.args,id:data.id,duration:0});
+      renderAll();scrollBottom();break;
+    }
+    case 'tool_result':{
+      const lastTc=STATE.messages.filter(m=>m.role==='tool_call').pop();
+      if(lastTc){lastTc.result=true;lastTc.duration=data.duration;lastTc.resultPreview=data.summary}
+      if(data.filePath){STATE.diffs.push({filePath:data.filePath,added:data.added||0,removed:data.removed||0})}
+      renderAll();scrollBottom();break;
+    }
+    case 'done':{
+      if(data.tokenUsage){totalTokens=data.tokenUsage.total||0;currentModel=data.model}
+      updateStatusBar();break;
+    }
+    case 'error':{
+      const errDiv=document.createElement('div');
+      errDiv.className='error-banner';errDiv.textContent=data.message;
+      $('#msg-list').appendChild(errDiv);scrollBottom();break;
+    }
+  }
+}
+
+// initialization
+function init(){
+  loadSettings();loadChats();
+  if(STATE.chats.length>0){STATE.chatId=STATE.chats[0].id;STATE.messages=loadMsgs(STATE.chatId)}
+  initModes();loadAgents();renderChatList();renderAll();updateStatus();
+  // input handling
+  const inp=$('#inp');
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}
+  });
+  inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px'});
+  $('#send-btn').addEventListener('click',sendMessage);
+  $('#new-chat-btn').addEventListener('click',newChat);
+  // thinking toggle delegation
+  $('#msg-list').addEventListener('click',e=>{
+    const toggle=e.target.closest('.think-toggle');
+    if(toggle){const block=toggle.closest('.think-block');block.classList.toggle('open')}
+    const cp=e.target.closest('.copy-btn');
+    if(cp){const pre=cp.closest('pre');if(pre)navigator.clipboard.writeText(pre.textContent.replace(/复制$/,''))}
+  });
+  setInputState(false);inp.focus();
+  setInterval(updateStatus,30000);
+}
+
+init();
+</script>
+</body>
+</html>

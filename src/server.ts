@@ -4,6 +4,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
@@ -24,7 +27,11 @@ interface ServerDeps {
   workingDir: string;
   projectDir: string;
   createAgent: (agentId: string) => DelegateAgent | undefined;
+  getAgentList: () => { id: string; name: string }[];
 }
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const webDir = resolve(__dirname, "..", "web");
 
 interface ChatRequest {
   message: string;
@@ -76,6 +83,23 @@ export function startServer(deps: ServerDeps, port: number) {
         "Access-Control-Allow-Headers": "Content-Type",
       });
       res.end();
+      return;
+    }
+
+    if (url === "/" && req.method === "GET") {
+      try {
+        const html = readFileSync(resolve(webDir, "index.html"), "utf-8");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+        res.end(html);
+      } catch {
+        res.writeHead(404);
+        res.end("index.html not found");
+      }
+      return;
+    }
+
+    if (url === "/agents" && req.method === "GET") {
+      sendJSON(res, 200, { agents: deps.getAgentList() });
       return;
     }
 
@@ -183,7 +207,7 @@ export function startServer(deps: ServerDeps, port: number) {
 
   server.listen(port, () => {
     stdout.write(chalk.green(`\n✓ HTTP Server 已启动: http://localhost:${port}\n`));
-    stdout.write(chalk.gray(`  端点: POST /chat | GET /status | GET /tools\n`));
+    stdout.write(chalk.gray(`  端点: GET / | POST /chat | GET /status | GET /tools | GET /agents\n`));
   });
 
   return server;
