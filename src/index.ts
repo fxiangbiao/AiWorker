@@ -442,9 +442,11 @@ program
 
       // 思考阶段：在 spinner 行用内联状态覆盖
       let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+      let liveStatusActive = false;
       const startLiveStatus = () => {
+        liveStatusActive = true;
         thinkingTimer = setInterval(() => {
-          if (spinnerTimer) return; // spinner 在用就不要覆盖
+          if (spinnerTimer) return;
           renderer.updateLiveStatus({
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
@@ -457,8 +459,10 @@ program
         }, 500);
       };
       const stopLiveStatus = () => {
+        if (!liveStatusActive) return;
+        liveStatusActive = false;
         if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
-        if (!spinnerTimer) renderer.endLiveStatus();
+        renderer.endLiveStatus();
       };
 
       startSpinner();
