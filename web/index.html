@@ -218,9 +218,8 @@ function renderMessages(){
   if(STATE.messages.length===0){el.innerHTML=`<div class="empty-state"><div class="mark-big">&#9670;</div><h2>AiWorker</h2><p>个人 AI Agent 助手 &mdash; 多智能体协作 + 流式工具执行</p></div>`;return}
   let html='';for(const m of STATE.messages){
     if(m.role==='user')html+=`<div class="msg user"><div class="content">${esc(m.content)}</div></div>`;
-    else if(m.role==='assistant'||m.role==='agent')html+=`<div class="msg agent"><div class="content">${renderMarkdown(m.content||'')}</div></div>`;
+    else if(m.role==='assistant'||m.role==='agent')html+=(m.thinking?renderThinkingBlock(m.thinking,m.thinkingSteps,true):'')+`<div class="msg agent"><div class="content">${renderMarkdown(m.content||'')}</div></div>`;
     else if(m.role==='tool_call')html+=renderToolCard(m);
-    else if(m.role==='thinking')html+=renderThinkingBlock(m.content||'',m.steps||0,true);
   }
   el.innerHTML=html;scrollBottom();
 }
@@ -244,8 +243,8 @@ function sendMessage(){
 }
 function handleSSE(data){
   switch(data.type){
-    case 'thinking':{let last=STATE.messages.filter(m=>m.role==='thinking').pop();if(!last){last={role:'thinking',content:'',steps:0};addMsg(last)}last.content+=data.content||'';last.steps=(last.steps||0)+1;renderAll();scrollBottom();break}
-    case 'text':{const assistant=STATE.messages.filter(m=>m.role==='assistant').pop();if(assistant){assistant.content+=data.content||'';renderAll();scrollBottom()}break}
+    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;renderAll();scrollBottom();break}
+    case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
     case 'tool_call':{addMsg({role:'tool_call',name:data.name,args:data.args,id:data.id});renderAll();scrollBottom();break}
     case 'tool_result':{const tc=STATE.messages.filter(m=>m.role==='tool_call').pop();if(tc){tc.result=true;tc.duration=data.duration;tc.resultPreview=data.summary;if(!data.success)tc.error=data.summary}if(data.filePath)STATE.diffs.push({filePath:data.filePath,added:data.added||0,removed:data.removed||0});renderAll();scrollBottom();break}
     case 'done':{if(data.tokenUsage){totalTokens=data.tokenUsage.total||0;currentModel=data.model}updateStatusBar();break}
