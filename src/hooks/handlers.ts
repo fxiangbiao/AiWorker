@@ -16,6 +16,7 @@ import { auditLogger } from "../core/audit-logger.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { ModelRouter } from "../core/model-router.js";
 import { skillEvolution } from "../core/skill-evolution.js";
+import type { SkillEvolutionResult } from "../core/skill-evolution.js";
 
 export interface HandlerDependencies {
   dangerDetector?: DangerDetector;
@@ -366,8 +367,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
  * 当任务复杂度超过阈值时自动创建 SKILL.md 候选
  * Hook 事件: onTaskComplete
  */
-export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHandler {
-  // Cooldown: track last eval time per agent to limit to 3/hour
+export function createEvaluateSkillCreation(deps: HandlerDependencies): HookHandler {
   const cooldownTrack = new Map<string, number>();
 
   return async (ctx) => {
@@ -377,17 +377,25 @@ export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHan
     const toolCalls = (ctx.data.toolCallsExecuted as number) ?? 0;
     const truncated = (ctx.data.truncated as boolean) ?? false;
 
-    // Threshold: iter >= 3 AND toolCalls >= 3 AND task succeeded (not truncated, not error)
     if (iterations < 3 || toolCalls < 3 || truncated) return;
 
-    // Cooldown: same agent max 3 evaluations per hour
     const now = Date.now();
     const last = cooldownTrack.get(ctx.agentId);
-    if (last && now - last < 20 * 60 * 1000) return; // 20 min cooldown for simplicity
+    if (last && now - last < 20 * 60 * 1000) return;
     cooldownTrack.set(ctx.agentId, now);
 
+    const modelRouter = deps.modelRouter;
+    const messages = ctx.data.messages as Message[] | undefined;
+
     try {
-      const result = skillEvolution.evolve(ctx.agentId, ctx.sessionId, iterations, toolCalls);
+      let result: SkillEvolutionResult | null = null;
+
+      if (modelRouter && messages && messages.length > 0) {
+        result = await skillEvolution.evolveV2(ctx.agentId, messages, modelRouter);
+      } else {
+        // Fallback to template-based generation
+        result = skillEvolution.evolve(ctx.agentId, ctx.sessionId, iterations, toolCalls);
+      }
 
       if (result && result.registered) {
         stdout.write(`\n${chalk.green(`✓ 新技能沉淀: ${result.name} (${result.score}★)`)}\n`);

@@ -1,11 +1,13 @@
 /**
- * SkillEvolution — 技能自动沉淀引擎
- * 流水线: 生成 SKILL.md → 验证 → 评分 → 注册
+ * SkillEvolution — 技能自动沉淀引擎 (M2.1)
+ * 流水线: LLM 知识提取 → 去重 → 验证 → 评分 → 注册
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { skillRegistry } from "./skill-registry.js";
+import type { Message } from "../types.js";
+import type { ModelRouter } from "./model-router.js";
 
 export interface ValidationResult {
   valid: boolean;
@@ -19,10 +21,54 @@ export interface SkillEvolutionResult {
   path: string;
 }
 
+const M2_PROMPT = `你是一位知识沉淀专家。分析以下用户与AI助手的对话，提取可复用的专业知识技能。
+
+# 指令
+1. 识别对话中的核心问题领域
+2. 提取可复用的解决方案模式、关键步骤、常见陷阱
+3. 生成3-5个正则触发词（帮助后续类似问题自动激活此技能）
+4. 确定最合适的智能体类型（从以下选择：default/coding/research/data-analysis/financial/game-dev/product-ops）
+5. 确定需要的工具列表
+
+# 输出格式（严格遵循）
+---
+name: <英文技能名，kebab-case>
+version: "1.0"
+triggers:
+  - "<正则触发词1>"
+  - "<正则触发词2>"
+  - "<正则触发词3>"
+expert: <agent-id>
+tools_required:
+  - <工具名>
+  - <工具名>
+---
+
+# <中文技能标题>
+
+## 问题域
+<1-2句话描述此技能适用的场景和问题类型>
+
+## 解决方案
+<核心方法、关键步骤（3-5条）>
+
+## 常见陷阱
+<1-3条常见错误或注意事项>
+
+## 示例
+<如有代码示例则包含，否则省略>
+
+# 注意
+- 输出仅包含上述格式内容，不要添加任何额外说明
+- 如果对话中没有可复用的知识，忽略
+
+# 已有技能（避免重复）
+{EXISTING_SKILLS}
+
+# 对话（已截断关键部分）
+{CONVERSATION}`;
+
 export class SkillEvolution {
-  /**
-   * 验证 YAML frontmatter 和相关字段
-   */
   validate(filePath: string): ValidationResult {
     const errors: string[] = [];
     try {
@@ -38,7 +84,6 @@ export class SkillEvolution {
       if (!content.includes("triggers:")) errors.push("缺少 triggers 字段");
       if (!content.includes("expert:")) errors.push("缺少 expert 字段");
 
-      // Validate triggers are valid regex
       const trigMatch = content.match(/^triggers:\s*\n((?:\s*-\s+.+\n?)*)/m);
       if (trigMatch) {
         const triggers = trigMatch[1]
@@ -59,30 +104,15 @@ export class SkillEvolution {
     return { valid: errors.length === 0, errors };
   }
 
-  /**
-   * LLM 评分 (1-5 星) — 返回占位分数，实际评分由调用方通过 LLM 完成
-   * 此处返回保守默认值 3（凑合可用）
-   */
-  score(_filePath: string): number {
-    // 在不引入额外 LLM 调用的前提下，基于文件质量打分
-    // 后续 M2 可接入 LLM 评分（需传入 modelRouter）
-    try {
-      const raw = readFileSync(_filePath, "utf-8");
-      const body = raw.replace(/^---[\s\S]*?---\n?/, "").trim();
-      let score = 3; // default
-      if (body.length > 800) score += 1; // 详细说明
-      if (body.length > 1600) score += 0; // 过长不加分
-      if (body.includes("```")) score += 1; // 含代码示例
-      // Cap at 5
-      return Math.min(score, 5);
-    } catch {
-      return 3;
-    }
+  scoreSkill(raw: string): number {
+    const body = raw.replace(/^---[\s\S]*?---\n?/, "").trim();
+    let score = 2;
+    if (body.length > 400) score += 1;
+    if (body.length > 1000) score += 1;
+    if (body.includes("```")) score += 1;
+    return Math.min(score, 5);
   }
 
-  /**
-   * 注册技能: pending/ → skills/{expert}/
-   */
   register(filePath: string, expertId: string): boolean {
     try {
       const raw = readFileSync(filePath, "utf-8");
@@ -105,9 +135,119 @@ export class SkillEvolution {
     }
   }
 
-  /**
-   * 完整流水线: 创建 SKILL.md → 验证 → 评分 → (>=3星)注册
-   */
+  checkDuplicates(raw: string, agentId: string): boolean {
+    const existing = skillRegistry.getSkillsForAgent(agentId);
+    if (existing.length === 0) return false;
+
+    const fm = raw.match(/^---\n([\s\S]*?)\n---/);
+    if (!fm) return true;
+
+    const nameMatch = fm[1].match(/^name:\s*(.+)$/m);
+    if (!nameMatch) return true;
+    const newName = nameMatch[1].trim().toLowerCase();
+
+    const newBody = raw.replace(/^---[\s\S]*?---\n?/, "").trim().slice(0, 200);
+
+    for (const s of existing) {
+      if (s.name.toLowerCase() === newName) return true;
+      const existingBody = s.body.slice(0, 200);
+      const overlap = this.jaccardSimilarity(newBody, existingBody);
+      if (overlap > 0.5) return true;
+    }
+
+    return false;
+  }
+
+  private jaccardSimilarity(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/).filter((w) => w.length > 2));
+    if (wordsA.size === 0 || wordsB.size === 0) return 0;
+    const intersection = new Set([...wordsA].filter((w) => wordsB.has(w)));
+    const union = new Set([...wordsA, ...wordsB]);
+    return intersection.size / union.size;
+  }
+
+  async evolveV2(
+    agentId: string,
+    messages: Message[],
+    modelRouter: ModelRouter,
+  ): Promise<SkillEvolutionResult | null> {
+    const existingSkills = skillRegistry
+      .getSkillsForAgent(agentId)
+      .map((s) => `- ${s.name} (triggers: ${s.triggers.join(", ")})`)
+      .join("\n");
+
+    const conversationText = this.truncateConversation(messages);
+
+    const prompt = M2_PROMPT.replace("{EXISTING_SKILLS}", existingSkills || "无").replace(
+      "{CONVERSATION}",
+      conversationText,
+    );
+
+    let rawGenerated: string;
+    try {
+      const resp = await modelRouter.completeWithProfile("default", [
+        { role: "user", content: prompt },
+      ]);
+      rawGenerated = resp.text?.trim() ?? "";
+    } catch {
+      return null;
+    }
+
+    if (!rawGenerated || rawGenerated.length < 50) return null;
+
+    if (!rawGenerated.startsWith("---")) {
+      return null;
+    }
+
+    const nameMatch = rawGenerated.match(/^---\n[\s\S]*?^name:\s*(.+)$/m);
+    const name = nameMatch ? nameMatch[1].trim() : `auto-${agentId}-${Date.now().toString(36)}`;
+
+    const pendingDir = resolve(process.cwd(), "skills", "pending");
+    mkdirSync(pendingDir, { recursive: true });
+    const pendingPath = resolve(pendingDir, `${name}.md`);
+    writeFileSync(pendingPath, rawGenerated, "utf-8");
+
+    const validation = this.validate(pendingPath);
+    if (!validation.valid) {
+      return { name, score: 0, registered: false, path: pendingPath };
+    }
+
+    if (this.checkDuplicates(rawGenerated, agentId)) {
+      return { name, score: 0, registered: false, path: pendingPath };
+    }
+
+    const score = this.scoreSkill(rawGenerated);
+
+    let registered = false;
+    if (score >= 3) {
+      registered = this.register(pendingPath, agentId);
+    }
+
+    return {
+      name,
+      score,
+      registered,
+      path: registered ? resolve(process.cwd(), "skills", agentId, `${name}.md`) : pendingPath,
+    };
+  }
+
+  private truncateConversation(messages: Message[]): string {
+    const maxChars = 4000;
+    const lines: string[] = [];
+    let total = 0;
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      const line = `[${m.role}]: ${m.content.slice(0, 1000)}`;
+      total += line.length;
+      if (total > maxChars) break;
+      lines.unshift(line);
+    }
+
+    return lines.join("\n");
+  }
+
   evolve(agentId: string, sessionId: string, iterations: number, toolCalls: number): SkillEvolutionResult | null {
     const name = `auto-${agentId}-${Date.now().toString(36)}`;
     const body = [
@@ -138,16 +278,13 @@ export class SkillEvolution {
     const pendingPath = resolve(pendingDir, `${name}.md`);
     writeFileSync(pendingPath, body, "utf-8");
 
-    // Validate
     const validation = this.validate(pendingPath);
     if (!validation.valid) {
       return { name, score: 0, registered: false, path: pendingPath };
     }
 
-    // Score
-    const score = this.score(pendingPath);
+    const score = this.scoreSkill(body);
 
-    // Register if >= 3 stars
     let registered = false;
     if (score >= 3) {
       registered = this.register(pendingPath, agentId);
