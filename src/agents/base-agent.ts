@@ -106,7 +106,7 @@ export abstract class BaseAgent {
       detail: `iterations=${result.iterations}, toolCalls=${result.toolCallsExecuted}`,
     });
 
-    return { ...result, messages: [] }; // 不返回完整 messages 避免内存膨胀
+    return { ...result, sessionId, messages: [] }; // 不返回完整 messages 避免内存膨胀
   }
 
   /**
@@ -173,6 +173,6 @@ export abstract class BaseAgent {
       detail: `iterations=${result.iterations}, toolCalls=${result.toolCallsExecuted}`,
     });
 
-    return { ...result, messages: [] };
+    return { ...result, sessionId, messages: [] };
   }
 }

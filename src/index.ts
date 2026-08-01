@@ -166,6 +166,7 @@ program
 
     // ─── 交互循环 ───
     let prefillQueue: string[] = [];
+    let currentSessionId: string | undefined;
 
     while (true) {
       let input: string;
@@ -195,6 +196,17 @@ program
         break;
       }
 
+      if (trimmed === "/new") {
+        currentSessionId = undefined;
+        modelRouter.resetTokenUsage();
+        stdout.write(chalk.green("✓ 新会话已开始，上下文已清空\n"));
+        renderer.printStatus({
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: 0, tokensMax: 8000, queueSize: prefillQueue.length,
+        });
+        continue;
+      }
+
       if (trimmed.startsWith("/mode ")) {
         const newMode = trimmed.slice(6).trim() as PermissionMode;
         if (["ask", "plan", "craft"].includes(newMode)) {
@@ -216,6 +228,7 @@ program
           ["/plan <描述>",     "多专家 DAG 协作",        "自动分解任务，拓扑序执行"],
           ["/debate <话题>",   "双专家辩论",             "两专家独立分析+互审+综合报告"],
           ["/mode <模式>",     "切换权限模式",           "ask(只读) / plan(确认后执行) / craft(自动执行)"],
+          ["/new",             "开启新会话",             "清空上下文和 token 计数，重新开始"],
           ["/thinking",        "切换思考展示",           "折叠/展开模型的推理过程"],
           ["/skill <名称>",    "手动激活技能",           "如 /code-review, /debug, /data-cleaning"],
           ["/status",          "显示运行状态",           "模式/模型/token/排队"],
@@ -538,11 +551,12 @@ program
         };
 
         const result = await agent.runStream(
-          { instruction: trimmed, mode: currentMode, workingDir },
+          { instruction: trimmed, mode: currentMode, workingDir, sessionId: currentSessionId },
           workingDir,
           projectDir,
           streamCallbacks
         );
+        currentSessionId = result.sessionId;
 
         stopSpinner();
         stopLiveStatus();

@@ -163,6 +163,7 @@ export interface AgentRunResult {
   iterations: number;
   truncated: boolean;
   toolCallsExecuted: number;
+  sessionId?: string;
 }
 
 // ===== 任务 =====
