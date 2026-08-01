@@ -129,7 +129,7 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
     <div class="s-top"><button id="new-chat-btn">+ 新对话</button></div>
     <div class="s-list" id="chat-list"></div>
     <div class="s-bottom" id="sidebar-info">
-      <span>model: --</span><span>tokens: 0 / 8000</span><span>cost: ¥0.0000</span>
+      <span>工作目录: --</span><span>输出目录: --</span>
     </div>
   </div>
   <div id="main-panel">
@@ -164,7 +164,7 @@ marked.setOptions({breaks:true,gfm:true});
 const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
 const STATE={mode:'craft',agentId:'default',chatId:null,chats:[],messages:[],sending:false,abort:null,diffs:[]};
 const PRICING={prompt:1,completion:2};
-let totalTokens=0,currentModel='';
+let totalTokens=0,currentModel='',workingDir='',projectDir='';
 function fmtN(n){return n>=1000?(n/1000).toFixed(1)+'k':String(n)}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function loadChats(){try{STATE.chats=JSON.parse(localStorage.getItem('aiworker_chats')||'[]')}catch(e){STATE.chats=[]}}
@@ -186,7 +186,7 @@ function updateStatusBar(){
   const used=totalTokens||0;$('#sb-tokens').textContent=`tokens: ${fmtN(used)} / 8000`;
   const pc=(used*(PRICING.prompt+PRICING.completion))/1e6;$('#sb-cost').textContent=`cost: ¥${pc.toFixed(4)}`;
   $('#sb-model').textContent=`model: ${currentModel||'--'}`;
-  $('#sidebar-info').innerHTML=`<span>model: ${currentModel||'--'}</span><span>tokens: ${fmtN(used)} / 8000</span><span>cost: ¥${pc.toFixed(4)}</span>`;
+  $('#sidebar-info').innerHTML=`<span>工作目录: ${esc(workingDir||'--')}</span><span>输出目录: ${esc(projectDir||'--')}</span>`;
 }
 function loadAgents(){
   fetch('/agents').then(r=>r.json()).then(d=>{
@@ -195,7 +195,7 @@ function loadAgents(){
   }).catch(()=>{});
 }
 function pollStatus(){
-  fetch('/status').then(r=>r.json()).then(d=>{totalTokens=d.tokenUsage?.total||0;currentModel=d.model;updateStatusBar();$('#conn-dot').className='conn-dot online';$('#conn-label').textContent='在线'}).catch(()=>{$('#conn-dot').className='conn-dot offline';$('#conn-label').textContent='离线'});
+  fetch('/status').then(r=>r.json()).then(d=>{totalTokens=d.tokenUsage?.total||0;currentModel=d.model;workingDir=d.workingDir||'';projectDir=d.projectDir||'';updateStatusBar();$('#conn-dot').className='conn-dot online';$('#conn-label').textContent='在线'}).catch(()=>{$('#conn-dot').className='conn-dot offline';$('#conn-label').textContent='离线'});
 }
 function initModes(){
   $$('#mode-tabs button').forEach(b=>{if(b.dataset.mode===STATE.mode)b.classList.add('active');
