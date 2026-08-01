@@ -86,8 +86,8 @@ const writeFileHandler: ToolHandler = async (args, ctx) => {
   // 路径遍历防护: 确保解析后路径仍在 projectDir 内
   const resolvedPath = resolve(filePath);
   const resolvedBase = resolve(ctx.projectDir);
-  const sep = resolvedBase.endsWith("/") || resolvedBase.endsWith("\\") ? "" : "/";
-  if (!resolvedPath.startsWith(resolvedBase + sep) && resolvedPath !== resolvedBase) {
+  const rel = relative(resolvedBase, resolvedPath);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
     return {
       tool_call_id: "",
       success: false,

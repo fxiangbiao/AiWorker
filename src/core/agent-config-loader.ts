@@ -8,6 +8,8 @@ import type { AgentConfig, PermissionMode } from "../types.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configDir = resolve(__dirname, "../../config/agents");
 
+const VALID_MODELS = new Set(["default", "coding", "reasoning", "writing", "creative", "lite"]);
+
 interface YamlAgentConfig {
   id?: string;
   name?: string;
@@ -27,13 +29,14 @@ interface YamlAgentConfig {
 }
 
 function normalizeAgentConfig(yaml: YamlAgentConfig): AgentConfig {
+  const modelPref = yaml.modelPreference ?? "default";
   return {
     id: yaml.id ?? yaml.name ?? "",
     name: yaml.name ?? yaml.id ?? "",
     displayName: yaml.displayName ?? yaml.name ?? "",
     type: (yaml.type ?? "default") as AgentConfig["type"],
     systemPrompt: (yaml.systemPrompt ?? "").trim(),
-    modelPreference: yaml.modelPreference ?? "default",
+    modelPreference: VALID_MODELS.has(modelPref) ? modelPref : "default",
     maxIterations: yaml.maxIterations ?? 30,
     sandbox: yaml.sandbox ?? false,
     tools: yaml.tools ?? [],

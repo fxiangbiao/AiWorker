@@ -54,34 +54,49 @@ function uuidV4(): string {
 }
 
 function safeEval(expr: string): string {
+  // Strip whitespace and check allowed characters
   const sanitized = expr.replace(/\s+/g, "");
-  if (!/^[\d+\-*/().%Math\w,\s]+$/.test(sanitized)) {
+  if (!/^[\d+\-*/().%,\w]+$/.test(sanitized)) {
     throw new Error("表达式包含不允许的字符");
   }
 
-  const allowedMethods = [
-    "abs", "ceil", "floor", "round", "max", "min",
-    "sqrt", "pow", "log", "log2", "log10",
-    "sin", "cos", "tan", "asin", "acos", "atan",
-    "PI", "E", "LN2", "LN10",
-  ];
-
-  for (const key of Object.getOwnPropertyNames(Math)) {
-    if (!allowedMethods.includes(key)) continue;
-    (globalThis as unknown as Record<string, unknown>)[key] = (Math as unknown as Record<string, unknown>)[key];
+  // Only allow Math.xxx where xxx is one of the whitelisted methods
+  if (sanitized.includes("Math.")) {
+    const mathCall = sanitized.match(/Math\.(\w+)/g);
+    if (mathCall) {
+      for (const call of mathCall) {
+        const method = call.slice(5);
+        if (!ALLOWED_MATH_METHODS.has(method)) {
+          throw new Error(`不允许的 Math 方法: Math.${method}`);
+        }
+      }
+    }
   }
 
+  // Build a sandbox with whitelisted Math functions only
+  const sandbox: Record<string, unknown> = {};
+  for (const key of ALLOWED_MATH_METHODS) {
+    sandbox[key] = (Math as unknown as Record<string, unknown>)[key];
+  }
+
+  const sandboxKeys = Object.keys(sandbox);
+  const sandboxValues = sandboxKeys.map((k) => sandbox[k]);
+
   try {
-    const result = new Function(`return (${sanitized})`)();
+    const fn = new Function(...sandboxKeys, `"use strict"; return (${sanitized})`);
+    const result = fn(...sandboxValues);
     return String(result);
   } catch {
     throw new Error("表达式计算失败");
-  } finally {
-    for (const key of allowedMethods) {
-      delete (globalThis as unknown as Record<string, unknown>)[key];
-    }
   }
 }
+
+const ALLOWED_MATH_METHODS = new Set([
+  "abs", "ceil", "floor", "round", "max", "min",
+  "sqrt", "pow", "log", "log2", "log10",
+  "sin", "cos", "tan", "asin", "acos", "atan",
+  "PI", "E", "LN2", "LN10",
+]);
 
 function callTool(name: string, args: Record<string, unknown>): unknown {
   switch (name) {
