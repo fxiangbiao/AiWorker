@@ -66,6 +66,7 @@ program
     stdout.write(chalk.cyan("║        AiWorker v0.1.0              ║\n"));
     stdout.write(chalk.cyan("╚══════════════════════════════════════╝\n\n"));
     stdout.write(chalk.gray(`工作目录: ${workingDir}\n`));
+    stdout.write(chalk.gray(`输出目录: ${projectDir}\n`));
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
     stdout.write(chalk.gray(`权限模式: ${options.mode}\n\n`));
 
@@ -157,6 +158,7 @@ program
     const mcpServers = Object.values(mcpStatuses);
 
     stdout.write(chalk.green("✓ 核心引擎就绪\n"));
+    stdout.write(chalk.green(`✓ 模型: ${modelRouter.getCurrentModel()}\n`));
     stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
     stdout.write(chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"));
     stdout.write(chalk.green("✓ Team 协调器已就绪: 支持多专家协作\n"));
