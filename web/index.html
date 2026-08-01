@@ -77,7 +77,12 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 .think-block .think-body::-webkit-scrollbar{display:none}
 .think-block.open .think-body{display:block}
 /* tool cards */
-.tools-group{margin:6px 0 0 0;padding-left:12px;border-left:2px solid var(--border)}
+.tools-group{margin:6px 0 0 0;padding-left:12px;border-left:2px solid #D1D5DB}
+.tools-group .tools-toggle{padding:4px 0;font-size:11px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:4px;user-select:none}
+.tools-group .tools-toggle .arrow{font-size:10px;transition:transform .2s}
+.tools-group.open .tools-toggle .arrow{transform:rotate(90deg)}
+.tools-group .tools-body{display:none}
+.tools-group.open .tools-body{display:block}
 .tool-card{margin:6px 0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;background:var(--surface);box-shadow:var(--shadow)}
 .tool-card .tc-header{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--dim)}
 .tool-card .tc-header .tc-icon{font-size:13px}
@@ -225,9 +230,9 @@ function renderMessages(){
   let html='';for(const m of STATE.messages){
     if(m.role==='user')html+=`<div class="msg user"><div class="content">${esc(m.content)}</div></div>`;
     else if(m.role==='assistant'||m.role==='agent'){
-      html+=(m.thinking?renderThinkingBlock(m.thinking,m.thinkingSteps,true):'');
+      html+=(m.thinking?renderThinkingBlock(m.thinking,m.thinkingSteps,false):'');
       html+=`<div class="msg agent"><div class="content">${renderMarkdown(m.content||'')}</div>`;
-      if(m.tools&&m.tools.length>0)html+=`<div class="tools-group">${m.tools.map(t=>renderToolCard(t)).join('')}</div>`;
+      if(m.tools&&m.tools.length>0)html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${m.tools.length})</div><div class="tools-body">${m.tools.map(t=>renderToolCard(t)).join('')}</div></div>`;
       html+=`</div>`;
     }
   }
