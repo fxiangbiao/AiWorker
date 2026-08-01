@@ -69,9 +69,9 @@ program
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
     stdout.write(chalk.gray(`权限模式: ${options.mode}\n\n`));
 
-    if (!process.env.OPENAI_API_KEY) {
-      stdout.write(chalk.yellow("⚠️  未检测到 OPENAI_API_KEY 环境变量\n"));
-      stdout.write(chalk.gray("   MVP 演示模式：你可以输入消息，但模型调用将返回占位响应。\n\n"));
+    if (!process.env.DEEPSEEK_API_KEY) {
+      stdout.write(chalk.yellow("⚠️  未检测到 DEEPSEEK_API_KEY 环境变量\n"));
+      stdout.write(chalk.gray("   请设置后重启。\n\n"));
     }
 
     // ─── 初始化核心组件 ───
