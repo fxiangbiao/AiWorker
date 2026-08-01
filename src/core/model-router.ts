@@ -207,6 +207,12 @@ export class ModelRouter {
           finishReason = choiceFinish;
         }
 
+        // reasoning_content (DeepSeek R1 等推理模型)
+        const reasoning = (delta as Record<string, unknown>)?.reasoning_content as string | undefined;
+        if (reasoning) {
+          yield { type: "thinking", content: reasoning };
+        }
+
         if (delta?.tool_calls) {
           for (const tcDelta of delta.tool_calls) {
             const idx = tcDelta.index;

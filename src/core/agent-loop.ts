@@ -253,6 +253,9 @@ export async function runAgentLoopStream(
         chunkSeq++;
 
         switch (chunk.type) {
+          case "thinking":
+            callbacks.onThinkingDelta?.(chunk.content!);
+            break;
           case "text":
             fullText += chunk.content!;
             callbacks.onTextDelta?.(chunk.content!);

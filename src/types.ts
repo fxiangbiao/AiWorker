@@ -100,7 +100,7 @@ export type ModelProvider = (options: ModelCompleteOptions) => Promise<ModelResp
 // ===== Streaming 响应 =====
 
 export interface StreamChunk {
-  type: "text" | "tool_call_start" | "tool_call_delta" | "tool_call_done" | "done" | "error";
+  type: "text" | "thinking" | "tool_call_start" | "tool_call_delta" | "tool_call_done" | "done" | "error";
   content?: string;
   toolCallId?: string;
   toolName?: string;
@@ -111,9 +111,10 @@ export interface StreamChunk {
 
 export interface StreamCallbacks {
   onTextDelta?: (text: string) => void;
+  onThinkingDelta?: (text: string) => void;
+  onThinkingStart?: () => void;
   onToolCall?: (name: string, args: string, id: string) => void;
   onToolResult?: (name: string, success: boolean, summary: string) => void;
-  onThinkingStart?: () => void;
 }
 
 // ===== 智能体 =====

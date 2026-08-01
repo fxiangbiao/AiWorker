@@ -45,6 +45,7 @@ program
   .option("-d, --dir <directory>", "工作目录", process.cwd())
   .option("--data-dir <directory>", "数据目录", resolve(process.cwd(), "data"))
   .option("-p, --project-dir <directory>", "项目输出目录", resolve(process.cwd(), "ai_default_project"))
+  .option("--show-thinking", "显示模型思考过程（默认折叠）")
   .action(async (options) => {
     const workingDir = resolve(options.dir);
     const dataDir = resolve(options.dataDir);
@@ -123,6 +124,7 @@ program
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
     let currentMode = options.mode as PermissionMode;
+    let showThinking = !!options.showThinking;
     for (const a of Object.values(agents)) {
       a.setMode(currentMode);
     }
@@ -205,8 +207,9 @@ program
       }
 
       if (trimmed === "/help") {
-        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /exit | /<skill名>\n"));
+        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /thinking | /exit | /<skill名>\n"));
         stdout.write(chalk.gray("多专家协作: /plan <描述> 自动编排多个专家协作完成任务\n"));
+        stdout.write(chalk.gray("辩论模式: /debate <话题> 双专家独立分析互审\n"));
         stdout.write(chalk.gray("技能: /code-review /debug /report-generation /data-cleaning ... 等37个\n"));
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
@@ -218,6 +221,16 @@ program
       if (trimmed === "/status") {
         stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()} | Token: ${modelRouter.getTokenUsage()}\n`));
         stdout.write(chalk.gray(`技能: ${skillCount} | 排队: ${prefillQueue.length}\n`));
+        renderer.printStatus({
+          mode: currentMode, model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+        });
+        continue;
+      }
+
+      if (trimmed === "/thinking") {
+        showThinking = !showThinking;
+        stdout.write(chalk.green(`✓ 思考展示: ${showThinking ? "展开" : "折叠"}\n`));
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
@@ -387,9 +400,35 @@ program
       // 标记：spinner 被用户打断后，首个 token 到达时重新建立输出行
       let needReprefix = false;
 
+      // 思考内容跟踪
+      let thinkingStarted = false;
+      let thinkingFirstLine = "";
+
       try {
         const streamCallbacks: StreamCallbacks = {
-          onThinkingStart: () => { if (!spinnerDisabled) startSpinner(); },
+          onThinkingStart: () => {
+            if (!showThinking) return;
+            thinkingStarted = false;
+            thinkingFirstLine = "";
+            if (spinnerTimer) stopSpinner();
+            stdout.write(`\n${chalk.dim("🧠 思考: ")}`);
+          },
+          onThinkingDelta: (text) => {
+            if (showThinking) {
+              if (!thinkingStarted) {
+                thinkingStarted = true;
+              }
+              stdout.write(chalk.dim(text));
+            } else if (!thinkingFirstLine) {
+              // 折叠模式：只捕获首行展示一行摘要
+              const firstBreak = text.indexOf("\n");
+              if (firstBreak !== -1) {
+                thinkingFirstLine = text.slice(0, firstBreak);
+              } else {
+                thinkingFirstLine += text;
+              }
+            }
+          },
           onTextDelta: (text) => {
             if (spinnerTimer) {
               // spinner 仍在运行 → 正常停止
@@ -399,6 +438,11 @@ program
               stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
               needReprefix = false;
               spinnerDisabled = false; // 允许后续 thinking 阶段重启 spinner
+            }
+            // 折叠模式下收到正式输出时，输出思考首行摘要
+            if (!showThinking && thinkingFirstLine) {
+              stdout.write(`\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}`);
+              thinkingFirstLine = "";
             }
             stdout.write(text);
           },
