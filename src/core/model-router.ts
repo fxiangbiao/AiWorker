@@ -49,6 +49,12 @@ export class ModelRouter {
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw) as ModelsConfig;
     parsed.default.apiKey = this.resolveEnv(parsed.default.apiKey);
+    // 解析 profile 中的 ${ENV} 引用
+    for (const key of Object.keys(parsed.profiles)) {
+      const p = parsed.profiles[key];
+      if (p.apiKey) p.apiKey = this.resolveEnv(p.apiKey);
+      if (p.baseURL) p.baseURL = this.resolveEnv(p.baseURL);
+    }
     this.config = parsed;
   }
 

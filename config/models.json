@@ -8,21 +8,11 @@
     "maxTokens": 4096
   },
   "profiles": {
-    "coding": {
-      "temperature": 0.2
-    },
-    "reasoning": {
-      "temperature": 0.3
-    },
-    "writing": {
-      "temperature": 0.8
-    },
-    "creative": {
-      "temperature": 0.9
-    },
-    "lite": {
-      "temperature": 0.5
-    }
+    "coding": { "temperature": 0.2 },
+    "reasoning": { "temperature": 0.3 },
+    "writing": { "temperature": 0.8 },
+    "creative": { "temperature": 0.9 },
+    "lite": { "temperature": 0.5 }
   },
   "routing": {
     "strategy": "profile-based",
