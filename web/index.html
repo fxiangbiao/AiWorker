@@ -79,13 +79,7 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 .think-block .think-body::-webkit-scrollbar{display:none}
 .think-block.open .think-body{display:block}
 /* tool cards */
-.tools-group{margin:0;border-bottom:1px solid var(--border)}
-.tools-group .tools-toggle{padding:8px 14px;font-size:11px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:4px;user-select:none}
-.tools-group .tools-toggle .arrow{font-size:10px;transition:transform .2s}
-.tools-group.open .tools-toggle .arrow{transform:rotate(90deg)}
-.tools-group .tools-body{display:none;padding:0 18px 8px}
-.tools-group.open .tools-body{display:block}
-.tool-card{margin:6px 0;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;background:var(--surface);box-shadow:var(--shadow)}
+.tool-card{margin:4px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;background:var(--surface);box-shadow:var(--shadow)}
 .tool-card .tc-header{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--dim)}
 .tool-card .tc-header .tc-icon{font-size:13px}
 .tool-card .tc-args{color:var(--dim);margin-top:4px;font-size:12px;font-family:var(--font-mono);white-space:pre-wrap;word-break:break-all;max-height:48px;overflow-y:auto;scrollbar-width:none}
@@ -232,9 +226,7 @@ function renderMessages(){
     if(m.role==='user')html+=`<div class="msg user"><div class="content">${esc(m.content)}</div></div>`;
     else if(m.role==='assistant'||m.role==='agent'){
       html+=`<div class="msg agent-card">`;
-      if(m.thinking)html+=`<div class="think-block${m.thinkingOpen?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${m.thinkingSteps?` (${m.thinkingSteps} 步)`:''}</div><div class="think-body">${esc(m.thinking)}</div></div>`;
-      if(m.thinking)html+=renderThinkingBlock(m.thinking,m.thinkingSteps,m.thinkingOpen);
-      if(m.tools&&m.tools.length>0)html+=`<div class="tools-group${m.toolsOpen!==false?' open':''}"><div class="tools-toggle" onclick="toggleTools(this)"><span class="arrow">&#9654;</span>工具调用 (${m.tools.length})</div><div class="tools-body">${m.tools.map(t=>renderToolCard(t)).join('')}</div></div>`;
+      if(m.timeline&&m.timeline.length>0)html+=`<div class="timeline">${m.timeline.map(t=>t.type==='thinking'?`<div class="think-block${t.open?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${t.steps?` (${t.steps} 步)`:''}</div><div class="think-body">${esc(t.content)}</div></div>`:renderToolCard(t)).join('')}</div>`;
       if(m.content)html+=`<div class="answer-block"><div class="content">${renderMarkdown(m.content)}</div></div>`;
       html+=`</div>`;
     }
@@ -246,9 +238,7 @@ function renderDiffs(){
   el.innerHTML=STATE.diffs.map(d=>{const n=d.filePath.split(/[\\/]/).pop();return `<div class="diff-file"><span class="df-name">${esc(n)}</span><span class="df-add">+${d.added||0}</span><span class="df-rem">−${d.removed||0}</span></div>`}).join('');
 }
 function renderAll(){
-  // save open states
-  document.querySelectorAll('.think-block.open').forEach((el,i)=>{const agents=STATE.messages.filter(m=>m.role==='assistant');if(agents[i])agents[i].thinkingOpen=true});
-  document.querySelectorAll('.tools-group.open').forEach((el,i)=>{const agents=STATE.messages.filter(m=>m.role==='assistant');let ti=0;for(let j=0;j<agents.length;j++){if(agents[j].tools&&agents[j].tools.length>0){if(ti===i){agents[j].toolsOpen=true;break}ti++}}});
+  document.querySelectorAll('.think-block.open').forEach(el=>{const i=[...el.closest('.timeline').children].indexOf(el);const agents=STATE.messages.filter(m=>m.role==='assistant');if(agents.length>0&&agents[agents.length-1].timeline&&agents[agents.length-1].timeline[i])agents[agents.length-1].timeline[i].open=true});
   renderMessages();renderDiffs();updateStatusBar();
 }
 function addMsg(msg){STATE.messages.push(msg)}
@@ -266,16 +256,14 @@ function sendMessage(){
 }
 function handleSSE(data){
   switch(data.type){
-    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;renderAll();scrollBottom();break}
+    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];const last=agent.timeline[agent.timeline.length-1];if(last&&last.type==='thinking'){last.content+=(data.content||'');last.steps=(last.steps||0)+1}else{agent.timeline.push({type:'thinking',content:data.content||'',steps:1,open:false})}renderAll();scrollBottom();break}
     case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
-    case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.tools=agent.tools||[];agent.tools.push({name:data.name,args:data.args,id:data.id,result:false})}renderAll();scrollBottom();break}
-    case 'tool_result':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent&&agent.tools){const tc=agent.tools[agent.tools.length-1];if(!tc.result){tc.result=true;tc.duration=data.duration;tc.resultPreview=data.summary;tc.toolName=data.name;if(!data.success)tc.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(tc.args||'{}');if(a.filePath)STATE.diffs.push({filePath:a.filePath,added:0,removed:0})}catch(e){}}}renderAll();scrollBottom();break}
+    case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];agent.timeline.push({type:'tool',name:data.name,args:data.args,id:data.id,result:false});renderAll();scrollBottom();break}
+    case 'tool_result':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent||!agent.timeline)break;for(let i=agent.timeline.length-1;i>=0;i--){const t=agent.timeline[i];if(t.type==='tool'&&!t.result){t.result=true;t.duration=data.duration;t.resultPreview=data.summary;t.toolName=data.name;if(!data.success)t.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(t.args||'{}');if(a.filePath)STATE.diffs.push({filePath:a.filePath,added:0,removed:0})}catch(e){}break}}renderAll();scrollBottom();break}
     case 'done':{if(data.tokenUsage){totalTokens=data.tokenUsage.total||0;currentModel=data.model}updateStatusBar();break}
     case 'error':{const d=document.createElement('div');d.className='error-banner';d.textContent=data.message;$('#msg-list').appendChild(d);scrollBottom();break}
   }
 }
-function toggleTools(el){el.parentElement.classList.toggle('open')}
-
 function init(){
   loadSettings();loadChats();if(STATE.chats.length>0){STATE.chatId=STATE.chats[0].id;STATE.messages=loadMsgs(STATE.chatId)}
   initModes();loadAgents();renderChatList();renderAll();pollStatus();
