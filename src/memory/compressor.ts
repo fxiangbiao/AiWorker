@@ -7,6 +7,9 @@ import type { Message, ModelProvider } from "../types.js";
 
 const CONTEXT_WINDOW = 32768; // 本地模型默认上下文（可适配 8K-32K）
 const COMPRESS_THRESHOLD = 0.75; // 75% 触发压缩
+const KEEP_TARGET_RATIO = 0.35; // 压缩后近期上下文目标占比（35% = ~11K tokens）
+const MIN_KEEP_TURNS = 3; // 最少保留轮次（保证基本连贯性）
+const MAX_KEEP_TURNS = 8; // 最多保留轮次（防止膨胀）
 
 /**
  * 按用户轮次拆分对话，返回轮次边界索引列表
@@ -74,7 +77,21 @@ export class ContextCompressor {
 
     // 按用户轮次划分——每个 user 消息标志新轮次，轮次内不可分割
     const boundaries = findTurnBoundaries(conversation);
-    const keepTurns = Math.max(2, Math.min(10, Math.ceil(boundaries.length * 0.2)));
+    const targetTokens = Math.floor(CONTEXT_WINDOW * KEEP_TARGET_RATIO);
+
+    // 从后往前累加完整轮次，直到达到 token 预算
+    let keepTurns = 0;
+    let keepTokens = 0;
+    for (let t = boundaries.length - 1; t >= 0; t--) {
+      const turnStart = boundaries[t];
+      const turnEnd = t < boundaries.length - 1 ? boundaries[t + 1] : conversation.length;
+      const turnMsgs = conversation.slice(turnStart, turnEnd);
+      keepTokens += estimateTokens(turnMsgs);
+      keepTurns++;
+      if (keepTokens >= targetTokens && keepTurns >= MIN_KEEP_TURNS) break;
+      if (keepTurns >= MAX_KEEP_TURNS) break;
+    }
+    keepTurns = Math.max(MIN_KEEP_TURNS, keepTurns);
 
     if (boundaries.length <= keepTurns) {
       return {
