@@ -2,60 +2,40 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks
 
-## 当前状态：Phase 3 进行中
+## 当前状态：Phase 3 已完成
 
-> 最新测试: **85 项** all passed
+> 最新测试: **85 项** all passed | 最近提交: 2026-08-01
 
 ### Phase 1 MVP ✅
 核心引擎已实现：
-- ✅ **Agent 循环**：同步循环 + 迭代预算 + 92% 压缩
+- ✅ **Agent 循环**：同步循环 + 迭代预算 + token 预算压缩 (35% 窗口)
 - ✅ **模型路由**：OpenAI 兼容格式，多 profile 路由 (coding/reasoning/writing/creative/lite)
 - ✅ **工具注册表**：单例模式 + 运行时可用性检查
-- ✅ **上下文管理**：三层记忆 + 冻结快照 + FTS5 检索 + 有界设计
+- ✅ **上下文管理**：三层记忆 (工作/情景/语义) + 冻结快照 + FTS5 检索 + 有界设计
 - ✅ **内置工具**：fs_read / fs_write / fs_list / terminal_exec / web_search (Bing 抓取) / web_fetch
 - ✅ **安全层**：Ask/Plan/Craft 三模式 + 危险操作拦截 + 审计日志
-- ✅ **Hooks 系统**：5 生命周期点 (onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError)
+- ✅ **Hooks 系统**：5 生命周期点 + 12 个 Handler
 
-### Sprint 1 ✅
-- ✅ **MCP Manager**：stdio / HTTP 双传输，工具自动发现，失败自动降级
-- ✅ **Research Agent**：研究分析智能体 (reasoning 模型，80 迭代上限)
+### Phase 2 ✅
+- ✅ **6 个专家智能体**：通用助手 / 研究分析师 / 编码工程师 / 数据分析师 / 理财投资顾问 / 游戏设计师
+- ✅ **37 个技能**：7 大领域 (common / coding / research / data-analysis / financial / game-dev / product-ops)
 - ✅ **专家路由器**：关键词正则 → LLM 语义两阶段路由
+- ✅ **MCP 协议**：stdio/HTTP 双传输 + 内置工具服务器 (math_eval / uuid_gen / json_format / timestamp_convert)
 
-### Sprint 2 ✅
-- ✅ **SkillRegistry**：YAML frontmatter 解析，正则触发匹配，运行时依赖降级
-- ✅ **Skills × 9**：3 common + 6 research (含 web 深度搜索、竞品分析、趋势预测、报告生成、引用追踪、文件整理)
+### Phase 2.5 ✅
+- ✅ **流式响应**：逐 token 输出 + AbortSignal 中断
+- ✅ **终端渲染器**：底部状态栏 + 输入排队 + 纯 ANSI 转义码
 
-### Sprint 4 ✅
-- ✅ **Data Analysis Agent**：数据分析师 (coding 模型，60 次迭代)
-- ✅ **Product Ops Agent**：产品运营专家 (writing 模型，40 次迭代)
-- ✅ **Financial Agent**：理财投资顾问 (reasoning 模型，A股惯例，默认 ask)
-- ✅ **Game Dev Agent**：游戏设计师 (creative 模型，Godot 4.x 知识库)
-- ✅ **Skills × 28**：6 data-analysis + 6 product-ops + 8 financial + 8 game-dev
-
-### Sprint 5 ✅
-- ✅ **流式响应**：逐 token 输出，实时感知 AI 思考过程
-- ✅ **底部状态栏**：模型 + 模式 + 上下文占用 + 快捷命令展示
-- ✅ **输入排队**：Agent 运行期间输入不丢失，自动缓存
-- ✅ **AbortSignal 中断**：Ctrl+C 优雅终止当前 LLM 调用
-- ✅ **终端渲染器**：`src/terminal/` — 零 UI 库依赖，纯 ANSI 转码码
-
-### Sprint 7 ✅
-- ✅ **Team 协调器**：`/plan <描述>` 命令，模板匹配 + LLM DAG 编排
-- ✅ **4 种协作模板**：游戏开发流水线、产品分析报告、全栈功能开发、投资分析
-- ✅ **拓扑 DAG 执行**：失败容忍 + 步间上下文控制
-- ✅ **5 个 Hook 实现**：敏感数据过滤、项目记忆加载、高危确认、Diff 快照、技能评估
-
-### Sprint 8 ✅
-- ✅ **FTS5 中文分词**：`Intl.Segmenter` 词级检索，零依赖
-- ✅ **时间衰减权重**：每天 15%，自动过滤 7 天以上旧记忆
-- ✅ **MEMORY.md 双段结构**：项目信息段（固定）+ 会话历史段（自动滚动）
-- ✅ **自适应压缩**：`KEEP_RECENT = max(4, min(20, 20%))`
+### Phase 3 ✅
+- ✅ **Team 协调器**：`/plan` DAG 编排 + 4 种协作模板 + 拓扑执行 + 环路检测
+- ✅ **辩论模式**：`/debate <话题>` 双专家独立分析 + 互审 + 综合报告
+- ✅ **跨会话记忆**：任务完成自动存入 FTS5 episodic memory，新会话自动检索历史
+- ✅ **自适应压缩**：token 预算轮次保留 (min 3, max 8 turns)
+- ✅ **MEMORY.md 双段结构**：项目信息段 + 会话历史段 (段落边界安全截断)
 - ✅ **USER.md 自动更新**：从对话中提取技术栈/偏好
-
-### Sprint 9 ✅
-- ✅ **MCP 内置服务器**：`math_eval` / `uuid_gen` / `json_format` / `timestamp_convert` 4 个新工具
-- ✅ **MCP 管道端到端**：spawn → initialize → tools/list → 注册 → 调用
-- ✅ **CLI 状态展示**：启动时显示 MCP 服务器连接状态
+- ✅ **项目目录隔离**：`--project-dir` 参数，Agent 所有文件输出归入指定目录
+- ✅ **安全加固**：并发写互斥锁、连续截断断路器、压缩 LLM 容错 fallback
+- ✅ **MCP 重连**：统一调度防风暴 + listener 追踪清理
 
 ---
 
@@ -63,7 +43,8 @@
 
 ```bash
 # 设置 API Key
-export OPENAI_API_KEY=sk-...
+export DEEPSEEK_API_KEY=sk-...          # 默认模型
+export OPENAI_API_KEY=sk-...            # lite 本地模型 (可选)
 
 # 启动
 npm run dev
@@ -72,8 +53,9 @@ npm run dev
 npm run build
 npm start
 
-# 指定工作目录和模式
+# 常用参数
 npm start -- --dir /path/to/project --mode craft
+npm start -- --project-dir ./my_outputs  # Agent 输出目录
 ```
 
 ### 权限模式
@@ -84,67 +66,48 @@ npm start -- --dir /path/to/project --mode craft
 | plan | 先列计划，确认后执行 | ❌ (需确认) |
 | craft | 自主执行，高危仍需确认 | ✅ |
 
+### 交互命令
+
+| 命令 | 说明 |
+|------|------|
+| `/mode <ask\|plan\|craft>` | 切换权限模式 |
+| `/plan <任务描述>` | 多专家 DAG 协作 (4 种模板匹配 + LLM 生成) |
+| `/debate <话题>` | 双专家辩论 (自动匹配最优专家对) |
+| `/skill <名称>` | 手动激活技能 |
+| `/status` | 显示当前状态 |
+| `/help` | 帮助信息 |
+| `/exit` | 退出 |
+
 ---
 
 ## 项目结构
 
 ```
 aiworker/
-├── plans/                # Sprint 计划文档
+├── plans/                # Sprint 计划文档 (sprint-1 ~ sprint-9)
 ├── config/               # 配置文件
-│   ├── models.json       # 模型路由配置
+│   ├── models.json       # 模型路由配置 (DeepSeek 默认 + profiles)
 │   ├── mcp.json          # MCP 服务器配置
 │   ├── permissions.json  # 权限配置
-│   └── agents/
-│       ├── research.yaml # Research Agent 配置
-│       └── coding.yaml   # Coding Agent 配置
-├── skills/               # 技能库 (SKILL.md)
-│   ├── common/
-│   │   └── file-organization/
-│   ├── research/
-│   │   ├── web-deep-search/
-│   │   ├── competitive-analysis/
-│   │   ├── trend-forecasting/
-│   │   ├── report-generation/
-│   │   └── citation-tracking/
-│   └── coding/
-│       ├── code-review/
-│       ├── debug/
-│       └── test-generation/
+│   ├── hooks.json        # Hook 注册 (12 handlers / 5 events)
+│   └── agents/           # 6 个 Agent YAML 配置
+├── skills/               # 技能库 (37 个 SKILL.md)
+├── scripts/              # 工具脚本
+│   └── check-errors.ts   # 数据库诊断工具
 ├── src/
-│   ├── core/             # 核心引擎
-│   │   ├── agent-loop.ts        # Agent 循环
-│   │   ├── context-manager.ts   # 上下文管理 (组装/压缩/技能注入)
-│   │   ├── model-router.ts      # 模型路由器
-│   │   ├── tool-registry.ts     # 工具注册表 (单例)
-│   │   ├── skill-registry.ts    # 技能注册表 (单例)
-│   │   ├── team-coordinator.ts  # 多智能体协调器
-│   │   └── audit-logger.ts      # 审计日志
-│   ├── agents/           # 智能体
-│   │   ├── base-agent.ts        # 基类
-│   │   ├── default-agent.ts     # 通用助手
-│   │   ├── research-agent.ts    # 研究分析师
-│   │   ├── coding-agent.ts      # 编码工程师
-│   │   └── router.ts            # 专家路由器
-│   ├── mcp/              # MCP 协议
-│   │   ├── mcp-manager.ts       # MCP 客户端 (stdio/HTTP)
-│   │   ├── builtin-server.ts    # 内置 MCP 工具服务器 (math_eval 等)
-│   │   ├── connection-pool.ts   # 连接池
-│   │   └── health-check.ts      # 健康检查
-│   ├── memory/           # 记忆系统
-│   │   ├── session-store.ts     # SQLite + WAL + FTS5
-│   │   └── compressor.ts        # 92% 压缩
-│   ├── tools/
-│   │   └── builtin.ts           # 6 个内置工具 (含 Bing 搜索)
-│   ├── hooks/
-│   │   └── hook-manager.ts      # 5 生命周期 Hook
-│   ├── security/
-│   │   ├── permission-model.ts  # 三模式权限
-│   │   ├── danger-detector.ts   # 危险检测
-│   │   └── audit-log.ts         # 审计日志
-│   ├── types.ts                 # 核心类型定义
-│   └── index.ts                 # CLI 入口
-├── data/                 # 运行时数据 (gitignore)
+│   ├── core/             # 核心引擎 (8 文件)
+│   ├── agents/           # 智能体 (9 文件)
+│   ├── tools/            # 内置工具 (1 文件, 6 工具)
+│   ├── mcp/              # MCP 协议 (4 文件)
+│   ├── memory/           # 记忆系统 (2 文件)
+│   ├── hooks/            # Hook 系统 (3 文件)
+│   ├── security/         # 安全层 (3 文件)
+│   ├── terminal/         # 终端 UI (3 文件)
+│   ├── types.ts          # 核心类型定义
+│   ├── index.ts          # CLI 入口
+│   └── smoke-test.ts     # 冒烟测试 (85 tests)
+├── data/                 # 运行时数据 (gitignored)
+├── ai_default_project/   # Agent 默认输出目录 (gitignored)
 ├── package.json
 ├── tsconfig.json
 └── vitest.config.ts
@@ -169,7 +132,7 @@ npm test
 | Phase 1 | 核心引擎 MVP | ✅ 完成 |
 | Phase 2 | 六大专家智能体 + Skills | ✅ 完成 |
 | Phase 2.5 | 终端交互升级 (Streaming + 状态栏 + 排队) | ✅ 完成 |
-| Phase 3 | Team 协调器 (进展中) + FTS5 检索增强 + 有界记忆 | ⏳ 进行中 |
+| Phase 3 | 多智能体协作 + 记忆增强 + 辩论模式 | ✅ 完成 |
 | Phase 4 | 自进化 + 生态 | 待开发 |
 
 ---
@@ -177,8 +140,8 @@ npm test
 ## 技术栈
 
 - **语言**: TypeScript 5.x + Node.js 22.x
-- **存储**: SQLite + WAL + FTS5
-- **模型**: OpenAI 兼容格式 (支持任意兼容 provider)
+- **存储**: SQLite + WAL + FTS5 + 中文分词 (Intl.Segmenter)
+- **模型**: DeepSeek API (默认) + OpenAI 兼容格式 (多 provider)
 - **CLI**: Commander.js + Inquirer
 - **搜索**: Bing HTML 抓取 (零 API key)
 - **设计依据**: 《个人AI-Agent助手设计方案.md》
