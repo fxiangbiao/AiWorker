@@ -220,6 +220,8 @@ export class ModelRouter {
 
     const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();
     let finishReason: string = "stop";
+    let streamPromptTokens = 0;
+    let streamCompletionTokens = 0;
 
     try {
       for await (const chunk of stream) {
@@ -259,12 +261,19 @@ export class ModelRouter {
           yield { type: "text", content: delta.content };
         }
 
+        // Capture usage from the last chunk (stream_options.include_usage ensures
+        // it appears; only the last value is correct — accumulating per-chunk
+        // would vastly overcount if the provider reports cumulative values).
         if (chunk.usage) {
-          this.totalTokensUsed += chunk.usage.total_tokens;
-          this.totalPromptTokens += chunk.usage.prompt_tokens;
-          this.totalCompletionTokens += chunk.usage.completion_tokens;
+          streamPromptTokens = chunk.usage.prompt_tokens;
+          streamCompletionTokens = chunk.usage.completion_tokens;
         }
       }
+
+      // Accumulate stream usage once (per-request, not per-chunk)
+      this.totalPromptTokens += streamPromptTokens;
+      this.totalCompletionTokens += streamCompletionTokens;
+      this.totalTokensUsed += streamPromptTokens + streamCompletionTokens;
 
       const resolvedToolCalls: ToolCall[] = [];
       for (const [, acc] of tcAcc) {
