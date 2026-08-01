@@ -2,9 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-## 当前状态: Sprint 11
+## 当前状态: Sprint 12
 
-> 85 项测试全绿 | 最近修复: 2026-08-01 (Code Review 两轮, 20 项修复)
+> 92 项测试全绿 | 最近更新: 2026-08-01 (Sprint 12: M2.1 + ESLint + 测试 + HTTP Server)
 
 ### 已实现
 
@@ -180,4 +180,4 @@ npm run build # tsc 编译 (含类型检查)
 | 10 | TUI 缺陷修复 + stdin 冻结/endLiveStatus/thinkingFirstLine/token 计数/log 映射/CJK 对齐 | 完成 |
 | 11 | 多轮会话/技能自进化/目录感知/监控日志/上下文透明 | 完成 |
 | — | Code Review 两轮 (20 项修复) | 完成 |
-| M2.1 | 技能自动沉淀 v2 (LLM 知识提取) | 待实施 |
+| 12 | M2.1 技能自进化 v2 + ESLint/Prettier + 测试扩展 + HTTP Server | 完成 |
