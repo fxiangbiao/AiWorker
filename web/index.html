@@ -153,7 +153,7 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 </div>
 <div id="statusbar">
   <div class="sb-item"><span id="sb-model">model: --</span></div>
-  <div class="sb-item"><span id="sb-tokens">tokens: 0 / 8000</span></div>
+  <div class="sb-item"><span id="sb-tokens">tokens: 0</span></div>
   <span id="sb-cost">cost: ¥0.0000</span>
   <span id="sb-agent" style="margin-left:auto">agent: default</span>
 </div>
@@ -183,7 +183,7 @@ function renderChatList(){
 function switchChat(id){if(STATE.abort){STATE.abort.abort();STATE.abort=null}STATE.chatId=id;STATE.messages=loadMsgs(id);STATE.diffs=[];renderAll();renderChatList()}
 function newChat(){if(STATE.abort){STATE.abort.abort();STATE.abort=null}const id='c'+Date.now().toString(36);STATE.chats.unshift({id,title:'新对话',agentId:STATE.agentId,turns:0,createdAt:Date.now()});STATE.chatId=id;STATE.messages=[];STATE.diffs=[];saveChats();renderAll();renderChatList()}
 function updateStatusBar(){
-  const used=totalTokens||0;$('#sb-tokens').textContent=`tokens: ${fmtN(used)} / 8000`;
+  const used=totalTokens||0;$('#sb-tokens').textContent=`tokens: ${fmtN(used)}`;
   const pc=(used*(PRICING.prompt+PRICING.completion))/1e6;$('#sb-cost').textContent=`cost: ¥${pc.toFixed(4)}`;
   $('#sb-model').textContent=`model: ${currentModel||'--'}`;
   $('#dir-work').textContent='💻 '+(basename(workingDir)||'--');$('#dir-work').title='工作目录: '+(workingDir||'--');
