@@ -47,7 +47,7 @@ export class TerminalRenderer {
    */
   endLiveStatus(): void {
     if (!this.active) return;
-    stdout.write(`\r\x1b[2K\n`);
+    stdout.write(`\r\x1b[2K`);
   }
 
   /**

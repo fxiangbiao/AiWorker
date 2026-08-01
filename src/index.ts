@@ -476,6 +476,7 @@ program
       // 思考内容跟踪
       let thinkingStarted = false;
       let thinkingFirstLine = "";
+      let needThinkingBreak = false;
 
       try {
         const streamCallbacks: StreamCallbacks = {
@@ -483,6 +484,7 @@ program
             if (!showThinking) return;
             thinkingStarted = false;
             thinkingFirstLine = "";
+            needThinkingBreak = true;
             if (spinnerTimer) stopSpinner();
             stopLiveStatus();
             stdout.write(`\n${chalk.dim("🧠 思考: ")}`);
@@ -503,10 +505,14 @@ program
               stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
               needReprefix = false;
               spinnerDisabled = false;
+              needThinkingBreak = false;
             }
             if (!showThinking && thinkingFirstLine) {
-              stdout.write(`\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}`);
+              stdout.write(`\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}\n`);
               thinkingFirstLine = "";
+            } else if (needThinkingBreak) {
+              stdout.write("\n");
+              needThinkingBreak = false;
             }
             stdout.write(text);
           },
