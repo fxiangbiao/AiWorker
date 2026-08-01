@@ -118,6 +118,20 @@ export class SessionStore {
     return { id, agentId, createdAt: now, updatedAt: now };
   }
 
+  /** 确保会话存在（指定 ID），不存在则创建 */
+  ensureSession(id: string, agentId: string): void {
+    const exists = this.db.prepare("SELECT 1 FROM sessions WHERE id = ?").get(id);
+    if (!exists) {
+      const now = Date.now();
+      this.db.prepare("INSERT INTO sessions (id, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?)").run(
+        id,
+        agentId,
+        now,
+        now,
+      );
+    }
+  }
+
   /** 追加消息 */
   appendMessage(sessionId: string, message: Message): void {
     const seqStmt = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM messages WHERE session_id = ?`);

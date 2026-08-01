@@ -51,10 +51,13 @@ export abstract class BaseAgent {
    * 执行任务
    */
   async run(task: Task, workingDir: string, projectDir: string): Promise<AgentRunResult> {
-    // 创建或复用会话
-    const sessionId = task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
+    const sessionId =
+      task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
 
-    // onMessage Hook
+    if (task.sessionId) {
+      this.sessionStore.ensureSession(sessionId, this.config.id);
+    }
+
     await hookManager.trigger("onMessage", {
       agentId: this.config.id,
       sessionId,
@@ -121,7 +124,12 @@ export abstract class BaseAgent {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<AgentRunResult> {
-    const sessionId = task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
+    const sessionId =
+      task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
+
+    if (task.sessionId) {
+      this.sessionStore.ensureSession(sessionId, this.config.id);
+    }
 
     await hookManager.trigger("onMessage", {
       agentId: this.config.id,
