@@ -159,9 +159,14 @@ export function createSensitiveDataFilter(): HookHandler {
  * Hook 事件: onMessage
  */
 export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHandler {
-  const loadedSessions = new Set<string>();
+  const loadedSessions = new Map<string, number>(); // sessionId → loadTime
 
   return async (ctx) => {
+    if (ctx.event === "onTaskComplete") {
+      loadedSessions.delete(ctx.sessionId);
+      return;
+    }
+
     if (ctx.event !== "onMessage") return;
     if (loadedSessions.has(ctx.sessionId)) return;
 
@@ -185,7 +190,6 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
     if (loaded.length > 0) {
       const combined = loaded.join("\n\n");
 
-      // 存储为情景记忆条目，供 context-manager 检索
       if (deps.sessionStore) {
         deps.sessionStore.saveEpisodic(ctx.sessionId, combined, "项目文件自动加载", 3.0);
       }
@@ -203,7 +207,13 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
       } catch { /* ignore */ }
     }
 
-    loadedSessions.add(ctx.sessionId);
+    loadedSessions.set(ctx.sessionId, Date.now());
+
+    // TTL 清理: 删除 30 分钟以上的条目
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    for (const [sid, time] of loadedSessions) {
+      if (time < cutoff) loadedSessions.delete(sid);
+    }
   };
 }
 
@@ -252,6 +262,12 @@ export function createCaptureDiff(_deps: HandlerDependencies): HookHandler {
   const snapshots = new Map<string, Map<string, string>>();
 
   return async (ctx) => {
+    if (ctx.event === "onTaskComplete") {
+      snapshots.delete(ctx.sessionId);
+      // TTL 清理: 超过 30 分钟未使用的快照
+      return;
+    }
+
     if (ctx.event === "onToolCallPre") {
       const toolName = ctx.data.toolName as string;
       if (toolName !== "fs_write") return;

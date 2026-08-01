@@ -79,7 +79,14 @@ class SkillRegistry {
     const candidates = this.getSkillsForAgent(agentId);
     return candidates.filter((s) => {
       if (s.triggers.length === 0) return true;
-      return s.triggers.some((t) => new RegExp(t, "i").test(input));
+      return s.triggers.some((t) => {
+        try {
+          return new RegExp(t, "i").test(input);
+        } catch {
+          // SKILL.md 中的无效正则 → 跳过此触发词
+          return false;
+        }
+      });
     });
   }
 

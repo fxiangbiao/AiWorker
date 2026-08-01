@@ -19,6 +19,9 @@ interface McpConnection {
   buffer: string;
   initialized: boolean;
   capabilities: Record<string, unknown>;
+  listeners: Array<{ event: string; handler: (...args: unknown[]) => void }>;
+  reconnectTimer?: ReturnType<typeof setTimeout>;
+  reconnecting: boolean;
 }
 
 interface JsonRpcRequest {
@@ -45,7 +48,7 @@ class McpManager {
     this.healthCheck = new McpHealthCheck(
       this.pool,
       (name) => this.ping(name),
-      (name) => this.reconnect(name)
+      (name) => this.triggerReconnect(name)
     );
   }
 
@@ -93,6 +96,8 @@ class McpManager {
       buffer: "",
       initialized: false,
       capabilities: {},
+      listeners: [],
+      reconnecting: false,
     };
 
     try {
@@ -129,31 +134,36 @@ class McpManager {
 
     conn.process = child;
 
-    child.stdout?.on("data", (chunk: Buffer) => {
+    const onStdout = (chunk: Buffer) => {
       conn.buffer += chunk.toString();
       this.processStdioBuffer(conn);
-    });
-
-    child.stderr?.on("data", (chunk: Buffer) => {
+    };
+    const onStderr = (_chunk: Buffer) => {
       // MCP 服务器的 stderr 通常用于日志，静默处理
-    });
-
-    child.on("error", (err) => {
+    };
+    const onError = (err: Error) => {
       conn.initialized = false;
       this.pool.recordError(conn.config.name, err.message);
-    });
-
-    child.on("exit", () => {
+    };
+    const onExit = () => {
       conn.initialized = false;
       this.pool.setState(conn.config.name, "disconnected");
       this.healthCheck.stop(conn.config.name);
-      if (this.pool.shouldRetry(conn.config.name)) {
-        const delay = this.pool.getReconnectDelay(conn.config.name);
-        setTimeout(() => {
-          this.reconnect(conn.config.name).catch(() => {});
-        }, delay);
-      }
-    });
+      // 统一重连入口 — 防止并发重连风暴
+      this.scheduleReconnect(conn);
+    };
+
+    child.stdout?.on("data", onStdout);
+    child.stderr?.on("data", onStderr);
+    child.on("error", onError);
+    child.on("exit", onExit);
+
+    conn.listeners = [
+      { event: "stdout:data", handler: onStdout as unknown as (...args: unknown[]) => void },
+      { event: "stderr:data", handler: onStderr as unknown as (...args: unknown[]) => void },
+      { event: "error", handler: onError as unknown as (...args: unknown[]) => void },
+      { event: "exit", handler: onExit as unknown as (...args: unknown[]) => void },
+    ];
 
     // 发送 initialize 请求
     const initResult = await this.sendRequest(conn, "initialize", {
@@ -247,6 +257,15 @@ class McpManager {
     }
   }
 
+  /**
+   * 公开重连入口 — health check 等外部调用统一走此通道
+   */
+  async triggerReconnect(name: string): Promise<void> {
+    const conn = this.connections.get(name);
+    if (!conn) return;
+    this.scheduleReconnect(conn);
+  }
+
   getStatuses(): Record<string, McpServerStatus> {
     const statuses: Record<string, McpServerStatus> = {};
     for (const [name, conn] of this.connections) {
@@ -266,13 +285,32 @@ class McpManager {
 
     this.healthCheck.stop(name);
 
+    // 取消待决重连定时器
+    if (conn.reconnectTimer) {
+      clearTimeout(conn.reconnectTimer);
+      conn.reconnectTimer = undefined;
+    }
+
     for (const tool of toolRegistry.getAll()) {
       if (tool.definition.function.name.startsWith(`mcp_${name}_`)) {
         toolRegistry.unregister(tool.definition.function.name);
       }
     }
 
-    conn.process?.kill();
+    // 清理子进程事件监听器，防止僵尸引用
+    if (conn.process) {
+      for (const { event, handler } of conn.listeners) {
+        if (event.startsWith("stdout:")) {
+          conn.process.stdout?.removeListener("data", handler);
+        } else if (event.startsWith("stderr:")) {
+          conn.process.stderr?.removeListener("data", handler);
+        } else {
+          conn.process.removeListener(event, handler);
+        }
+      }
+      conn.process.kill();
+    }
+
     this.connections.delete(name);
     this.pool.remove(name);
   }
@@ -299,6 +337,21 @@ class McpManager {
   }
 
   /**
+   * 统一重连调度 — 防止 exit + health check 同时触发导致重连风暴
+   */
+  private scheduleReconnect(conn: McpConnection): void {
+    if (conn.reconnecting) return;
+    if (!this.pool.shouldRetry(conn.config.name)) return;
+
+    conn.reconnecting = true;
+    const delay = this.pool.getReconnectDelay(conn.config.name);
+    conn.reconnectTimer = setTimeout(() => {
+      conn.reconnectTimer = undefined;
+      this.reconnect(conn.config.name).catch(() => {});
+    }, delay);
+  }
+
+  /**
    * 自动重连 — 关闭旧连接 → 重新连接 → 重新注册工具
    */
   private async reconnect(name: string): Promise<void> {
@@ -317,13 +370,10 @@ class McpManager {
     try {
       await this.connectServer(oldConn.config);
     } catch {
-      // 重连失败时再次退避
-      if (this.pool.shouldRetry(name)) {
-        const delay = this.pool.getReconnectDelay(name);
-        setTimeout(() => {
-          this.reconnect(name).catch(() => {});
-        }, delay);
-      }
+      // 重连失败 — 重置 flag 后再次调度
+      const conn = this.connections.get(name) ?? oldConn;
+      conn.reconnecting = false;
+      this.scheduleReconnect(conn);
     }
   }
 

@@ -19,6 +19,24 @@ const USER_MAX_CHARS = 1375; // 有界：~1375 字符
 const PROJECT_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.4);
 const HISTORY_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.6);
 
+function safeTruncate(content: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  const slice = content.slice(0, maxChars);
+  // 回溯到最近的段落边界（双换行或标题行），避免截断在代码块或句子中间
+  const paraBreak = slice.lastIndexOf("\n\n");
+  const headingBreak = slice.lastIndexOf("\n##");
+  const cutoff = Math.max(paraBreak, headingBreak);
+  if (cutoff > maxChars * 0.5) {
+    return slice.slice(0, cutoff);
+  }
+  // 退而求其次：最后一个换行处
+  const lineBreak = slice.lastIndexOf("\n");
+  if (lineBreak > maxChars * 0.6) {
+    return slice.slice(0, lineBreak);
+  }
+  return slice;
+}
+
 const SECTION_PROJECT = "## 项目信息";
 const SECTION_HISTORY = "## 会话历史";
 
@@ -74,13 +92,12 @@ export class ContextManager {
     const path = resolve(this.memoryDir, filename);
     if (!existsSync(path)) return "";
     const content = readFileSync(path, "utf-8");
-    return content.slice(0, maxChars); // 有界截断
+    return safeTruncate(content, maxChars);
   }
 
   /**
-   * 组装上下文 — 按注入顺序构建消息列表
-   * 参考 OpenClaw 四层组装：
-   * 系统提示词 → 项目记忆 → 用户画像 → 技能列表 → 历史摘要 → 当前任务 → 用户消息
+   * 冻结快照 — 会话开始时捕获
+   * 保证前缀缓存有效（Anthropic 等整个会话有效），大幅降本
    */
   async assembleContext(
     systemPrompt: string,
@@ -159,7 +176,7 @@ export class ContextManager {
   /** 写入 USER.md */
   updateUserProfile(content: string): void {
     const path = resolve(this.memoryDir, "USER.md");
-    const bounded = content.slice(0, USER_MAX_CHARS);
+    const bounded = safeTruncate(content, USER_MAX_CHARS);
     writeFileSync(path, bounded, "utf-8");
   }
 
@@ -217,8 +234,8 @@ export class ContextManager {
 
   private writeSections(projectInfo: string, sessionHistory: string): void {
     const path = resolve(this.memoryDir, "MEMORY.md");
-    const boundedProject = projectInfo.slice(0, PROJECT_MAX_CHARS);
-    const boundedHistory = sessionHistory.slice(0, HISTORY_MAX_CHARS);
+    const boundedProject = safeTruncate(projectInfo, PROJECT_MAX_CHARS);
+    const boundedHistory = safeTruncate(sessionHistory, HISTORY_MAX_CHARS);
 
     const lines = [
       "# Agent 记忆",

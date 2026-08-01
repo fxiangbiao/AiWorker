@@ -63,10 +63,7 @@ export class McpHealthCheck {
       this.pool.setState(name, "disconnected");
       this.consecutiveFailures.set(name, 0);
       if (this.pool.shouldRetry(name)) {
-        const delay = this.pool.getReconnectDelay(name);
-        setTimeout(() => {
-          this.onReconnect(name).catch(() => {});
-        }, delay);
+        this.onReconnect(name).catch(() => {});
       }
     }
   }

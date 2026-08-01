@@ -91,8 +91,12 @@ function callTool(name: string, args: Record<string, unknown>): unknown {
       return { content: [{ type: "text", text: safeEval(expr) }] };
     }
     case "uuid_gen": {
-      const count = Math.min(Number(args.count ?? 1), 10);
-      const ids = Array.from({ length: count }, () => uuidV4());
+      const count = Number(args.count ?? 1);
+      if (!Number.isFinite(count) || count < 1) {
+        throw new Error("count 参数必须是一个正数");
+      }
+      const n = Math.min(Math.floor(count), 10);
+      const ids = Array.from({ length: n }, () => uuidV4());
       return { content: [{ type: "text", text: ids.join("\n") }] };
     }
     case "json_format": {

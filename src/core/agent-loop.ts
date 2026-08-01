@@ -485,8 +485,13 @@ async function executeTool(
   try {
     args = JSON.parse(toolCall.function.arguments);
     args = coerceToolArgs(args);
-  } catch {
-    args = {};
+  } catch (err) {
+    return {
+      tool_call_id: toolCall.id,
+      success: false,
+      content: "",
+      error: `工具 ${toolName} 参数解析失败: ${(err as Error).message}。原始参数: ${toolCall.function.arguments.slice(0, 200)}`,
+    };
   }
 
   let result: ToolResult;
