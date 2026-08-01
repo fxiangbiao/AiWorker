@@ -75,11 +75,19 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 .think-block{margin:0;border:none;border-bottom:1px solid var(--border);border-left:3px solid #A78BFA;overflow:hidden;background:transparent}
 .think-block .think-toggle{padding:10px 18px;font-size:12px;color:#7C3AED;cursor:pointer;display:flex;align-items:center;gap:6px;font-weight:500}
 .think-block .think-toggle .arrow{font-size:10px;transition:transform .2s}
+.think-block.open .think-toggle .arrow{transform:rotate(90deg)}
 .think-block .think-body{display:none;padding:12px 18px 14px;font-size:12px;color:var(--dim);border-top:1px solid var(--border);white-space:pre-wrap;max-height:200px;overflow-y:auto;scrollbar-width:none}
 .think-block .think-body::-webkit-scrollbar{display:none}
 .think-block.open .think-body{display:block}
 /* tool cards */
-.tool-card{margin:4px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;background:var(--surface);box-shadow:var(--shadow)}
+.tools-group{margin:0 0 4px 0;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.tools-group .tools-toggle{padding:8px 14px;font-size:11px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:4px;user-select:none}
+.tools-group .tools-toggle .arrow{font-size:10px;transition:transform .2s}
+.tools-group.open .tools-toggle .arrow{transform:rotate(90deg)}
+.tools-group .tools-body{display:none}
+.tools-group.open .tools-body{display:block}
+.tool-card{margin:0;border:none;border-bottom:1px solid var(--border);border-radius:0;padding:8px 14px;background:var(--surface);box-shadow:none}
+.tool-card:last-child{border-bottom:none}
 .tool-card .tc-header{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--dim)}
 .tool-card .tc-header .tc-icon{font-size:13px}
 .tool-card .tc-args{color:var(--dim);margin-top:4px;font-size:12px;font-family:var(--font-mono);white-space:pre-wrap;word-break:break-all;max-height:48px;overflow-y:auto;scrollbar-width:none}
@@ -212,7 +220,26 @@ function initModes(){
 function setInputState(s){STATE.sending=s;$('#inp').disabled=s;$('#send-btn').disabled=s;$('#inp').placeholder=s?'AiWorker 正在处理...':'输入消息，Enter 发送...';if(!s)$('#inp').focus()}
 function scrollBottom(){const el=$('#msg-list');el.scrollTop=el.scrollHeight}
 function renderMarkdown(t){try{return marked.parse(t)}catch(e){return esc(t)}}
-function renderToolCard(m){
+function renderTimeline(timeline){
+  let html='',i=0;
+  while(i<timeline.length){
+    const t=timeline[i];
+    if(t.type==='thinking'){
+      html+=`<div class="think-block${t.open?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${t.steps?` (${t.steps} 步)`:''}</div><div class="think-body">${esc(t.content)}</div></div>`;
+      i++;
+    }else{
+      let group=[],j=i;
+      while(j<timeline.length&&timeline[j].type==='tool'){group.push(timeline[j]);j++}
+      if(group.length===1){
+        html+=renderToolCard(group[0]);
+      }else{
+        html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${group.length})</div><div class="tools-body">${group.map(t=>renderToolCard(t)).join('')}</div></div>`;
+      }
+      i=j;
+    }
+  }
+  return html;
+}
   const cls=m.result?m.error?'error':'':'';
   let args='';try{args=typeof m.args==='string'?m.args:JSON.stringify(m.args,null,2)}catch(e){}
   let result='';if(m.result&&!m.error)result=`<div class="tc-result">${m.resultPreview?esc(m.resultPreview.slice(0,200)):''}${m.duration?` &middot; ${m.duration}ms`:''}</div>`;
@@ -226,7 +253,7 @@ function renderMessages(){
     if(m.role==='user')html+=`<div class="msg user"><div class="content">${esc(m.content)}</div></div>`;
     else if(m.role==='assistant'||m.role==='agent'){
       html+=`<div class="msg agent-card">`;
-      if(m.timeline&&m.timeline.length>0)html+=`<div class="timeline">${m.timeline.map(t=>t.type==='thinking'?`<div class="think-block${t.open?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${t.steps?` (${t.steps} 步)`:''}</div><div class="think-body">${esc(t.content)}</div></div>`:renderToolCard(t)).join('')}</div>`;
+      if(m.timeline&&m.timeline.length>0)html+=`<div class="timeline">${renderTimeline(m.timeline)}</div>`;
       if(m.content)html+=`<div class="answer-block"><div class="content">${renderMarkdown(m.content)}</div></div>`;
       html+=`</div>`;
     }
@@ -238,7 +265,7 @@ function renderDiffs(){
   el.innerHTML=STATE.diffs.map(d=>{const n=d.filePath.split(/[\\/]/).pop();return `<div class="diff-file"><span class="df-name">${esc(n)}</span><span class="df-add">+${d.added||0}</span><span class="df-rem">−${d.removed||0}</span></div>`}).join('');
 }
 function renderAll(){
-  document.querySelectorAll('.think-block.open').forEach(el=>{const i=[...el.closest('.timeline').children].indexOf(el);const agents=STATE.messages.filter(m=>m.role==='assistant');if(agents.length>0&&agents[agents.length-1].timeline&&agents[agents.length-1].timeline[i])agents[agents.length-1].timeline[i].open=true});
+  document.querySelectorAll('.think-block.open').forEach(el=>{const tl=el.closest('.timeline');const agents=STATE.messages.filter(m=>m.role==='assistant');if(tl&&agents.length){const idx=[...tl.children].indexOf(el);const tm=agents[agents.length-1].timeline;if(tm){let ti=0;for(let j=0;j<idx;j++){if(tm[ti]&&tm[ti].type==='tool'){while(tm[ti]&&tm[ti].type==='tool')ti++;}else ti++}if(tm[ti])tm[ti].open=true}}});
   renderMessages();renderDiffs();updateStatusBar();
 }
 function addMsg(msg){STATE.messages.push(msg)}
