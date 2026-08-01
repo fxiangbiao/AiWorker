@@ -219,6 +219,31 @@ export interface ToolCallLog {
   error?: string;
 }
 
+// ===== 上下文分层统计 (M5) =====
+
+export interface ContextBreakdown {
+  systemPromptBase: number;
+  projectMemory: number;
+  userProfile: number;
+  episodicMemory: number;
+  injectedSkills: number;
+  conversationHistory: number;
+  currentTurn: number;
+  total: number;
+  windowSize: number;
+  skillsMatched: string[];
+  skillsTotal: number;
+}
+
+export interface McpToolUsage {
+  serverName: string;
+  serverStatus: string;
+  toolCount: number;
+  toolNames: string[];
+  callsTotal: number;
+  callsFailed: number;
+}
+
 // ===== 记忆 =====
 
 export interface SessionRecord {

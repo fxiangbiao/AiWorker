@@ -9,7 +9,7 @@
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Message, ProjectProfile } from "../types.js";
+import type { Message, ProjectProfile, ContextBreakdown } from "../types.js";
 import type { SessionStore as SessionStoreClass } from "../memory/session-store.js";
 import { ContextCompressor } from "../memory/compressor.js";
 import { skillRegistry } from "./skill-registry.js";
@@ -102,6 +102,75 @@ export class ContextManager {
    */
   setProjectProfile(profile: ProjectProfile | null): void {
     this.projectProfile = profile;
+  }
+
+  /** 估算字符串 token 数 (混合中英文: ~4字符/token) */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / 4);
+  }
+
+  /** 上下文分层 token 占比统计 */
+  getContextBreakdown(
+    systemPrompt: string,
+    sessionId: string,
+    userMessage: string,
+    agentId?: string
+  ): ContextBreakdown {
+    const snapshot = this.frozenSnapshot ?? {
+      memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
+      user: this.readBounded("USER.md", USER_MAX_CHARS),
+    };
+
+    const base = this.estimateTokens(systemPrompt);
+    const projMem = this.estimateTokens(snapshot.memory);
+    const userProf = this.estimateTokens(snapshot.user);
+
+    // Episodic memory
+    const episodicResults = this.sessionStore.searchEpisodic(userMessage, 3);
+    const epiText = episodicResults.map((e) => e.summary ?? e.content).join("\n");
+    const epi = this.estimateTokens(epiText);
+
+    // Skills
+    let skillsPrompt = "";
+    const matchedSkills: string[] = [];
+    if (agentId && skillRegistry.count > 0) {
+      skillsPrompt = skillRegistry.getInjectedPrompt(agentId, userMessage);
+      matchedSkills.push(...skillRegistry.match(userMessage, agentId).map((s) => s.name));
+    }
+    const skills = this.estimateTokens(skillsPrompt);
+
+    // Conversation history
+    const history = this.sessionStore.getMessages(sessionId);
+    const histText = history.map((m) => m.content).join("\n");
+    const hist = this.estimateTokens(histText);
+
+    const current = this.estimateTokens(userMessage);
+    const total = base + projMem + userProf + epi + skills + hist + current;
+
+    // Project profile
+    let projProfText = "";
+    if (this.projectProfile) {
+      projProfText = [
+        `- 项目类型: ${this.projectProfile.type}`,
+        `- 包管理器: ${this.projectProfile.pkgManager}`,
+        `- 顶层目录: ${this.projectProfile.topDirs.join(", ")}`,
+      ].join("\n");
+    }
+    const projProf = this.estimateTokens(projProfText);
+
+    return {
+      systemPromptBase: base + projProf,
+      projectMemory: projMem,
+      userProfile: userProf,
+      episodicMemory: epi,
+      injectedSkills: skills,
+      conversationHistory: hist,
+      currentTurn: current,
+      total,
+      windowSize: 8000, // default; could be model-specific
+      skillsMatched: matchedSkills,
+      skillsTotal: skillRegistry.count,
+    };
   }
 
   async assembleContext(

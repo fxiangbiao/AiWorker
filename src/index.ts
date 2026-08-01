@@ -242,6 +242,53 @@ program
         continue;
       }
 
+      if (trimmed === "/context" || trimmed.startsWith("/context ")) {
+        const agent = agents[routeToExpert("")];
+        const bd = contextManager.getContextBreakdown(
+          agent.getConfig().systemPrompt,
+          currentSessionId ?? "",
+          trimmed === "/context" ? "" : trimmed.slice(9)
+        );
+        const ws = bd.windowSize;
+        const bar = (v: number) => {
+          const pct = ws > 0 ? (v / ws) * 100 : 0;
+          const w = Math.round(pct / 5);
+          const color = pct > 80 ? chalk.red : pct > 60 ? chalk.yellow : chalk.green;
+          return `${color("█".repeat(w))}${chalk.gray("░".repeat(Math.max(0, 20 - w)))}`;
+        };
+        const fmtN = (n: number): string => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+
+        stdout.write(`\n${chalk.bold("── 上下文占用 ──")}\n`);
+        const fmt = (label: string, tok: number, extra?: string) => {
+          const pct = ws > 0 ? `(${(tok / ws * 100).toFixed(0)}%)` : "";
+          const ext = extra ? ` ${chalk.dim(extra)}` : "";
+          stdout.write(`│ ${chalk.dim(label.padEnd(14))} ${bar(tok)} ${chalk.white(fmtN(tok))}/${chalk.white(fmtN(ws))} ${pct}${ext}\n`);
+        };
+
+        fmt("系统提示词", bd.systemPromptBase);
+        fmt("项目记忆", bd.projectMemory);
+        fmt("用户画像", bd.userProfile);
+        fmt("情景记忆", bd.episodicMemory);
+        const skillExtra = bd.skillsMatched.length > 0 ? `(${bd.skillsMatched.length}/${bd.skillsTotal})` : "";
+        fmt("注入技能", bd.injectedSkills, skillExtra);
+        fmt("会话历史", bd.conversationHistory);
+        fmt("当前消息", bd.currentTurn);
+        stdout.write(`│ 合计            ${" ".repeat(20)} ${chalk.bold(fmtN(bd.total))}/${chalk.bold(fmtN(ws))} (${(bd.total / ws * 100).toFixed(0)}%)\n`);
+
+        const mcpStatuses = mcpManager.getStatuses();
+        const mcpServers = Object.values(mcpStatuses);
+        if (mcpServers.length > 0) {
+          stdout.write(`\n${chalk.dim("── MCP 工具 ──")}\n`);
+          for (const s of mcpServers) {
+            const icon = s.connected ? chalk.green("✓") : chalk.red("✗");
+            stdout.write(`│ ${icon} ${s.name}: ${s.toolCount} 工具\n`);
+          }
+        }
+
+        stdout.write("\n");
+        continue;
+      }
+
       if (trimmed.startsWith("/mode ")) {
         const newMode = trimmed.slice(6).trim() as PermissionMode;
         if (["ask", "plan", "craft"].includes(newMode)) {
@@ -264,6 +311,8 @@ program
           ["/debate <话题>",   "双专家辩论",             "两专家独立分析+互审+综合报告"],
           ["/mode <模式>",     "切换权限模式",           "ask(只读) / plan(确认后执行) / craft(自动执行)"],
           ["/new",             "开启新会话",             "清空上下文和 token 计数，重新开始"],
+          ["/log",             "查看监控日志",           "当前 session 的轮次摘要表"],
+          ["/context",         "上下文占用分析",         "分层 token 占比 + MCP 工具列表"],
           ["/thinking",        "切换思考展示",           "折叠/展开模型的推理过程"],
           ["/skill <名称>",    "手动激活技能",           "如 /code-review, /debug, /data-cleaning"],
           ["/status",          "显示运行状态",           "模式/模型/token/排队"],
