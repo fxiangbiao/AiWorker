@@ -175,6 +175,17 @@ export interface Task {
   workingDir?: string;
 }
 
+// ===== 工作目录感知 =====
+
+export interface ProjectProfile {
+  type: string;
+  pkgManager: string;
+  testFramework: string;
+  entryFile: string;
+  topDirs: string[];
+  keyFiles: string[];
+}
+
 // ===== 记忆 =====
 
 export interface SessionRecord {

@@ -11,6 +11,7 @@ import { stdout } from "node:process";
 
 import { ModelRouter } from "./core/model-router.js";
 import { ContextManager } from "./core/context-manager.js";
+import { ProjectProfiler } from "./core/project-profiler.js";
 import { SessionStore } from "./memory/session-store.js";
 import { ContextCompressor } from "./memory/compressor.js";
 import { registerBuiltinTools } from "./tools/builtin.js";
@@ -85,6 +86,17 @@ program
     const modelProvider: ModelProvider = (opts) => modelRouter.complete(opts);
     const compressor = new ContextCompressor(modelProvider);
     const contextManager = new ContextManager(sessionStore, dataDir, compressor);
+
+    // 扫描工作目录，注入项目画像
+    {
+      const profiler = new ProjectProfiler(workingDir);
+      const profile = profiler.scan();
+      if (profile) {
+        contextManager.setProjectProfile(profile);
+        stdout.write(chalk.gray(`─ 项目: ${profile.type}, ${profile.pkgManager}, ${profile.topDirs.length} 个顶层目录\n`));
+      }
+    }
+
     initAuditLog(dataDir);
 
     const dangerDetector = new DangerDetector();

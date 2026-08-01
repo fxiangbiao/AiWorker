@@ -9,7 +9,7 @@
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Message } from "../types.js";
+import type { Message, ProjectProfile } from "../types.js";
 import type { SessionStore as SessionStoreClass } from "../memory/session-store.js";
 import { ContextCompressor } from "../memory/compressor.js";
 import { skillRegistry } from "./skill-registry.js";
@@ -49,6 +49,7 @@ export class ContextManager {
     user: string;
   };
   private _writeLock: Promise<void> = Promise.resolve();
+  private projectProfile: ProjectProfile | null = null;
 
   private async acquireLock(): Promise<() => void> {
     const prev = this._writeLock;
@@ -99,6 +100,10 @@ export class ContextManager {
    * 冻结快照 — 会话开始时捕获
    * 保证前缀缓存有效（Anthropic 等整个会话有效），大幅降本
    */
+  setProjectProfile(profile: ProjectProfile | null): void {
+    this.projectProfile = profile;
+  }
+
   async assembleContext(
     systemPrompt: string,
     sessionId: string,
@@ -118,6 +123,20 @@ export class ContextManager {
     // 2. 项目记忆 (MEMORY.md 快照)
     if (snapshot.memory) {
       fullSystemPrompt += `\n\n--- 项目记忆 ---\n${snapshot.memory}`;
+    }
+
+    // 2.5. 工作目录感知 (ProjectProfile)
+    if (this.projectProfile) {
+      const p = this.projectProfile;
+      const parts: string[] = [
+        `- 项目类型: ${p.type}`,
+      ];
+      if (p.pkgManager) parts.push(`- 包管理器: ${p.pkgManager}`);
+      if (p.testFramework) parts.push(`- 测试框架: ${p.testFramework}`);
+      if (p.entryFile) parts.push(`- 入口文件: ${p.entryFile}`);
+      if (p.topDirs.length > 0) parts.push(`- 顶层目录: ${p.topDirs.join(", ")}`);
+      if (p.keyFiles.length > 0) parts.push(`- 关键文件: ${p.keyFiles.join(", ")}`);
+      fullSystemPrompt += `\n\n--- 工作目录 ---\n${parts.join("\n")}`;
     }
 
     // 3. 用户画像 (USER.md 快照)
