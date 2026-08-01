@@ -225,7 +225,6 @@ function renderToolCard(m){
   if(m.error)result=`<div class="tc-result" style="color:var(--error)">${esc(m.error)}</div>`;
   return `<div class="tool-card ${cls}"><div class="tc-header"><span class="tc-icon">&#9881;</span> ${esc(m.name||'tool')}</div><div class="tc-args">${esc(args)}</div>${result}</div>`;
 }
-function renderThinkingBlock(text,steps,open){return `<div class="think-block ${open?'open':''}"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${steps?` (${steps} 步)`:''}</div><div class="think-body">${esc(text)}</div></div>`}
 function renderMessages(){
   const el=$('#msg-list');
   if(STATE.messages.length===0){el.innerHTML=`<div class="empty-state"><div class="mark-big">&#9670;</div><h2>AiWorker</h2><p>个人 AI Agent 助手 &mdash; 多智能体协作 + 流式工具执行</p></div>`;return}
@@ -233,8 +232,9 @@ function renderMessages(){
     if(m.role==='user')html+=`<div class="msg user"><div class="content">${esc(m.content)}</div></div>`;
     else if(m.role==='assistant'||m.role==='agent'){
       html+=`<div class="msg agent-card">`;
-      if(m.thinking)html+=renderThinkingBlock(m.thinking,m.thinkingSteps,m.thinkingOpen!==false);
-      if(m.tools&&m.tools.length>0)html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${m.tools.length})</div><div class="tools-body">${m.tools.map(t=>renderToolCard(t)).join('')}</div></div>`;
+      if(m.thinking)html+=`<div class="think-block${m.thinkingOpen?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${m.thinkingSteps?` (${m.thinkingSteps} 步)`:''}</div><div class="think-body">${esc(m.thinking)}</div></div>`;
+      if(m.thinking)html+=renderThinkingBlock(m.thinking,m.thinkingSteps,m.thinkingOpen);
+      if(m.tools&&m.tools.length>0)html+=`<div class="tools-group${m.toolsOpen!==false?' open':''}"><div class="tools-toggle" onclick="toggleTools(this)"><span class="arrow">&#9654;</span>工具调用 (${m.tools.length})</div><div class="tools-body">${m.tools.map(t=>renderToolCard(t)).join('')}</div></div>`;
       if(m.content)html+=`<div class="answer-block"><div class="content">${renderMarkdown(m.content)}</div></div>`;
       html+=`</div>`;
     }
@@ -245,7 +245,12 @@ function renderDiffs(){
   const el=$('#diff-list');if(STATE.diffs.length===0){el.innerHTML=`<div style="color:var(--dim);font-size:12px">暂无变更</div>`;return}
   el.innerHTML=STATE.diffs.map(d=>{const n=d.filePath.split(/[\\/]/).pop();return `<div class="diff-file"><span class="df-name">${esc(n)}</span><span class="df-add">+${d.added||0}</span><span class="df-rem">−${d.removed||0}</span></div>`}).join('');
 }
-function renderAll(){renderMessages();renderDiffs();updateStatusBar()}
+function renderAll(){
+  // save open states
+  document.querySelectorAll('.think-block.open').forEach((el,i)=>{const agents=STATE.messages.filter(m=>m.role==='assistant');if(agents[i])agents[i].thinkingOpen=true});
+  document.querySelectorAll('.tools-group.open').forEach((el,i)=>{const agents=STATE.messages.filter(m=>m.role==='assistant');let ti=0;for(let j=0;j<agents.length;j++){if(agents[j].tools&&agents[j].tools.length>0){if(ti===i){agents[j].toolsOpen=true;break}ti++}}});
+  renderMessages();renderDiffs();updateStatusBar();
+}
 function addMsg(msg){STATE.messages.push(msg)}
 function sendMessage(){
   const inp=$('#inp'),text=inp.value.trim();if(!text||STATE.sending)return;inp.value='';inp.style.height='auto';
@@ -261,7 +266,7 @@ function sendMessage(){
 }
 function handleSSE(data){
   switch(data.type){
-    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;if(agent.thinkingOpen===undefined)agent.thinkingOpen=false;renderAll();scrollBottom();break}
+    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;renderAll();scrollBottom();break}
     case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
     case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.tools=agent.tools||[];agent.tools.push({name:data.name,args:data.args,id:data.id,result:false})}renderAll();scrollBottom();break}
     case 'tool_result':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent&&agent.tools){const tc=agent.tools[agent.tools.length-1];if(!tc.result){tc.result=true;tc.duration=data.duration;tc.resultPreview=data.summary;tc.toolName=data.name;if(!data.success)tc.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(tc.args||'{}');if(a.filePath)STATE.diffs.push({filePath:a.filePath,added:0,removed:0})}catch(e){}}}renderAll();scrollBottom();break}
@@ -269,13 +274,15 @@ function handleSSE(data){
     case 'error':{const d=document.createElement('div');d.className='error-banner';d.textContent=data.message;$('#msg-list').appendChild(d);scrollBottom();break}
   }
 }
+function toggleTools(el){el.parentElement.classList.toggle('open')}
+
 function init(){
   loadSettings();loadChats();if(STATE.chats.length>0){STATE.chatId=STATE.chats[0].id;STATE.messages=loadMsgs(STATE.chatId)}
   initModes();loadAgents();renderChatList();renderAll();pollStatus();
   const inp=$('#inp');inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
   inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px'});
   $('#send-btn').addEventListener('click',sendMessage);$('#new-chat-btn').addEventListener('click',newChat);
-  $('#msg-list').addEventListener('click',e=>{const tg=e.target.closest('.think-toggle');if(tg){const block=tg.closest('.think-block');const idx=[...block.parentElement.children].indexOf(block);const agents=STATE.messages.filter(m=>m.role==='assistant');if(agents[idx]!==undefined){agents[idx].thinkingOpen=!agents[idx].thinkingOpen;renderAll()}};const cp=e.target.closest('.copy-btn');if(cp){const pre=cp.closest('pre');if(pre)navigator.clipboard.writeText(pre.textContent.replace(/复制$/,''))}});
+  $('#msg-list').addEventListener('click',e=>{const cp=e.target.closest('.copy-btn');if(cp){const pre=cp.closest('pre');if(pre)navigator.clipboard.writeText(pre.textContent.replace(/复制$/,''))}});
   setInputState(false);setTimeout(()=>inp.focus(),100);setInterval(pollStatus,30000);
 }
 init();
