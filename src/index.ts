@@ -262,7 +262,7 @@ program
         const fmt = (label: string, tok: number, extra?: string) => {
           const pct = ws > 0 ? `(${(tok / ws * 100).toFixed(0)}%)` : "";
           const ext = extra ? ` ${chalk.dim(extra)}` : "";
-          stdout.write(`│ ${chalk.dim(label.padEnd(14))} ${bar(tok)} ${chalk.white(fmtN(tok))}/${chalk.white(fmtN(ws))} ${pct}${ext}\n`);
+          stdout.write(`│ ${chalk.dim(padToWidth(label, 10))} ${bar(tok)} ${chalk.white(fmtN(tok))}/${chalk.white(fmtN(ws))} ${pct}${ext}\n`);
         };
 
         fmt("系统提示词", bd.systemPromptBase);
@@ -273,7 +273,9 @@ program
         fmt("注入技能", bd.injectedSkills, skillExtra);
         fmt("会话历史", bd.conversationHistory);
         fmt("当前消息", bd.currentTurn);
-        stdout.write(`│ 合计            ${" ".repeat(20)} ${chalk.bold(fmtN(bd.total))}/${chalk.bold(fmtN(ws))} (${(bd.total / ws * 100).toFixed(0)}%)\n`);
+        // 合计行需手动对齐：标签 "合计" = 2 CJK = 4 display cols, pad to 10 + 2 extra spaces = 12
+        const totalLabel = padToWidth("合计", 12);
+        stdout.write(`│ ${totalLabel}${" ".repeat(20)} ${chalk.bold(fmtN(bd.total))}/${chalk.bold(fmtN(ws))} (${(bd.total / ws * 100).toFixed(0)}%)\n`);
 
         const mcpStatuses = mcpManager.getStatuses();
         const mcpServers = Object.values(mcpStatuses);
