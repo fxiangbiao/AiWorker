@@ -76,7 +76,10 @@ export class ProjectProfiler {
         ".eslintrc*", "prettier.config.*", ".prettierrc*",
       ];
       profile.keyFiles = topFiles.filter((f) =>
-        keyFilePatterns.some((p) => f.match(p.replace("*", ".*")))
+        keyFilePatterns.some((p) => {
+          const escaped = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+          return new RegExp(`^${escaped}$`).test(f);
+        })
       ).slice(0, 8);
 
       return profile;

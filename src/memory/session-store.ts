@@ -241,6 +241,9 @@ export class SessionStore {
     timestamp: string;
     weight: string;
   }> {
+    // Sanitize FTS5 special characters to prevent syntax errors
+    const safe = query.replace(/[*"(){}\[\]]/g, " ").replace(/\b(AND|OR|NOT|NEAR)\b/gi, "").trim();
+    if (!safe) return [];
     try {
       const stmt = this.db.prepare(
         `SELECT session_id, content, summary, timestamp, weight
@@ -249,7 +252,7 @@ export class SessionStore {
          ORDER BY rank
          LIMIT ?`
       );
-      return stmt.all(query, limit) as ReturnType<typeof this.tryFts5Match>;
+      return stmt.all(safe, limit) as ReturnType<typeof this.tryFts5Match>;
     } catch {
       return [];
     }

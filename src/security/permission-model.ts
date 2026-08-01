@@ -3,22 +3,7 @@
  * 设计依据：调研报告——WorkBuddy 的三模式权限设计
  */
 
-import type { PermissionMode } from "../types.js";
-
-export interface PermissionConfig {
-  defaultMode: PermissionMode;
-  modes: Record<
-    PermissionMode,
-    {
-      description: string;
-      allow_tool_calls: boolean;
-      require_confirmation?: boolean;
-      high_risk_confirm?: boolean;
-    }
-  >;
-  allowedDirs: string[];
-  deniedPatterns: string[];
-}
+import type { PermissionMode, PermissionConfig } from "../types.js";
 
 export class PermissionModel {
   private config: PermissionConfig;

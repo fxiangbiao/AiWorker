@@ -678,6 +678,7 @@ program
         );
       } catch (err) {
         stopSpinner();
+        stopLiveStatus();
         stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
       }
 

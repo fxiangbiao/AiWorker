@@ -51,6 +51,7 @@ export async function runAgentLoop(
   const MAX_ITER = config.maxIterations ?? 50;
   let toolCallsExecuted = 0;
   let consecutiveLength = 0;
+  let emptyResponseCount = 0;
   const mode = config.permissions.defaultMode;
 
   const toolCtx: ToolContext = {
@@ -102,11 +103,22 @@ export async function runAgentLoop(
       if (!response.hasToolCalls) {
         // 空响应保护：模型可能因上下文过长放弃回答
         if (!response.text || response.text.trim().length === 0) {
+          emptyResponseCount++;
+          if (emptyResponseCount >= 3) {
+            return {
+              text: "Agent 连续返回空响应，任务可能无法完成",
+              messages,
+              iterations: iterations + 1,
+              truncated: true,
+              toolCallsExecuted,
+            };
+          }
           messages.push({ role: "user", content: "请继续完成任务。如果已完成，请给出总结。" });
           iterations++;
           continue;
         }
         consecutiveLength = 0;
+        emptyResponseCount = 0;
         return {
           text: response.text,
           messages,
@@ -137,6 +149,7 @@ export async function runAgentLoop(
       }
 
       consecutiveLength = 0;
+      emptyResponseCount = 0;
       iterations++;
     } catch (err) {
       const errorMsg = (err as Error).message;
@@ -200,6 +213,7 @@ export async function runAgentLoopStream(
   const MAX_ITER = config.maxIterations ?? 50;
   let toolCallsExecuted = 0;
   let consecutiveLength = 0;
+  let emptyResponseCount = 0;
   const mode = config.permissions.defaultMode;
 
   const toolCtx: ToolContext = {
@@ -339,6 +353,7 @@ export async function runAgentLoopStream(
 
           iterations++;
           consecutiveLength = 0;
+          emptyResponseCount = 0;
           continue;
         }
       }
@@ -362,12 +377,23 @@ export async function runAgentLoopStream(
       }
 
       if (!fullText || fullText.trim().length === 0) {
+        emptyResponseCount++;
+        if (emptyResponseCount >= 3) {
+          return {
+            text: "Agent 连续返回空响应，任务可能无法完成",
+            messages,
+            iterations: iterations + 1,
+            truncated: true,
+            toolCallsExecuted,
+          };
+        }
         messages.push({ role: "user", content: "请继续完成任务。如果已完成，请给出总结。" });
         iterations++;
         continue;
       }
 
       consecutiveLength = 0;
+      emptyResponseCount = 0;
       return {
         text: fullText,
         messages,
@@ -533,12 +559,18 @@ function coerceToolArgs(args: Record<string, unknown>): Record<string, unknown> 
   const coerced: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     if (typeof value === "string") {
-      if (/^-?\d+\.?\d*$/.test(value) && value !== "") {
-        coerced[key] = parseFloat(value);
-      } else if (value === "true") {
+      if (value === "true") {
         coerced[key] = true;
       } else if (value === "false") {
         coerced[key] = false;
+      } else if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value) && value !== "") {
+        // Only coerce strings that look like numbers in standard JSON form
+        const num = parseFloat(value);
+        if (!Number.isNaN(num) && Number.isFinite(num)) {
+          coerced[key] = num;
+        } else {
+          coerced[key] = value;
+        }
       } else {
         coerced[key] = value;
       }

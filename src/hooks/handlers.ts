@@ -9,6 +9,7 @@ import { stdin, stdout } from "node:process";
 import { randomUUID } from "node:crypto";
 import chalk from "chalk";
 import type { HookHandler } from "../types.js";
+import type { Message } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
 import { auditLogger } from "../core/audit-logger.js";
@@ -44,6 +45,7 @@ export function createDangerousCommandBlock(deps: HandlerDependencies): HookHand
  */
 export function createPermissionCheck(deps: HandlerDependencies): HookHandler {
   return async (ctx) => {
+    if (ctx.event !== "onToolCallPre") return;
     if (!deps.permissionModel) return;
     if (!deps.permissionModel.allowsToolCalls()) {
       return { proceed: false, message: "当前权限模式不允许工具调用" };
@@ -419,22 +421,43 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     const seq = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
     turnSeq.set(ctx.sessionId, seq);
 
+    const messages = ctx.data.messages as Message[] | undefined;
+    const userInput = messages?.find((m) => m.role === "user")?.content.slice(0, 500) ?? "";
+
+    // Count tool successes/failures from messages (assistant tool_calls vs. tool results)
+    let toolCallsTotal = (ctx.data.toolCallsExecuted as number) ?? 0;
+    let toolCallsSuccess = 0;
+    let toolCallsFailed = 0;
+    if (messages) {
+      for (const m of messages) {
+        if (m.role === "tool") {
+          const isError = m.content.startsWith("Error:");
+          if (isError) toolCallsFailed++; else toolCallsSuccess++;
+        }
+      }
+      if (toolCallsSuccess + toolCallsFailed === 0) {
+        toolCallsSuccess = toolCallsTotal;
+      }
+    } else {
+      toolCallsSuccess = toolCallsTotal;
+    }
+
     try {
       store.createTurnLog({
         id: randomUUID(),
         sessionId: ctx.sessionId,
         agentId: ctx.agentId,
         seq,
-        userInput: "",
+        userInput,
         startedAt: Date.now(),
         finishedAt: Date.now(),
         iterations: (ctx.data.iterations as number) ?? 0,
-        toolCallsTotal: (ctx.data.toolCallsExecuted as number) ?? 0,
-        toolCallsSuccess: (ctx.data.toolCallsExecuted as number) ?? 0,
-        toolCallsFailed: 0,
-        tokensPrompt: 0,
-        tokensCompletion: 0,
-        finishReason: "stop",
+        toolCallsTotal,
+        toolCallsSuccess,
+        toolCallsFailed,
+        tokensPrompt: deps.modelRouter?.getPromptTokens() ?? 0,
+        tokensCompletion: deps.modelRouter?.getCompletionTokens() ?? 0,
+        finishReason: (ctx.data.truncated ? "length" : "stop"),
       });
     } catch { /* ignore */ }
   };
@@ -444,20 +467,31 @@ export function createToolCallLogger(deps: HandlerDependencies): HookHandler {
   const store = deps.sessionStore;
   if (!store) return async () => { /* no-op */ };
 
+  let callStart = 0;
+
   return async (ctx) => {
+    if (ctx.event === "onToolCallPre") {
+      callStart = Date.now();
+      return;
+    }
+
     if (ctx.event !== "onToolCallPost") return;
+
+    const toolName = (ctx.data.toolName as string) ?? "";
+    const args = typeof ctx.data.args === "string" ? ctx.data.args : JSON.stringify(ctx.data.args ?? {});
+    const result = ctx.data.result as { success: boolean; content: string } | undefined;
 
     try {
       store.createToolCallLog({
         id: randomUUID(),
         turnId: ctx.sessionId,
-        toolName: (ctx.data.toolName as string) ?? "",
+        toolName,
         iteration: (ctx.data.iteration as number) ?? 0,
-        args: "",
-        startedAt: Date.now(),
-        durationMs: 0,
-        success: true,
-        resultPreview: "",
+        args: args.slice(0, 2000),
+        startedAt: callStart || Date.now(),
+        durationMs: callStart ? Date.now() - callStart : 0,
+        success: result?.success ?? true,
+        resultPreview: (result?.content ?? "").slice(0, 500),
       });
     } catch { /* ignore */ }
   };

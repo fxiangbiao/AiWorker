@@ -62,9 +62,7 @@ export class McpHealthCheck {
     if (failures >= this.maxFailures) {
       this.pool.setState(name, "disconnected");
       this.consecutiveFailures.set(name, 0);
-      if (this.pool.shouldRetry(name)) {
-        this.onReconnect(name).catch(() => {});
-      }
+      this.onReconnect(name).catch(() => {});
     }
   }
 

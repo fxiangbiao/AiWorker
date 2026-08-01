@@ -5,7 +5,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute } from "node:path";
-import { execSync, type ExecSyncOptions } from "node:child_process";
+import { exec, type ExecOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
   ToolDefinition,
@@ -82,6 +82,19 @@ const writeFileDef: ToolDefinition = {
 
 const writeFileHandler: ToolHandler = async (args, ctx) => {
   const filePath = resolve(ctx.projectDir, args.path as string);
+
+  // 路径遍历防护: 确保解析后路径仍在 projectDir 内
+  const resolvedPath = resolve(filePath);
+  const resolvedBase = resolve(ctx.projectDir);
+  const sep = resolvedBase.endsWith("/") || resolvedBase.endsWith("\\") ? "" : "/";
+  if (!resolvedPath.startsWith(resolvedBase + sep) && resolvedPath !== resolvedBase) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `路径超出项目目录: ${args.path as string}`,
+    };
+  }
 
   // 权限检查：Craft 模式下高危需确认
   const dangerCheck = detector.check(`write ${filePath}`);
@@ -173,30 +186,32 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     };
   }
 
-  const options: ExecSyncOptions = {
+  const options: ExecOptions = {
     cwd,
     timeout,
-    encoding: "utf-8",
     maxBuffer: 1024 * 1024 * 10, // 10MB
-    stdio: ["pipe", "pipe", "pipe"],
   };
 
-  try {
-    const stdout = execSync(command, options) as string;
-    return {
-      tool_call_id: "",
-      success: true,
-      content: stdout || "(无输出)",
-    };
-  } catch (err) {
-    const error = err as { stderr?: string; stdout?: string; message: string };
-    return {
-      tool_call_id: "",
-      success: false,
-      content: error.stdout ?? "",
-      error: error.stderr ?? error.message,
-    };
-  }
+  return new Promise((resolve) => {
+    exec(command, options, (error, stdout, stderr) => {
+      const out = String(stdout ?? "");
+      const err = String(stderr ?? "");
+      if (error) {
+        resolve({
+          tool_call_id: "",
+          success: false,
+          content: out,
+          error: err || error.message,
+        });
+      } else {
+        resolve({
+          tool_call_id: "",
+          success: true,
+          content: out || "(无输出)",
+        });
+      }
+    });
+  });
 };
 
 // ===== Web 搜索 =====
@@ -317,8 +332,10 @@ const webFetchDef: ToolDefinition = {
 
 const webFetchHandler: ToolHandler = async (args) => {
   const url = args.url as string;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: controller.signal });
     const text = await response.text();
     // 简单 HTML 清理
     const cleaned = text
@@ -339,6 +356,8 @@ const webFetchHandler: ToolHandler = async (args) => {
       content: "",
       error: `抓取失败: ${(err as Error).message}`,
     };
+  } finally {
+    clearTimeout(timer);
   }
 };
 

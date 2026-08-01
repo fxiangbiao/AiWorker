@@ -85,7 +85,7 @@ export abstract class BaseAgent {
     this.contextManager.summarizeSession(result.messages, task.instruction, sessionId)
       .catch(() => { /* 静默失败，不影响主流程 */ });
 
-    // onTaskComplete Hook
+    // onTaskComplete Hook — 传入 messages 供 skill evolution 等 handler 使用
     await hookManager.trigger("onTaskComplete", {
       agentId: this.config.id,
       sessionId,
@@ -93,6 +93,7 @@ export abstract class BaseAgent {
         iterations: result.iterations,
         toolCallsExecuted: result.toolCallsExecuted,
         truncated: result.truncated,
+        messages: result.messages,
       },
     });
 
@@ -161,6 +162,7 @@ export abstract class BaseAgent {
         iterations: result.iterations,
         toolCallsExecuted: result.toolCallsExecuted,
         truncated: result.truncated,
+        messages: result.messages,
       },
     });
 

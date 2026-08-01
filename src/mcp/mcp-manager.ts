@@ -368,12 +368,18 @@ class McpManager {
     }
 
     try {
+      oldConn.reconnecting = false;
       await this.connectServer(oldConn.config);
     } catch {
-      // 重连失败 — 重置 flag 后再次调度
-      const conn = this.connections.get(name) ?? oldConn;
-      conn.reconnecting = false;
-      this.scheduleReconnect(conn);
+      // 重连失败: 重置 flag 后调度下一次重试
+      const conn = this.connections.get(name);
+      if (conn) {
+        conn.reconnecting = false;
+        this.scheduleReconnect(conn);
+      } else {
+        oldConn.reconnecting = false;
+        this.scheduleReconnect(oldConn);
+      }
     }
   }
 

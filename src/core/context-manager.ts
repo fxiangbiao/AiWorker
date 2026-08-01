@@ -96,17 +96,14 @@ export class ContextManager {
     return safeTruncate(content, maxChars);
   }
 
-  /**
-   * 冻结快照 — 会话开始时捕获
-   * 保证前缀缓存有效（Anthropic 等整个会话有效），大幅降本
-   */
+  /** 注入工作目录画像 — 启动时由 ProjectProfiler 设置 */
   setProjectProfile(profile: ProjectProfile | null): void {
     this.projectProfile = profile;
   }
 
-  /** 估算字符串 token 数 (混合中英文: ~4字符/token) */
+  /** 估算字符串 token 数 (混合中英文: ~3.5字符/token) */
   private estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4);
+    return Math.ceil(text.length / 3.5);
   }
 
   /** 上下文分层 token 占比统计 */
@@ -381,10 +378,10 @@ export class ContextManager {
     ];
 
     const tags: string[] = [];
-    for (const { label } of patterns) {
-      const matches = userMessages.match(patterns.find((p) => p.label === label)?.regex ?? /(?!)/);
-      if (matches) {
-        const unique = [...new Set(matches)].join(", ");
+    for (const { label, regex } of patterns) {
+      const match = userMessages.match(regex);
+      if (match) {
+        const unique = [...new Set(match)].join(", ");
         tags.push(`- ${label}: ${unique}`);
       }
     }
