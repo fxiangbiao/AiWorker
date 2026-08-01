@@ -233,7 +233,7 @@ function renderMessages(){
     if(m.role==='user')html+=`<div class="msg user"><div class="content">${esc(m.content)}</div></div>`;
     else if(m.role==='assistant'||m.role==='agent'){
       html+=`<div class="msg agent-card">`;
-      if(m.thinking)html+=renderThinkingBlock(m.thinking,m.thinkingSteps,false);
+      if(m.thinking)html+=renderThinkingBlock(m.thinking,m.thinkingSteps,m.thinkingOpen!==false);
       if(m.tools&&m.tools.length>0)html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${m.tools.length})</div><div class="tools-body">${m.tools.map(t=>renderToolCard(t)).join('')}</div></div>`;
       if(m.content)html+=`<div class="answer-block"><div class="content">${renderMarkdown(m.content)}</div></div>`;
       html+=`</div>`;
@@ -261,7 +261,7 @@ function sendMessage(){
 }
 function handleSSE(data){
   switch(data.type){
-    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;renderAll();scrollBottom();break}
+    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;if(agent.thinkingOpen===undefined)agent.thinkingOpen=false;renderAll();scrollBottom();break}
     case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
     case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.tools=agent.tools||[];agent.tools.push({name:data.name,args:data.args,id:data.id,result:false})}renderAll();scrollBottom();break}
     case 'tool_result':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent&&agent.tools){const tc=agent.tools[agent.tools.length-1];if(!tc.result){tc.result=true;tc.duration=data.duration;tc.resultPreview=data.summary;tc.toolName=data.name;if(!data.success)tc.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(tc.args||'{}');if(a.filePath)STATE.diffs.push({filePath:a.filePath,added:0,removed:0})}catch(e){}}}renderAll();scrollBottom();break}
@@ -275,7 +275,7 @@ function init(){
   const inp=$('#inp');inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
   inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px'});
   $('#send-btn').addEventListener('click',sendMessage);$('#new-chat-btn').addEventListener('click',newChat);
-  $('#msg-list').addEventListener('click',e=>{const tg=e.target.closest('.think-toggle');if(tg){tg.closest('.think-block').classList.toggle('open')};const cp=e.target.closest('.copy-btn');if(cp){const pre=cp.closest('pre');if(pre)navigator.clipboard.writeText(pre.textContent.replace(/复制$/,''))}});
+  $('#msg-list').addEventListener('click',e=>{const tg=e.target.closest('.think-toggle');if(tg){const block=tg.closest('.think-block');const idx=[...block.parentElement.children].indexOf(block);const agents=STATE.messages.filter(m=>m.role==='assistant');if(agents[idx]!==undefined){agents[idx].thinkingOpen=!agents[idx].thinkingOpen;renderAll()}};const cp=e.target.closest('.copy-btn');if(cp){const pre=cp.closest('pre');if(pre)navigator.clipboard.writeText(pre.textContent.replace(/复制$/,''))}});
   setInputState(false);setTimeout(()=>inp.focus(),100);setInterval(pollStatus,30000);
 }
 init();
