@@ -251,7 +251,6 @@ export async function runAgentLoopStream(
             {
               const acc = { id: chunk.toolCallId!, name: chunk.toolName!, args: "" };
               tcAcc.set(tcAcc.size, acc);
-              callbacks.onToolCall?.(chunk.toolName!, "(generating...)", chunk.toolCallId!);
             }
             break;
           case "tool_call_delta":
@@ -286,6 +285,7 @@ export async function runAgentLoopStream(
         const toolCalls: ToolCall[] = [];
         for (const [, acc] of tcAcc) {
           if (acc.id && acc.name) {
+            callbacks.onToolCall?.(acc.name, acc.args, acc.id);
             toolCalls.push({
               id: acc.id,
               type: "function",
