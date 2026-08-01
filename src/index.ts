@@ -105,6 +105,9 @@ program
       permissionModel,
       sessionStore,
       modelRouter,
+      onFileDiff: (filePath, added, removed) => {
+        renderer.writeContentLine(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`);
+      },
     });
     if (hooksCount > 0) {
       stdout.write(chalk.green(`✓ 已加载 ${hooksCount} 个 Hook\n`));
@@ -207,10 +210,29 @@ program
       }
 
       if (trimmed === "/help") {
-        stdout.write(chalk.gray("命令: /mode <ask|plan|craft> | /status | /thinking | /exit | /<skill名>\n"));
-        stdout.write(chalk.gray("多专家协作: /plan <描述> 自动编排多个专家协作完成任务\n"));
-        stdout.write(chalk.gray("辩论模式: /debate <话题> 双专家独立分析互审\n"));
-        stdout.write(chalk.gray("技能: /code-review /debug /report-generation /data-cleaning ... 等37个\n"));
+        const table = [
+          ["/plan <描述>",     "多专家 DAG 协作",        "自动分解任务，拓扑序执行"],
+          ["/debate <话题>",   "双专家辩论",             "两专家独立分析+互审+综合报告"],
+          ["/mode <模式>",     "切换权限模式",           "ask(只读) / plan(确认后执行) / craft(自动执行)"],
+          ["/thinking",        "切换思考展示",           "折叠/展开模型的推理过程"],
+          ["/skill <名称>",    "手动激活技能",           "如 /code-review, /debug, /data-cleaning"],
+          ["/status",          "显示运行状态",           "模式/模型/token/排队"],
+          ["/help",            "帮助信息",               "显示此表"],
+          ["/exit",            "退出",                   ""],
+          ["",                 "",                       ""],
+          [chalk.dim("技能数量"), chalk.dim("快捷用法"), chalk.dim(`共 ${skillCount} 个, 输入 /<技能名> 激活`)],
+        ];
+        const colWidths = [22, 24, 50];
+        stdout.write(chalk.cyan("\n┌─" + "─".repeat(colWidths[0]) + "─┬─" + "─".repeat(colWidths[1]) + "─┬─" + "─".repeat(Math.min(colWidths[2], 50)) + "─┐\n"));
+        stdout.write(`│ ${chalk.bold("命令".padEnd(colWidths[0]))} │ ${chalk.bold("功能".padEnd(colWidths[1]))} │ ${chalk.bold("说明".padEnd(Math.min(colWidths[2], 50)))} │\n`);
+        stdout.write("├─" + "─".repeat(colWidths[0]) + "─┼─" + "─".repeat(colWidths[1]) + "─┼─" + "─".repeat(Math.min(colWidths[2], 50)) + "─┤\n");
+        for (const [cmd, func, desc] of table) {
+          const c = cmd.padEnd(colWidths[0] + (cmd.length - stripAnsiLen(cmd))).slice(0, colWidths[0]);
+          const f = func.padEnd(colWidths[1] + (func.length - stripAnsiLen(func))).slice(0, colWidths[1]);
+          const d = desc.slice(0, Math.min(colWidths[2], 50));
+          stdout.write(`│ ${c} │ ${f} │ ${d.padEnd(Math.min(colWidths[2], 50))} │\n`);
+        }
+        stdout.write("└─" + "─".repeat(colWidths[0]) + "─┴─" + "─".repeat(colWidths[1]) + "─┴─" + "─".repeat(Math.min(colWidths[2], 50)) + "─┘\n\n");
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
@@ -219,8 +241,11 @@ program
       }
 
       if (trimmed === "/status") {
-        stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()} | Token: ${modelRouter.getTokenUsage()}\n`));
-        stdout.write(chalk.gray(`技能: ${skillCount} | 排队: ${prefillQueue.length}\n`));
+        const cost = modelRouter.getCost();
+        stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()}\n`));
+        stdout.write(chalk.gray(`Token: ${modelRouter.getTokenUsage()} (提示: ${modelRouter.getPromptTokens()}, 生成: ${modelRouter.getCompletionTokens()})`));
+        if (cost > 0) stdout.write(chalk.gray(` | 成本: $${cost.toFixed(4)}`));
+        stdout.write(chalk.gray(`\n技能: ${skillCount} | 排队: ${prefillQueue.length}\n`));
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
@@ -513,8 +538,10 @@ program
           stdout.write(`\n${chalk.red(short)}`);
         }
 
+        const cost = modelRouter.getCost();
+        const costStr = cost > 0 ? `, $${cost.toFixed(4)}` : "";
         stdout.write(
-          chalk.gray(`\n[迭代: ${result.iterations}, 工具调用: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}]\n`)
+          chalk.gray(`\n[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}${costStr}]\n`)
         );
       } catch (err) {
         stopSpinner();
@@ -568,6 +595,10 @@ function pickDebateAgents(
   }
 
   return defaultPair;
+}
+
+function stripAnsiLen(s: string): number {
+  return s.replace(/\x1b\[\d+(;\d+)*m/g, "").length;
 }
 
 program.parse();

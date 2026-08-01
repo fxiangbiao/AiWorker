@@ -34,6 +34,7 @@ interface ModelsConfig {
     strategy: string;
     fallback: string;
   };
+  pricing?: Record<string, { prompt: number; completion: number }>;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,6 +43,8 @@ export class ModelRouter {
   private config: ModelsConfig;
   private clients = new Map<string, OpenAI>();
   private totalTokensUsed = 0;
+  private totalPromptTokens = 0;
+  private totalCompletionTokens = 0;
   private currentProfile = "";
 
   constructor(configPath?: string) {
@@ -129,6 +132,8 @@ export class ModelRouter {
       : { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
     this.totalTokensUsed += usage.totalTokens;
+    this.totalPromptTokens += usage.promptTokens;
+    this.totalCompletionTokens += usage.completionTokens;
 
     return {
       text: message.content ?? "",
@@ -160,8 +165,26 @@ export class ModelRouter {
     return this.totalTokensUsed;
   }
 
+  getPromptTokens(): number {
+    return this.totalPromptTokens;
+  }
+
+  getCompletionTokens(): number {
+    return this.totalCompletionTokens;
+  }
+
+  getCost(): number {
+    const provider = this.config.default.provider;
+    const price = this.config.pricing?.[provider];
+    if (!price) return 0;
+    return (this.totalPromptTokens / 1_000_000) * price.prompt +
+           (this.totalCompletionTokens / 1_000_000) * price.completion;
+  }
+
   resetTokenUsage(): void {
     this.totalTokensUsed = 0;
+    this.totalPromptTokens = 0;
+    this.totalCompletionTokens = 0;
   }
 
   getCurrentModel(): string {
@@ -238,6 +261,8 @@ export class ModelRouter {
 
         if (chunk.usage) {
           this.totalTokensUsed += chunk.usage.total_tokens;
+          this.totalPromptTokens += chunk.usage.prompt_tokens;
+          this.totalCompletionTokens += chunk.usage.completion_tokens;
         }
       }
 

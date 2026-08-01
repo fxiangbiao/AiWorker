@@ -5,6 +5,9 @@
     "baseURL": "https://api.deepseek.com",
     "apiKey": "${DEEPSEEK_API_KEY}"
   },
+  "pricing": {
+    "deepseek": { "prompt": 0.14, "completion": 0.28 }
+  },
   "profiles": {
     "coding": { "temperature": 0.2 },
     "reasoning": { "temperature": 0.3 },

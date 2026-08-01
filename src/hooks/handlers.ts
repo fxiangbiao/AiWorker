@@ -18,6 +18,7 @@ export interface HandlerDependencies {
   permissionModel?: PermissionModel;
   sessionStore?: SessionStore;
   modelRouter?: ModelRouter;
+  onFileDiff?: (filePath: string, added: number, removed: number) => void;
 }
 
 /**
@@ -257,7 +258,7 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
  * 用于审计和潜在的回滚
  * Hook 事件: onToolCallPre (存快照), onToolCallPost (算 diff)
  */
-export function createCaptureDiff(_deps: HandlerDependencies): HookHandler {
+export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
   // session -> (filePath -> oldContent)
   const snapshots = new Map<string, Map<string, string>>();
 
@@ -314,6 +315,8 @@ export function createCaptureDiff(_deps: HandlerDependencies): HookHandler {
 
       const diff = computeSimpleDiff(oldContent, newContent);
       if (!diff) return;
+
+      deps.onFileDiff?.(filePath, diff.added, diff.removed);
 
       try {
         auditLogger.log({
