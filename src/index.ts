@@ -184,6 +184,8 @@ program
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
+        // Defensive: prevent busy-loop if stdin is broken on Windows
+        await new Promise<void>((r) => setTimeout(r, 50));
         continue;
       }
 

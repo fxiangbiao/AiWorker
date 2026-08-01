@@ -85,10 +85,19 @@ export class TerminalRenderer {
   async prompt(): Promise<string> {
     if (!this.active) return this.fallbackPrompt();
     if (stdin.isPaused()) stdin.resume();
+    if (typeof stdin.setRawMode === "function") {
+      stdin.setRawMode(false);
+    }
 
-    const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
+    // Yield a tick to let the previous readline close fully (avoids stdin hang on Windows)
+    await new Promise<void>((r) => setImmediate(r));
+
     return new Promise<string>((resolve) => {
-      rl.question(chalk.cyan("你> "), (answer) => { rl.close(); resolve(answer); });
+      const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
+      rl.question(chalk.cyan("你> "), (answer) => {
+        rl.close();
+        resolve(answer);
+      });
     });
   }
 
