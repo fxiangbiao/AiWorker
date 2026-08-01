@@ -34,6 +34,7 @@ import { TeamCoordinator } from "./core/team-coordinator.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { inputCollector } from "./terminal/input.js";
+import { startServer } from "./server.js";
 import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
 
 const program = new Command();
@@ -46,6 +47,8 @@ program
   .option("--data-dir <directory>", "数据目录", resolve(process.cwd(), "data"))
   .option("-p, --project-dir <directory>", "项目输出目录", resolve(process.cwd(), "ai_default_project"))
   .option("--show-thinking", "显示模型思考过程（默认折叠）")
+  .option("--server", "启动 HTTP API 服务")
+  .option("--port <port>", "HTTP Server 端口", "3000")
   .action(async (options) => {
     const workingDir = resolve(options.dir);
     const dataDir = resolve(options.dataDir);
@@ -144,6 +147,20 @@ program
     };
 
     const coordinator = new TeamCoordinator(agents, modelRouter);
+
+    if (options.server) {
+      const port = parseInt(options.port, 10);
+      startServer(
+        {
+          modelRouter,
+          workingDir,
+          projectDir,
+          createAgent: (agentId: string) => agents[agentId] ?? agents["default"],
+        },
+        port,
+      );
+      return;
+    }
 
     let currentMode = options.mode as PermissionMode;
     let showThinking = !!options.showThinking;
