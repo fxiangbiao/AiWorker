@@ -75,7 +75,21 @@ export async function runAgentLoop(
         tools
       );
 
+      // 模型达到 token 上限导致截断 → 压缩重试
+      if (response.finishReason === "length" && !response.hasToolCalls) {
+        const { messages: compressed } = await contextManager.maybeCompress(messages);
+        messages = compressed;
+        iterations++;
+        continue;
+      }
+
       if (!response.hasToolCalls) {
+        // 空响应保护：模型可能因上下文过长放弃回答
+        if (!response.text || response.text.trim().length === 0) {
+          messages.push({ role: "user", content: "请继续完成任务。如果已完成，请给出总结。" });
+          iterations++;
+          continue;
+        }
         return {
           text: response.text,
           messages,
@@ -207,6 +221,7 @@ export async function runAgentLoopStream(
       );
 
       let fullText = "";
+      let streamFinishReason = "";
       const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();
 
       for await (const chunk of stream) {
@@ -238,6 +253,7 @@ export async function runAgentLoopStream(
             }
             break;
           case "done":
+            streamFinishReason = chunk.finishReason ?? "";
             break;
           case "error":
             throw new Error(chunk.error ?? "stream error");
@@ -298,7 +314,20 @@ export async function runAgentLoopStream(
         }
       }
 
-      // 纯文本响应 — 循环终止
+      // 纯文本响应 — 空响应保护 + finish_reason 检查
+      if (streamFinishReason === "length") {
+        const { messages: compressed } = await contextManager.maybeCompress(messages);
+        messages = compressed;
+        iterations++;
+        continue;
+      }
+
+      if (!fullText || fullText.trim().length === 0) {
+        messages.push({ role: "user", content: "请继续完成任务。如果已完成，请给出总结。" });
+        iterations++;
+        continue;
+      }
+
       return {
         text: fullText,
         messages,

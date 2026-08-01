@@ -74,13 +74,26 @@ export class TeamCoordinator {
       }
     }
 
-    const response = await this.modelRouter.completeWithProfile("reasoning", [
-      { role: "system", content: PLAN_SYSTEM_PROMPT },
-      { role: "user", content: instruction },
-    ]);
-
-    const plan = this.parsePlan(response.text, instruction);
-    return { plan, source: "llm" };
+    try {
+      const response = await this.modelRouter.completeWithProfile("reasoning", [
+        { role: "system", content: PLAN_SYSTEM_PROMPT },
+        { role: "user", content: instruction },
+      ]);
+      const plan = this.parsePlan(response.text, instruction);
+      return { plan, source: "llm" };
+    } catch {
+      // reasoning 模型不可用，降级到默认模型
+      try {
+        const response = await this.modelRouter.completeWithProfile("default", [
+          { role: "system", content: PLAN_SYSTEM_PROMPT },
+          { role: "user", content: instruction },
+        ]);
+        const plan = this.parsePlan(response.text, instruction);
+        return { plan, source: "llm" };
+      } catch {
+        return { plan: this.fallbackPlan(instruction), source: "template" };
+      }
+    }
   }
 
   /**

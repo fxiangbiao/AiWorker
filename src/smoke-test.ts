@@ -630,7 +630,7 @@ describe("14. Team Coordinator", () => {
     const { ModelRouter } = await import("./core/model-router.js");
 
     const modelRouter = new ModelRouter();
-    // 模拟 completeWithProfile 抛出错误（无 API key）来测试 fallback
+    // 模拟 completeWithProfile 抛出错误（无 API key）
     const originalComplete = modelRouter.completeWithProfile.bind(modelRouter);
     modelRouter.completeWithProfile = async () => { throw new Error("模拟失败"); };
 
@@ -640,7 +640,11 @@ describe("14. Team Coordinator", () => {
     const agents = { default: new DefaultAgent(deps) };
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
-    await expect(coordinator.plan("一个非常独特的任务")).rejects.toThrow();
+    // plan() 现在有 fallback：LLM 失败 → 降级为单步默认计划
+    const { plan, source } = await coordinator.plan("一个非常独特的任务");
+    expect(source).toBe("template"); // fallback 标记为 template
+    expect(plan.steps.length).toBe(1);
+    expect(plan.steps[0].expertId).toBe("default");
 
     modelRouter.completeWithProfile = originalComplete;
     sessionStore.close();
@@ -652,6 +656,10 @@ describe("14. Team Coordinator", () => {
     const { ModelRouter } = await import("./core/model-router.js");
 
     const modelRouter = new ModelRouter();
+    // 模拟 LLM 快速失败，避免网络超时
+    const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
+    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord4.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
     const deps = { modelRouter, contextManager, sessionStore };
@@ -666,14 +674,13 @@ describe("14. Team Coordinator", () => {
       estimatedSteps: 1,
     };
 
-    // 执行应该不会抛异常（错误被封装到 result 中）
-    // 注意：这里 agent.run 会因为没有 API key 而失败，但这是预期的
     const result = await coordinator.execute(plan, testDataDir);
     expect(result).toBeDefined();
     expect(typeof result.text).toBe("string");
 
+    modelRouter.completeWithProfile = origComplete;
     sessionStore.close();
-  });
+  }, 10000);
 
   it("execute 处理多步流水线", async () => {
     const { TeamCoordinator } = await import("./core/team-coordinator.js");
@@ -681,6 +688,9 @@ describe("14. Team Coordinator", () => {
     const { ModelRouter } = await import("./core/model-router.js");
 
     const modelRouter = new ModelRouter();
+    const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
+    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord5.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
     const deps = { modelRouter, contextManager, sessionStore };
@@ -700,8 +710,9 @@ describe("14. Team Coordinator", () => {
     expect(result.plan.steps.length).toBe(2);
     expect(typeof result.text).toBe("string");
 
+    modelRouter.completeWithProfile = origComplete;
     sessionStore.close();
-  });
+  }, 10000);
 
   it("validateSteps 自动去除环依赖", async () => {
     const { TeamCoordinator } = await import("./core/team-coordinator.js");
@@ -709,13 +720,15 @@ describe("14. Team Coordinator", () => {
     const { ModelRouter } = await import("./core/model-router.js");
 
     const modelRouter = new ModelRouter();
+    const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
+    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord6.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
     const deps = { modelRouter, contextManager, sessionStore };
     const agents = { default: new DefaultAgent(deps) };
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
-    // 构造一个带环的计划: s1 → s2, s2 → s3, s3 → s1
     const plan = {
       steps: [
         { id: "s1", description: "step1", expertId: "default", dependsOn: ["s3"] as string[], critical: true },
@@ -727,11 +740,11 @@ describe("14. Team Coordinator", () => {
     };
 
     const result = await coordinator.execute(plan, testDataDir);
-    // 环依赖被移除后应该能正常执行
     expect(typeof result.text).toBe("string");
 
+    modelRouter.completeWithProfile = origComplete;
     sessionStore.close();
-  });
+  }, 10000);
 
   it("synthesize 生成含全部步骤的报告", async () => {
     const { TeamCoordinator } = await import("./core/team-coordinator.js");
@@ -739,6 +752,9 @@ describe("14. Team Coordinator", () => {
     const { ModelRouter } = await import("./core/model-router.js");
 
     const modelRouter = new ModelRouter();
+    const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
+    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord7.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
     const deps = { modelRouter, contextManager, sessionStore };
@@ -757,8 +773,9 @@ describe("14. Team Coordinator", () => {
     expect(result.text).toContain("测试汇总");
     expect(result.text).toContain("s1");
 
+    modelRouter.completeWithProfile = origComplete;
     sessionStore.close();
-  });
+  }, 10000);
 });
 
 describe("15. 记忆系统增强 (Sprint 8)", () => {

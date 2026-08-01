@@ -9,23 +9,18 @@
   },
   "profiles": {
     "coding": {
-      "model": "gpt-4o",
       "temperature": 0.2
     },
     "reasoning": {
-      "model": "o3-mini",
       "temperature": 0.3
     },
     "writing": {
-      "model": "gpt-4o-mini",
       "temperature": 0.8
     },
     "creative": {
-      "model": "gpt-4o",
       "temperature": 0.9
     },
     "lite": {
-      "model": "gpt-4o-mini",
       "temperature": 0.5
     }
   },

@@ -42,15 +42,22 @@ export class TerminalRenderer {
       : "";
     const queueStr = status.queueSize > 0 ? `排队: ${status.queueSize}` : "";
 
+    const modeLabels: Record<string, string> = {
+      ask: "询问",
+      plan: "规划",
+      craft: "执行",
+    };
+    const modeLabel = modeLabels[status.mode] ?? status.mode;
+
     const rawParts: string[] = [
-      status.mode.toUpperCase(),
+      `${status.mode.toUpperCase()} ${modeLabel}`,
       status.model || "",
       tokenStr,
       queueStr,
     ].filter(Boolean);
 
     const parts = [
-      chalk.bold.cyan(status.mode.toUpperCase()),
+      chalk.bold.cyan(`[${status.mode.toUpperCase()}] ${modeLabel}`),
       status.model ? chalk.bold.white(status.model) : "",
       tokenStr ? (pct > 80 ? chalk.bold.yellow(tokenStr) : chalk.bold.white(tokenStr)) : "",
       queueStr ? chalk.yellow(queueStr) : "",
@@ -74,7 +81,7 @@ export class TerminalRenderer {
     // if too wide, truncate middle parts
     if (leftLen + rightLen + 4 > maxWidth) {
       // keep mode + right help, drop middle
-      leftText = chalk.bold.cyan(status.mode.toUpperCase());
+      leftText = chalk.bold.cyan(`[${status.mode.toUpperCase()}] ${modeLabels[status.mode] ?? status.mode}`);
       if (queueStr) leftText += sep + chalk.yellow(queueStr);
       if (tokenStr) leftText += sep + (pct > 80 ? chalk.bold.yellow(tokenStr) : chalk.bold.white(tokenStr));
     }
