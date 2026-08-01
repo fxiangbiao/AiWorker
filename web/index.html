@@ -240,6 +240,7 @@ function renderTimeline(timeline){
   }
   return html;
 }
+function renderToolCard(m){
   const cls=m.result?m.error?'error':'':'';
   let args='';try{args=typeof m.args==='string'?m.args:JSON.stringify(m.args,null,2)}catch(e){}
   let result='';if(m.result&&!m.error)result=`<div class="tc-result">${m.resultPreview?esc(m.resultPreview.slice(0,200)):''}${m.duration?` &middot; ${m.duration}ms`:''}</div>`;
