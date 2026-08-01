@@ -210,7 +210,7 @@ program
       }
 
       if (trimmed === "/help") {
-        const table = [
+        const table: [string, string, string][] = [
           ["/plan <描述>",     "多专家 DAG 协作",        "自动分解任务，拓扑序执行"],
           ["/debate <话题>",   "双专家辩论",             "两专家独立分析+互审+综合报告"],
           ["/mode <模式>",     "切换权限模式",           "ask(只读) / plan(确认后执行) / craft(自动执行)"],
@@ -219,20 +219,25 @@ program
           ["/status",          "显示运行状态",           "模式/模型/token/排队"],
           ["/help",            "帮助信息",               "显示此表"],
           ["/exit",            "退出",                   ""],
-          ["",                 "",                       ""],
-          [chalk.dim("技能数量"), chalk.dim("快捷用法"), chalk.dim(`共 ${skillCount} 个, 输入 /<技能名> 激活`)],
         ];
-        const colWidths = [22, 24, 50];
-        stdout.write(chalk.cyan("\n┌─" + "─".repeat(colWidths[0]) + "─┬─" + "─".repeat(colWidths[1]) + "─┬─" + "─".repeat(Math.min(colWidths[2], 50)) + "─┐\n"));
-        stdout.write(`│ ${chalk.bold("命令".padEnd(colWidths[0]))} │ ${chalk.bold("功能".padEnd(colWidths[1]))} │ ${chalk.bold("说明".padEnd(Math.min(colWidths[2], 50)))} │\n`);
-        stdout.write("├─" + "─".repeat(colWidths[0]) + "─┼─" + "─".repeat(colWidths[1]) + "─┼─" + "─".repeat(Math.min(colWidths[2], 50)) + "─┤\n");
+        const colW = [20, 22, 50] as const;
+
+        const hline = (left: string, mid: string, right: string) =>
+          left + "─".repeat(colW[0]) + mid + "─".repeat(colW[1]) + mid + "─".repeat(colW[2]) + right;
+
+        stdout.write(chalk.cyan(`\n${hline("┌─", "─┬─", "─┐")}\n`));
+        stdout.write(`│ ${chalk.bold(padToWidth("命令", colW[0]))} │ ${chalk.bold(padToWidth("功能", colW[1]))} │ ${chalk.bold(padToWidth("说明", colW[2]))} │\n`);
+        stdout.write(`${hline("├─", "─┼─", "─┤")}\n`);
         for (const [cmd, func, desc] of table) {
-          const c = cmd.padEnd(colWidths[0] + (cmd.length - stripAnsiLen(cmd))).slice(0, colWidths[0]);
-          const f = func.padEnd(colWidths[1] + (func.length - stripAnsiLen(func))).slice(0, colWidths[1]);
-          const d = desc.slice(0, Math.min(colWidths[2], 50));
-          stdout.write(`│ ${c} │ ${f} │ ${d.padEnd(Math.min(colWidths[2], 50))} │\n`);
+          const c = padToWidth(cmd, colW[0]);
+          const f = padToWidth(func, colW[1]);
+          const d = padToWidth(desc, colW[2]);
+          stdout.write(`│ ${c} │ ${f} │ ${d} │\n`);
         }
-        stdout.write("└─" + "─".repeat(colWidths[0]) + "─┴─" + "─".repeat(colWidths[1]) + "─┴─" + "─".repeat(Math.min(colWidths[2], 50)) + "─┘\n\n");
+        // 补充技能数量提示行
+        const skillHint = `共 ${skillCount} 个，输入 /<技能名> 激活`;
+        stdout.write(`│ ${padToWidth(chalk.dim("技能数量"), colW[0])} │ ${padToWidth(chalk.dim("快捷用法"), colW[1])} │ ${chalk.dim(skillHint)}${" ".repeat(Math.max(0, colW[2] - displayWidth(skillHint)))} │\n`);
+        stdout.write(`${hline("└─", "─┴─", "─┘")}\n\n`);
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
@@ -599,6 +604,23 @@ function pickDebateAgents(
 
 function stripAnsiLen(s: string): number {
   return s.replace(/\x1b\[\d+(;\d+)*m/g, "").length;
+}
+
+function displayWidth(s: string): number {
+  let w = 0;
+  // strip ANSI first
+  const clean = s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+  for (const ch of clean) {
+    // CJK + fullwidth chars take 2 columns
+    w += (ch.codePointAt(0) ?? 0) > 0x7f ? 2 : 1;
+  }
+  return w;
+}
+
+function padToWidth(s: string, targetWidth: number): string {
+  const w = displayWidth(s);
+  if (w >= targetWidth) return s;
+  return s + " ".repeat(targetWidth - w);
 }
 
 program.parse();
