@@ -89,15 +89,17 @@ export class TerminalRenderer {
       stdin.setRawMode(false);
     }
 
+    // On Windows, the previous readline's close() cleanup is async (multiple
+    // event-loop ticks). Without this delay, the next createInterface inherits
+    // stale listeners and freezes stdin. 50ms is the minimum observed to work
+    // reliably after raw-mode cycles with inputCollector.
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
     return new Promise<string>((resolve) => {
-      const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
       rl.question(chalk.cyan("你> "), (answer) => {
-        // Wait for close to fully settle before resolving.
-        // rl.close() cleanup includes removing data listeners and restoring
-        // stdin console mode; resolving early causes raw-mode conflicts with
-        // inputCollector that freeze stdin on Windows.
-        rl.on("close", () => resolve(answer));
         rl.close();
+        resolve(answer);
       });
     });
   }

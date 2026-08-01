@@ -292,13 +292,46 @@ export class SessionStore {
   }
 
   getTurnLogs(sessionId: string): TurnLog[] {
-    return this.db.prepare(
-      `SELECT * FROM turn_logs WHERE session_id = ? ORDER BY seq`).all(sessionId) as TurnLog[];
+    const rows = this.db.prepare(
+      `SELECT id, session_id, agent_id, seq, user_input, started_at, finished_at,
+       iterations, tool_calls_total, tool_calls_success, tool_calls_failed,
+       tokens_prompt, tokens_completion, finish_reason, error
+       FROM turn_logs WHERE session_id = ? ORDER BY seq`).all(sessionId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as string,
+      sessionId: r.session_id as string,
+      agentId: r.agent_id as string,
+      seq: r.seq as number,
+      userInput: (r.user_input as string) ?? "",
+      startedAt: r.started_at as number,
+      finishedAt: r.finished_at as number,
+      iterations: r.iterations as number,
+      toolCallsTotal: r.tool_calls_total as number,
+      toolCallsSuccess: r.tool_calls_success as number,
+      toolCallsFailed: r.tool_calls_failed as number,
+      tokensPrompt: r.tokens_prompt as number,
+      tokensCompletion: r.tokens_completion as number,
+      finishReason: r.finish_reason as string,
+      error: r.error as string | undefined,
+    }));
   }
 
   getToolCallLogs(turnId: string): ToolCallLog[] {
-    return this.db.prepare(
-      `SELECT * FROM tool_call_logs WHERE turn_id = ? ORDER BY started_at`).all(turnId) as ToolCallLog[];
+    const rows = this.db.prepare(
+      `SELECT id, turn_id, tool_name, iteration, args, started_at, duration_ms, success, result_preview, error
+       FROM tool_call_logs WHERE turn_id = ? ORDER BY started_at`).all(turnId) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as string,
+      turnId: r.turn_id as string,
+      toolName: r.tool_name as string,
+      iteration: r.iteration as number,
+      args: (r.args as string) ?? "",
+      startedAt: r.started_at as number,
+      durationMs: r.duration_ms as number,
+      success: !!r.success,
+      resultPreview: (r.result_preview as string) ?? "",
+      error: r.error as string | undefined,
+    }));
   }
 
   close(): void {
