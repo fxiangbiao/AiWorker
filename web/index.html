@@ -245,7 +245,7 @@ function handleSSE(data){
   switch(data.type){
     case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.thinking=(agent.thinking||'')+(data.content||'');agent.thinkingSteps=(agent.thinkingSteps||0)+1;renderAll();scrollBottom();break}
     case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
-    case 'tool_call':{addMsg({role:'tool_call',name:data.name,args:data.args,id:data.id});renderAll();scrollBottom();break}
+    case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent&&agent.content){addMsg({role:'assistant',agentId:STATE.agentId,content:''})}addMsg({role:'tool_call',name:data.name,args:data.args,id:data.id});renderAll();scrollBottom();break}
     case 'tool_result':{const tc=STATE.messages.filter(m=>m.role==='tool_call').pop();if(tc){tc.result=true;tc.duration=data.duration;tc.resultPreview=data.summary;if(!data.success)tc.error=data.summary}if(data.filePath)STATE.diffs.push({filePath:data.filePath,added:data.added||0,removed:data.removed||0});renderAll();scrollBottom();break}
     case 'done':{if(data.tokenUsage){totalTokens=data.tokenUsage.total||0;currentModel=data.model}updateStatusBar();break}
     case 'error':{const d=document.createElement('div');d.className='error-banner';d.textContent=data.message;$('#msg-list').appendChild(d);scrollBottom();break}

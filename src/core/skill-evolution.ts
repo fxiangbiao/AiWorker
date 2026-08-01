@@ -3,7 +3,7 @@
  * 流水线: LLM 知识提取 → 去重 → 验证 → 评分 → 注册
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { skillRegistry } from "./skill-registry.js";
 import type { Message } from "../types.js";
@@ -129,6 +129,7 @@ export class SkillEvolution {
 
       writeFileSync(targetPath, raw, "utf-8");
       skillRegistry.reloadSkill(targetPath);
+      try { unlinkSync(filePath); } catch { /* 清理 pending 文件，失败不影响 */ }
       return true;
     } catch {
       return false;
