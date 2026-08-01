@@ -8,8 +8,18 @@ import type { Message, ModelProvider } from "../types.js";
 const CONTEXT_WINDOW = 32768; // 本地模型默认上下文（可适配 8K-32K）
 const COMPRESS_THRESHOLD = 0.75; // 75% 触发压缩
 
-function calcKeepRecent(totalCount: number): number {
-  return Math.max(4, Math.min(20, Math.ceil(totalCount * 0.2)));
+/**
+ * 按用户轮次拆分对话，返回轮次边界索引列表
+ * 每个 user 消息标志一个新轮次的开始，轮次内 assistant+tool 不可分割
+ */
+function findTurnBoundaries(conversation: Message[]): number[] {
+  const boundaries: number[] = [];
+  for (let i = 0; i < conversation.length; i++) {
+    if (conversation[i].role === "user") {
+      boundaries.push(i);
+    }
+  }
+  return boundaries;
 }
 
 // 粗略 token 估算 (英文 ~4 字符/token，中文 ~2 字符/token)
@@ -57,49 +67,31 @@ export class ContextCompressor {
    */
   async compress(messages: Message[]): Promise<{ messages: Message[]; result: CompressResult }> {
     const originalTokens = estimateTokens(messages);
-    const keepCount = calcKeepRecent(messages.length);
 
-    if (messages.length <= keepCount + 1) {
+    // 分离系统消息和对话历史
+    const systemMessages = messages.filter((m) => m.role === "system");
+    const conversation = messages.filter((m) => m.role !== "system");
+
+    // 按用户轮次划分——每个 user 消息标志新轮次，轮次内不可分割
+    const boundaries = findTurnBoundaries(conversation);
+    const keepTurns = Math.max(2, Math.min(10, Math.ceil(boundaries.length * 0.2)));
+
+    if (boundaries.length <= keepTurns) {
       return {
         messages,
         result: { compressed: false, originalTokens, compressedTokens: originalTokens },
       };
     }
 
-    // 分离系统消息和对话历史
-    const systemMessages = messages.filter((m) => m.role === "system");
-    const conversation = messages.filter((m) => m.role !== "system");
-
-    // 保留最近的对话
-    const toCompress = conversation.slice(0, conversation.length - keepCount);
-    let toKeep = conversation.slice(conversation.length - keepCount);
-
-    // 修复：避免 toKeep 开头出现孤立的 tool 消息
-    // 当切片边界落在 assistant(tool_calls) 和 tool 响应之间时，
-    // toKeep 开头的 tool 消息会因为没有前置 assistant 而被 API 拒绝
-    while (toKeep.length > 0 && toKeep[0].role === "tool") {
-      let pullIdx = -1;
-      for (let i = toCompress.length - 1; i >= 0; i--) {
-        if (toCompress[i].role === "assistant" && toCompress[i].tool_calls) {
-          pullIdx = i;
-          break;
-        }
-      }
-      if (pullIdx >= 0) {
-        toKeep = [...toCompress.splice(pullIdx), ...toKeep];
-      } else {
-        toKeep = toKeep.filter((m) => m.role !== "tool");
-        break;
-      }
-    }
+    const splitIdx = boundaries[boundaries.length - keepTurns];
+    const toCompress = conversation.slice(0, splitIdx);
+    const toKeep = conversation.slice(splitIdx);
 
     let summary = "";
 
     if (this.modelProvider) {
-      // 用 LLM 生成摘要
       summary = await this.generateSummary(toCompress);
     } else {
-      // 无模型时用简单截断摘要
       summary = this.simpleSummary(toCompress);
     }
 
