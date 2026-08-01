@@ -50,6 +50,7 @@ export async function runAgentLoop(
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
   let toolCallsExecuted = 0;
+  let consecutiveLength = 0;
   const mode = config.permissions.defaultMode;
 
   const toolCtx: ToolContext = {
@@ -80,8 +81,18 @@ export async function runAgentLoop(
         tools
       );
 
-      // 模型达到 token 上限导致截断 → 压缩重试
+      // 模型达到 token 上限导致截断 → 压缩重试（含断路器）
       if (response.finishReason === "length" && !response.hasToolCalls) {
+        consecutiveLength++;
+        if (consecutiveLength >= 3) {
+          return {
+            text: response.text || "上下文过长，无法继续",
+            messages,
+            iterations: iterations + 1,
+            truncated: true,
+            toolCallsExecuted,
+          };
+        }
         const { messages: compressed } = await contextManager.maybeCompress(messages);
         messages = compressed;
         iterations++;
@@ -95,6 +106,7 @@ export async function runAgentLoop(
           iterations++;
           continue;
         }
+        consecutiveLength = 0;
         return {
           text: response.text,
           messages,
@@ -124,6 +136,7 @@ export async function runAgentLoop(
         });
       }
 
+      consecutiveLength = 0;
       iterations++;
     } catch (err) {
       const errorMsg = (err as Error).message;
@@ -186,6 +199,7 @@ export async function runAgentLoopStream(
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
   let toolCallsExecuted = 0;
+  let consecutiveLength = 0;
   const mode = config.permissions.defaultMode;
 
   const toolCtx: ToolContext = {
@@ -321,12 +335,23 @@ export async function runAgentLoopStream(
           }
 
           iterations++;
+          consecutiveLength = 0;
           continue;
         }
       }
 
       // 纯文本响应 — 空响应保护 + finish_reason 检查
       if (streamFinishReason === "length") {
+        consecutiveLength++;
+        if (consecutiveLength >= 3) {
+          return {
+            text: fullText || "上下文过长，无法继续",
+            messages,
+            iterations: iterations + 1,
+            truncated: true,
+            toolCallsExecuted,
+          };
+        }
         const { messages: compressed } = await contextManager.maybeCompress(messages);
         messages = compressed;
         iterations++;
@@ -339,6 +364,7 @@ export async function runAgentLoopStream(
         continue;
       }
 
+      consecutiveLength = 0;
       return {
         text: fullText,
         messages,

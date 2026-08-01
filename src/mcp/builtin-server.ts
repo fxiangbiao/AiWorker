@@ -73,12 +73,13 @@ function safeEval(expr: string): string {
 
   try {
     const result = new Function(`return (${sanitized})`)();
-    for (const key of allowedMethods) {
-      delete (globalThis as unknown as Record<string, unknown>)[key];
-    }
     return String(result);
   } catch {
     throw new Error("表达式计算失败");
+  } finally {
+    for (const key of allowedMethods) {
+      delete (globalThis as unknown as Record<string, unknown>)[key];
+    }
   }
 }
 

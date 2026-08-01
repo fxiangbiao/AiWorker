@@ -30,6 +30,15 @@ export class ContextManager {
     memory: string;
     user: string;
   };
+  private _writeLock: Promise<void> = Promise.resolve();
+
+  private async acquireLock(): Promise<() => void> {
+    const prev = this._writeLock;
+    let release: () => void;
+    this._writeLock = new Promise<void>((r) => { release = r; });
+    await prev;
+    return release!;
+  }
 
   constructor(sessionStore: SessionStoreClass, dataDir: string, compressor?: ContextCompressor) {
     this.sessionStore = sessionStore;
@@ -143,8 +152,8 @@ export class ContextManager {
   }
 
   /** 写入项目信息段（不影响会话历史） */
-  updateMemory(content: string): void {
-    this.writeProjectSection(content);
+  async updateMemory(content: string): Promise<void> {
+    await this.writeProjectSection(content);
   }
 
   /** 写入 USER.md */
@@ -162,7 +171,7 @@ export class ContextManager {
     const today = new Date().toISOString().slice(0, 10);
     const entry = `- [${today}] ${taskDescription.slice(0, 120)}`;
 
-    this.appendHistoryEntry(entry);
+    await this.appendHistoryEntry(entry);
 
     // 自动更新用户画像
     const profile = this.extractUserProfile(messages);
@@ -217,19 +226,29 @@ export class ContextManager {
     writeFileSync(path, lines.join("\n"), "utf-8");
   }
 
-  private writeProjectSection(content: string): void {
-    const { sessionHistory } = this.parseSections();
-    this.writeSections(content, sessionHistory);
+  private async writeProjectSection(content: string): Promise<void> {
+    const release = await this.acquireLock();
+    try {
+      const { sessionHistory } = this.parseSections();
+      this.writeSections(content, sessionHistory);
+    } finally {
+      release();
+    }
   }
 
-  private appendHistoryEntry(entry: string): void {
-    const { projectInfo, sessionHistory } = this.parseSections();
-    const lines = sessionHistory
-      .split("\n")
-      .filter((l) => l.trim())
-      .slice(0, 20); // 保留最多 20 条
-    lines.unshift(entry);
-    this.writeSections(projectInfo, lines.join("\n"));
+  private async appendHistoryEntry(entry: string): Promise<void> {
+    const release = await this.acquireLock();
+    try {
+      const { projectInfo, sessionHistory } = this.parseSections();
+      const lines = sessionHistory
+        .split("\n")
+        .filter((l) => l.trim())
+        .slice(0, 20); // 保留最多 20 条
+      lines.unshift(entry);
+      this.writeSections(projectInfo, lines.join("\n"));
+    } finally {
+      release();
+    }
   }
 
   // ── 用户画像提取 ──

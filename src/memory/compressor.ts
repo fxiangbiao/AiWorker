@@ -107,7 +107,11 @@ export class ContextCompressor {
     let summary = "";
 
     if (this.modelProvider) {
-      summary = await this.generateSummary(toCompress);
+      try {
+        summary = await this.generateSummary(toCompress);
+      } catch {
+        summary = this.simpleSummary(toCompress);
+      }
     } else {
       summary = this.simpleSummary(toCompress);
     }

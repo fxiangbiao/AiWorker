@@ -834,7 +834,7 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
     const mgr = new ContextManager(store, testDataDir);
 
     // 写入项目信息
-    mgr.updateMemory("这是 React 18 + TypeScript 项目\n使用 Vitest 做测试");
+    await mgr.updateMemory("这是 React 18 + TypeScript 项目\n使用 Vitest 做测试");
     // 写入会话历史
     await mgr.summarizeSession(
       [{ role: "user", content: "帮我实现一个组件" }],
@@ -858,7 +858,7 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
     const mgr = new ContextManager(store, testDataDir);
 
     // 写入项目信息
-    mgr.updateMemory("React 18 + TypeScript");
+    await mgr.updateMemory("React 18 + TypeScript");
 
     // 多次写入会话历史
     for (let i = 0; i < 5; i++) {
