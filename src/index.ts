@@ -222,27 +222,7 @@ program
         continue;
       }
 
-      if (trimmed.startsWith("/")) {
-        const skillName = trimmed.slice(1).trim();
-        const skill = skillRegistry.getAll().find((s) =>
-          s.name.toLowerCase() === skillName.toLowerCase()
-        );
-        if (skill) {
-          stdout.write(chalk.cyan(`\n📋 调用技能: ${skill.name}\n`));
-          trimmed = `请使用 ${skill.name} 技能完成任务：\n\n${skill.body}\n\n用户任务：\n`;
-        } else {
-          stdout.write(chalk.yellow(`\n未找到技能 "${skillName}"\n`));
-          const allSkills = skillRegistry.getAll().map((s) => chalk.cyan(s.name));
-          stdout.write(chalk.gray(`可用技能: ${allSkills.join(", ")}\n\n`));
-          renderer.printStatus({
-            mode: currentMode, model: modelRouter.getCurrentModel(),
-            tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
-          });
-          continue;
-        }
-      }
-
-      // ─── 多专家协作（/plan 命令） ───
+      // ─── 多专家协作（/plan 命令，必须在 /skill 之前） ───
       if (trimmed.startsWith("/plan ")) {
         const planDesc = trimmed.slice(6).trim();
         if (!planDesc) {
@@ -272,7 +252,6 @@ program
         const plan = planResult.plan;
         stdout.write(chalk.green(`✓ 计划已生成 (${plan.steps.length} 步, ${planResult.source})\n`));
 
-        // 展示计划
         for (const step of plan.steps) {
           const deps = step.dependsOn.length > 0 ? chalk.gray(` ← ${step.dependsOn.join(", ")}`) : "";
           stdout.write(`  ${chalk.cyan(step.id)}: ${chalk.yellow(step.expertId)} — ${step.description}${deps}\n`);
@@ -304,6 +283,26 @@ program
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
         continue;
+      }
+
+      if (trimmed.startsWith("/")) {
+        const skillName = trimmed.slice(1).trim();
+        const skill = skillRegistry.getAll().find((s) =>
+          s.name.toLowerCase() === skillName.toLowerCase()
+        );
+        if (skill) {
+          stdout.write(chalk.cyan(`\n📋 调用技能: ${skill.name}\n`));
+          trimmed = `请使用 ${skill.name} 技能完成任务：\n\n${skill.body}\n\n用户任务：\n`;
+        } else {
+          stdout.write(chalk.yellow(`\n未找到技能 "${skillName}"\n`));
+          const allSkills = skillRegistry.getAll().map((s) => chalk.cyan(s.name));
+          stdout.write(chalk.gray(`可用技能: ${allSkills.join(", ")}\n\n`));
+          renderer.printStatus({
+            mode: currentMode, model: modelRouter.getCurrentModel(),
+            tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
+          });
+          continue;
+        }
       }
 
       // ─── 路由 & 执行 ───

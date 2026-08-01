@@ -64,6 +64,9 @@ export async function runAgentLoop(
         await contextManager.maybeCompress(messages);
       if (didCompress) {
         messages = compressed;
+      } else if (iterations >= 5 && iterations % 5 === 0) {
+        const { messages: forced } = await contextManager.maybeCompress(messages);
+        messages = forced;
       }
 
       const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
@@ -206,6 +209,9 @@ export async function runAgentLoopStream(
         await contextManager.maybeCompress(messages);
       if (didCompress) {
         messages = compressed;
+      } else if (iterations >= 5 && iterations % 5 === 0) {
+        const { messages: forced } = await contextManager.maybeCompress(messages);
+        messages = forced;
       }
 
       const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);

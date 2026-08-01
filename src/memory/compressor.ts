@@ -5,8 +5,8 @@
 
 import type { Message, ModelProvider } from "../types.js";
 
-const CONTEXT_WINDOW = 128000; // 默认上下文窗口大小
-const COMPRESS_THRESHOLD = 0.75; // 75% 触发压缩（兼容本地 32K 模型）
+const CONTEXT_WINDOW = 32768; // 本地模型默认上下文（可适配 8K-32K）
+const COMPRESS_THRESHOLD = 0.65; // 65% 触发压缩
 
 function calcKeepRecent(totalCount: number): number {
   return Math.max(4, Math.min(20, Math.ceil(totalCount * 0.2)));
