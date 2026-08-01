@@ -8,4 +8,5 @@ data-test/
 .env
 .env.local
 skills/pending/
+skills/default/
 ai_default_project/
