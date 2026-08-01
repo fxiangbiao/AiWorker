@@ -1,10 +1,13 @@
 /**
  * TerminalRenderer — 终端输出 + 状态栏
  *
- * 简化设计：不抢光标、不管理布局。状态栏为普通输出行，输入由 readline 全权处理。
+ * 设计原则：
+ * - 状态栏仅在"空闲"和"思考"阶段出现在当前行，用 \r 原地刷新
+ * - 流式文本输出期间不显示状态栏（避免滚动混乱）
+ * - 工具调用/结果以独立行展示，完成后可打印状态
  */
 
-import { enableVT, savePosition, restorePosition, moveTo, clearLine, clearLineFromCursor } from "./ansi.js";
+import { enableVT } from "./ansi.js";
 import chalk from "chalk";
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
@@ -23,8 +26,6 @@ export interface StatusLine {
 
 export class TerminalRenderer {
   private active = false;
-  private statusDirty = false;
-  private currentStatus: StatusLine | null = null;
 
   init(): void {
     this.active = true;
@@ -32,49 +33,80 @@ export class TerminalRenderer {
   }
 
   /**
-   * 更新常驻状态栏 — 在当前行刷新，不影响上方内容
-   * 配合流式输出使用：文本行在上面滚动，状态栏保持在最后一行
+   * 内联刷新状态栏 — 仅用于光标在同一行时（思考/spinner 阶段）
+   * 使用 \r 回到行首 + 清行 + 重写
    */
   updateLiveStatus(status: StatusLine): void {
     if (!this.active) return;
-    this.currentStatus = status;
-    this.statusDirty = true;
-
     const text = this.buildStatusText(status);
-    // CR + 清行 + 写状态（不换行，保持光标在状态行内）
-    stdout.write(`\r${clearLineFromCursor()}${text}`);
+    stdout.write(`\r\x1b[2K${text}`);
   }
 
   /**
-   * 输出内容行 — 自动把状态栏推到内容下方
+   * 结束内联状态栏 — 换行离开状态行，之后可正常输出内容
    */
-  writeContentLine(text: string): void {
-    if (!this.active) { stdout.write(text + "\n"); return; }
-    // 清除当前状态行 → 写内容 → 换行 → 恢复状态
-    stdout.write(`\r${clearLineFromCursor()}${text}\n`);
-    if (this.currentStatus && this.statusDirty) {
-      stdout.write(this.buildStatusText(this.currentStatus));
-    }
+  endLiveStatus(): void {
+    if (!this.active) return;
+    stdout.write(`\r\x1b[2K\n`);
   }
 
   /**
-   * 流式写入文本（不换行，不破坏状态栏）
-   * 直接输出，状态栏在之后的 updateLiveStatus 刷新时恢复
+   * 打印单行状态（带换行）
    */
-  writeStreamText(text: string): void {
-    if (!this.active) { stdout.write(text); return; }
+  printStatus(status: StatusLine): void {
+    if (!this.active) return;
+    stdout.write(this.buildStatusText(status) + "\n");
+  }
+
+  // ── 普通内容输出 ──
+
+  write(text: string): void {
     stdout.write(text);
   }
 
-  /**
-   * 清除状态栏（换行离开状态行）
-   */
-  clearStatusLine(): void {
-    if (!this.currentStatus) return;
-    stdout.write(`\r${clearLineFromCursor()}\n`);
-    this.currentStatus = null;
-    this.statusDirty = false;
+  writeLine(text: string): void {
+    stdout.write(text + "\n");
   }
+
+  writeError(text: string): void {
+    stdout.write(chalk.red(text) + "\n");
+  }
+
+  writeSuccess(text: string): void {
+    stdout.write(chalk.green(text) + "\n");
+  }
+
+  writeInfo(text: string): void {
+    stdout.write(chalk.gray(text) + "\n");
+  }
+
+  // ── 输入 / 生命周期 ──
+
+  async prompt(): Promise<string> {
+    if (!this.active) return this.fallbackPrompt();
+    if (stdin.isPaused()) stdin.resume();
+
+    const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
+    return new Promise<string>((resolve) => {
+      rl.question(chalk.cyan("你> "), (answer) => { rl.close(); resolve(answer); });
+    });
+  }
+
+  async promptWithText(prefill: string): Promise<string> {
+    if (!this.active) return prefill;
+    return new Promise<string>((resolve) => {
+      const rl = createInterface({ input: process.stdin, output: stdout, terminal: true });
+      rl.question(chalk.cyan("你> "), (answer) => { rl.close(); resolve(answer || prefill); });
+      rl.write(prefill);
+    });
+  }
+
+  destroy(): void {
+    this.active = false;
+    stdout.write("\n");
+  }
+
+  // ── 内部 ──
 
   private buildStatusText(status: StatusLine): string {
     const pct = status.tokensMax > 0
@@ -83,18 +115,14 @@ export class TerminalRenderer {
     const tokenStr = status.tokensMax > 0
       ? `${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)}`
       : "";
-    const pctStr = status.tokensMax > 0
-      ? `${pct}%`
-      : "";
+    const pctStr = status.tokensMax > 0 ? `${pct}%` : "";
     const iterStr = status.iteration != null
       ? `iter ${status.iteration}${status.maxIter ? `/${status.maxIter}` : ""}`
       : "";
     const queueStr = status.queueSize > 0 ? `排队:${status.queueSize}` : "";
     const toolStr = status.toolName ? `🛠 ${status.toolName}` : "";
 
-    const modeLabels: Record<string, string> = {
-      ask: "询问", plan: "规划", craft: "执行",
-    };
+    const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", craft: "执行" };
     const modeLabel = modeLabels[status.mode] ?? status.mode;
 
     const parts = [
@@ -107,11 +135,7 @@ export class TerminalRenderer {
     ].filter(Boolean);
 
     const sep = chalk.gray(" │ ");
-    let line = "";
-    for (let i = 0; i < parts.length; i++) {
-      if (i > 0) line += sep;
-      line += parts[i];
-    }
+    let line = parts.join(sep);
 
     const right = chalk.gray(status.extra ?? "/help /thinking /exit");
     const { columns } = stdout;
@@ -125,7 +149,7 @@ export class TerminalRenderer {
       const compact = [
         chalk.bold.cyan(`[${status.mode.toUpperCase()}]`),
         status.model ? chalk.white(status.model) : "",
-        tokenStr ? (pct > 80 ? chalk.bold.yellow(`${tokenStr}`) : chalk.white(tokenStr)) : "",
+        tokenStr ? (pct > 80 ? chalk.bold.yellow(tokenStr) : chalk.white(tokenStr)) : "",
         toolStr ? chalk.blue(toolStr) : "",
         queueStr ? chalk.yellow(queueStr) : "",
       ].filter(Boolean).join(sep);
@@ -138,101 +162,15 @@ export class TerminalRenderer {
     return `${chalk.gray("─")} ${line}${" ".repeat(pad)}${right} ${chalk.gray("─")}`;
   }
 
-  /**
-   * 打印状态栏 — 普通输出行 (一次性，不使用常驻模式)
-   */
-  printStatus(status: StatusLine): void {
-    if (!this.active) return;
-    this.currentStatus = null;
-    stdout.write(this.buildStatusText(status) + "\n");
-  }
-
-  async prompt(): Promise<string> {
-    if (!this.active) return this.fallbackPrompt();
-
-    if (stdin.isPaused()) stdin.resume();
-
-    const rl = createInterface({
-      input: process.stdin,
-      output: stdout,
-      terminal: true,
-      prompt: "",
-    });
-
-    return new Promise<string>((resolve) => {
-      rl.question(chalk.cyan("你> "), (answer) => {
-        rl.close();
-        resolve(answer);
-      });
-    });
-  }
-
-  /**
-   * 预填文本显示提示
-   */
-  async promptWithText(prefill: string): Promise<string> {
-    if (!this.active) return prefill;
-
-    return new Promise<string>((resolve) => {
-      const rl = createInterface({
-        input: process.stdin,
-        output: stdout,
-        terminal: true,
-      });
-      rl.question(chalk.cyan("你> "), (answer) => {
-        rl.close();
-        resolve(answer || prefill);
-      });
-      rl.write(prefill);
-    });
-  }
-
-  /** 写入一行内容 */
-  writeLine(text: string): void {
-    stdout.write(text + "\n");
-  }
-
-  /** 流式写入（不换行） */
-  writeRaw(text: string): void {
-    stdout.write(text);
-  }
-
-  /** 写入带颜色的错误 */
-  writeError(text: string): void {
-    stdout.write(chalk.red(text) + "\n");
-  }
-
-  /** 写入成功信息 */
-  writeSuccess(text: string): void {
-    stdout.write(chalk.green(text) + "\n");
-  }
-
-  /** 写入灰色信息 */
-  writeInfo(text: string): void {
-    stdout.write(chalk.gray(text) + "\n");
-  }
-
-  destroy(): void {
-    this.active = false;
-    stdout.write("\n");
-  }
-
   private fmt(n: number): string {
     if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
     return String(n);
   }
 
   private async fallbackPrompt(): Promise<string> {
-    const rl = createInterface({
-      input: process.stdin,
-      output: stdout,
-      terminal: true,
-    });
+    const rl = createInterface({ input: process.stdin, output: stdout, terminal: true });
     return new Promise<string>((resolve) => {
-      rl.question(chalk.cyan("你> "), (answer) => {
-        rl.close();
-        resolve(answer);
-      });
+      rl.question(chalk.cyan("你> "), (answer) => { rl.close(); resolve(answer); });
     });
   }
 }

@@ -359,7 +359,7 @@ describe("12. Streaming + 终端模块", () => {
     const { renderer } = await import("./terminal/renderer.js");
     expect(renderer).toBeDefined();
     expect(typeof renderer.printStatus).toBe("function");
-    expect(typeof renderer.writeRaw).toBe("function");
+    expect(typeof renderer.write).toBe("function");
     expect(typeof renderer.writeLine).toBe("function");
     expect(typeof renderer.destroy).toBe("function");
   });

@@ -106,7 +106,7 @@ program
       sessionStore,
       modelRouter,
       onFileDiff: (filePath, added, removed) => {
-        renderer.writeContentLine(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`);
+        renderer.writeLine(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`);
       },
     });
     if (hooksCount > 0) {
@@ -417,7 +417,6 @@ program
       const agent = agents[expertId];
       const agentName = agent.getName();
 
-      // "思考中" spinner — 每轮 LLM 调用从新行开始，\r 只更新当前帧行
       const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
       let spinIdx = 0;
       let spinnerTimer: ReturnType<typeof setInterval> | null = null;
@@ -426,7 +425,6 @@ program
       const startSpinner = () => {
         if (spinnerDisabled || spinnerTimer) return;
         spinIdx = 0;
-        // 新行开始，保证 spinner 在自己独立的行上
         stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[0])} ${chalk.dim("思考中...")}`);
         spinnerTimer = setInterval(() => {
           stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[spinIdx % frames.length])} ${chalk.dim("思考中...")}`);
@@ -442,27 +440,29 @@ program
         stdout.write(`\r${chalk.yellow(`AiWorker[${agentName}]> `)}${" ".repeat(30)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`);
       };
 
-      startSpinner();
-
-      // 启动实时状态栏
-      let statusDebounce: ReturnType<typeof setTimeout> | null = null;
-      const pushStatus = (extra?: Partial<{ toolName: string; iteration: number }>) => {
-        if (statusDebounce) return;
-        statusDebounce = setTimeout(() => {
-          statusDebounce = null;
+      // 思考阶段：在 spinner 行用内联状态覆盖
+      let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+      const startLiveStatus = () => {
+        thinkingTimer = setInterval(() => {
+          if (spinnerTimer) return; // spinner 在用就不要覆盖
           renderer.updateLiveStatus({
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
             tokensMax: 8000,
             queueSize: prefillQueue.length + inputCollector.getQueueSize(),
-            toolName: extra?.toolName,
-            iteration: extra?.iteration,
+            iteration: undefined,
             maxIter: agents[expertId]?.getConfig().maxIterations,
           });
-        }, 150);
+        }, 500);
       };
-      pushStatus();
+      const stopLiveStatus = () => {
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+        if (!spinnerTimer) renderer.endLiveStatus();
+      };
+
+      startSpinner();
+      startLiveStatus();
 
       inputCollector.startListening(() => stopSpinner(true));
 
@@ -480,26 +480,22 @@ program
             thinkingStarted = false;
             thinkingFirstLine = "";
             if (spinnerTimer) stopSpinner();
-            renderer.writeContentLine(chalk.dim("🧠 思考: "));
-            pushStatus();
+            stopLiveStatus();
+            stdout.write(`\n${chalk.dim("🧠 思考: ")}`);
           },
           onThinkingDelta: (text) => {
             if (showThinking) {
               if (!thinkingStarted) thinkingStarted = true;
-              renderer.writeStreamText(chalk.dim(text));
+              stdout.write(chalk.dim(text));
             } else if (!thinkingFirstLine) {
               const firstBreak = text.indexOf("\n");
-              if (firstBreak !== -1) {
-                thinkingFirstLine = text.slice(0, firstBreak);
-              } else {
-                thinkingFirstLine += text;
-              }
+              thinkingFirstLine = firstBreak !== -1 ? text.slice(0, firstBreak) : thinkingFirstLine + text;
             }
           },
           onTextDelta: (text) => {
-            if (spinnerTimer) {
-              stopSpinner();
-            } else if (needReprefix || spinnerDisabled) {
+            if (spinnerTimer) stopSpinner();
+            stopLiveStatus();
+            if (needReprefix || spinnerDisabled) {
               stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
               needReprefix = false;
               spinnerDisabled = false;
@@ -508,18 +504,16 @@ program
               stdout.write(`\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}`);
               thinkingFirstLine = "";
             }
-            renderer.writeStreamText(text);
-            pushStatus();
+            stdout.write(text);
           },
           onToolCall: (name) => {
             stopSpinner();
-            renderer.writeContentLine(`  ${chalk.blue(`🔧 ${name}`)}`);
-            pushStatus({ toolName: name });
+            stopLiveStatus();
+            stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`);
           },
           onToolResult: (_name, success, summary) => {
             const icon = success ? chalk.green("✓") : chalk.red("✗");
-            renderer.writeContentLine(`  ${icon} ${summary.slice(0, 80)}`);
-            pushStatus();
+            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
           },
         };
 
@@ -531,9 +525,7 @@ program
         );
 
         stopSpinner();
-
-        if (statusDebounce) { clearTimeout(statusDebounce); statusDebounce = null; }
-        renderer.clearStatusLine();
+        stopLiveStatus();
 
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
