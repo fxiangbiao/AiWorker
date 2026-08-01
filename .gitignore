@@ -1,8 +1,10 @@
 node_modules/
 dist/
 data/
+data-test/
 *.db
 *.db-shm
 *.db-wal
 .env
 .env.local
+skills/pending/
