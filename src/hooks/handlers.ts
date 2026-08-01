@@ -6,6 +6,7 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stdin, stdout } from "node:process";
+import { randomUUID } from "node:crypto";
 import chalk from "chalk";
 import type { HookHandler } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
@@ -400,6 +401,65 @@ export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHan
     } catch {
       // 静默失败，不阻塞主流程
     }
+  };
+}
+
+// ── 监控日志 Handler (M4) ──
+
+/** per-session turn counter */
+const turnSeq = new Map<string, number>();
+
+export function createTurnLogger(deps: HandlerDependencies): HookHandler {
+  const store = deps.sessionStore;
+  if (!store) return async () => { /* no-op */ };
+
+  return async (ctx) => {
+    if (ctx.event !== "onTaskComplete") return;
+
+    const seq = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
+    turnSeq.set(ctx.sessionId, seq);
+
+    try {
+      store.createTurnLog({
+        id: randomUUID(),
+        sessionId: ctx.sessionId,
+        agentId: ctx.agentId,
+        seq,
+        userInput: "",
+        startedAt: Date.now(),
+        finishedAt: Date.now(),
+        iterations: (ctx.data.iterations as number) ?? 0,
+        toolCallsTotal: (ctx.data.toolCallsExecuted as number) ?? 0,
+        toolCallsSuccess: (ctx.data.toolCallsExecuted as number) ?? 0,
+        toolCallsFailed: 0,
+        tokensPrompt: 0,
+        tokensCompletion: 0,
+        finishReason: "stop",
+      });
+    } catch { /* ignore */ }
+  };
+}
+
+export function createToolCallLogger(deps: HandlerDependencies): HookHandler {
+  const store = deps.sessionStore;
+  if (!store) return async () => { /* no-op */ };
+
+  return async (ctx) => {
+    if (ctx.event !== "onToolCallPost") return;
+
+    try {
+      store.createToolCallLog({
+        id: randomUUID(),
+        turnId: ctx.sessionId,
+        toolName: (ctx.data.toolName as string) ?? "",
+        iteration: (ctx.data.iteration as number) ?? 0,
+        args: "",
+        startedAt: Date.now(),
+        durationMs: 0,
+        success: true,
+        resultPreview: "",
+      });
+    } catch { /* ignore */ }
   };
 }
 

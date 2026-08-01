@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import type { Database as DBType } from "better-sqlite3";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message, SessionRecord, EpisodicEntry } from "../types.js";
+import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog } from "../types.js";
 
 const segmenter = typeof Intl !== "undefined" && Intl.Segmenter
   ? new Intl.Segmenter("zh-CN", { granularity: "word" })
@@ -70,6 +70,43 @@ export class SessionStore {
         weight,
         tokenize = 'unicode61'
       );
+
+      -- 监控: 轮次日志
+      CREATE TABLE IF NOT EXISTS turn_logs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        user_input TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL,
+        iterations INTEGER,
+        tool_calls_total INTEGER,
+        tool_calls_success INTEGER,
+        tool_calls_failed INTEGER,
+        tokens_prompt INTEGER,
+        tokens_completion INTEGER,
+        finish_reason TEXT,
+        error TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_turn_logs_sess ON turn_logs(session_id, seq);
+
+      -- 监控: 工具调用日志
+      CREATE TABLE IF NOT EXISTS tool_call_logs (
+        id TEXT PRIMARY KEY,
+        turn_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        iteration INTEGER,
+        args TEXT,
+        started_at INTEGER NOT NULL,
+        duration_ms INTEGER,
+        success INTEGER,
+        result_preview TEXT,
+        error TEXT,
+        FOREIGN KEY (turn_id) REFERENCES turn_logs(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_logs_turn ON tool_call_logs(turn_id);
     `);
   }
 
@@ -216,6 +253,52 @@ export class SessionStore {
     } catch {
       return [];
     }
+  }
+
+  // ── 监控日志 CRUD ──
+
+  createTurnLog(log: TurnLog): void {
+    const stmt = this.db.prepare(`INSERT INTO turn_logs
+      (id, session_id, agent_id, seq, user_input, started_at, finished_at,
+       iterations, tool_calls_total, tool_calls_success, tool_calls_failed,
+       tokens_prompt, tokens_completion, finish_reason, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    stmt.run(log.id, log.sessionId, log.agentId, log.seq, log.userInput,
+      log.startedAt, log.finishedAt ?? Date.now(), log.iterations,
+      log.toolCallsTotal, log.toolCallsSuccess, log.toolCallsFailed,
+      log.tokensPrompt, log.tokensCompletion, log.finishReason, log.error ?? null);
+  }
+
+  updateTurnLog(turnId: string, updates: Partial<TurnLog>): void {
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [k, v] of Object.entries(updates)) {
+      const col = k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+      fields.push(`${col} = ?`);
+      values.push(v ?? null);
+    }
+    if (fields.length === 0) return;
+    values.push(turnId);
+    this.db.prepare(`UPDATE turn_logs SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+  }
+
+  createToolCallLog(log: ToolCallLog): void {
+    const stmt = this.db.prepare(`INSERT INTO tool_call_logs
+      (id, turn_id, tool_name, iteration, args, started_at, duration_ms, success, result_preview, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    stmt.run(log.id, log.turnId, log.toolName, log.iteration, log.args,
+      log.startedAt, log.durationMs, log.success ? 1 : 0,
+      log.resultPreview, log.error ?? null);
+  }
+
+  getTurnLogs(sessionId: string): TurnLog[] {
+    return this.db.prepare(
+      `SELECT * FROM turn_logs WHERE session_id = ? ORDER BY seq`).all(sessionId) as TurnLog[];
+  }
+
+  getToolCallLogs(turnId: string): ToolCallLog[] {
+    return this.db.prepare(
+      `SELECT * FROM tool_call_logs WHERE turn_id = ? ORDER BY started_at`).all(turnId) as ToolCallLog[];
   }
 
   close(): void {

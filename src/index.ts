@@ -219,6 +219,29 @@ program
         continue;
       }
 
+      if (trimmed === "/log") {
+        const turns = sessionStore.getTurnLogs(currentSessionId ?? "");
+        if (turns.length === 0) {
+          stdout.write(chalk.gray("暂无监控日志\n"));
+        } else {
+          let totalDur = 0;
+          let totalTools = 0;
+          stdout.write("\n┌──────┬──────────┬──────────┬────────────┬────────┐\n");
+          stdout.write("│ 轮次 │ 迭代次数 │ 工具调用  │ 耗时(ms)   │ 状态   │\n");
+          stdout.write("├──────┼──────────┼──────────┼────────────┼────────┤\n");
+          for (const t of turns) {
+            const dur = t.finishedAt - t.startedAt;
+            totalDur += dur;
+            totalTools += t.toolCallsTotal;
+            const status = t.finishReason === "stop" ? "✅" : "⚠️";
+            stdout.write(`│ ${String(t.seq).padEnd(4)} │ ${String(t.iterations).padEnd(8)} │ ${String(t.toolCallsTotal).padEnd(8)} │ ${String(dur).padEnd(10)} │ ${status.padEnd(4)}  │\n`);
+          }
+          stdout.write(`└──────┴──────────┴──────────┴────────────┴────────┘\n`);
+          stdout.write(chalk.gray(`累计: ${turns.length} 轮, ${(totalDur / 1000).toFixed(1)}s, ${totalTools} 次工具调用\n`));
+        }
+        continue;
+      }
+
       if (trimmed.startsWith("/mode ")) {
         const newMode = trimmed.slice(6).trim() as PermissionMode;
         if (["ask", "plan", "craft"].includes(newMode)) {

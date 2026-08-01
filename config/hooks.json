@@ -12,11 +12,13 @@
   ],
   "onToolCallPost": [
     { "handler": "auditLog" },
-    { "handler": "captureDiff" }
+    { "handler": "captureDiff" },
+    { "handler": "toolCallLogger" }
   ],
   "onTaskComplete": [
     { "handler": "updateMemory" },
-    { "handler": "evaluateSkillCreation" }
+    { "handler": "evaluateSkillCreation" },
+    { "handler": "turnLogger" }
   ],
   "onError": [
     { "handler": "retryWithBackoff", "options": { "maxRetries": 3 } },

@@ -186,6 +186,39 @@ export interface ProjectProfile {
   keyFiles: string[];
 }
 
+// ===== 监控日志 =====
+
+export interface TurnLog {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  seq: number;
+  userInput: string;
+  startedAt: number;
+  finishedAt: number;
+  iterations: number;
+  toolCallsTotal: number;
+  toolCallsSuccess: number;
+  toolCallsFailed: number;
+  tokensPrompt: number;
+  tokensCompletion: number;
+  finishReason: string;
+  error?: string;
+}
+
+export interface ToolCallLog {
+  id: string;
+  turnId: string;
+  toolName: string;
+  iteration: number;
+  args: string;
+  startedAt: number;
+  durationMs: number;
+  success: boolean;
+  resultPreview: string;
+  error?: string;
+}
+
 // ===== 记忆 =====
 
 export interface SessionRecord {

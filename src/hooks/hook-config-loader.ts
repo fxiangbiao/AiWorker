@@ -18,6 +18,8 @@ import {
   createConfirmHighRisk,
   createCaptureDiff,
   createEvaluateSkillCreation,
+  createTurnLogger,
+  createToolCallLogger,
   type HandlerDependencies,
 } from "./handlers.js";
 
@@ -47,6 +49,8 @@ const handlerFactories: Record<string, (deps: HandlerDependencies) => import("..
   confirmHighRisk: (deps) => createConfirmHighRisk(deps),
   captureDiff: (deps) => createCaptureDiff(deps),
   evaluateSkillCreation: (deps) => createEvaluateSkillCreation(deps),
+  turnLogger: (deps) => createTurnLogger(deps),
+  toolCallLogger: (deps) => createToolCallLogger(deps),
 };
 
 export function loadHooksFromConfig(configPath: string, deps: HandlerDependencies): number {
