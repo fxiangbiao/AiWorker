@@ -28,6 +28,7 @@ interface ServerDeps {
   projectDir: string;
   createAgent: (agentId: string) => DelegateAgent | undefined;
   getAgentList: () => { id: string; name: string }[];
+  skillNames: string[];
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -115,6 +116,7 @@ export function startServer(deps: ServerDeps, port: number) {
         },
         workingDir: deps.workingDir,
         projectDir: deps.projectDir,
+        skills: deps.skillNames,
       });
       return;
     }

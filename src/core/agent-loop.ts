@@ -306,8 +306,10 @@ export async function runAgentLoopStream(
           toolCallsExecuted += toolResults.length;
 
           for (const result of toolResults) {
+            const tc = toolCalls.find((t) => t.id === result.tool_call_id);
+            const toolName = tc?.function.name ?? "";
             callbacks.onToolResult?.(
-              "",
+              toolName,
               result.success,
               result.success ? result.content.slice(0, 100) : (result.error ?? ""),
             );
