@@ -8,13 +8,11 @@
  */
 
 import type {
-  Message,
   ToolCall,
   ToolResult,
   ToolContext,
   AgentRunResult,
   AgentConfig,
-  PermissionMode,
   StreamCallbacks,
 } from "../types.js";
 import type { ModelRouter } from "./model-router.js";
@@ -34,18 +32,13 @@ export interface AgentLoopDeps {
 export async function runAgentLoop(
   config: AgentConfig,
   userMessage: string,
-  deps: AgentLoopDeps
+  deps: AgentLoopDeps,
 ): Promise<AgentRunResult> {
   const { modelRouter, contextManager, sessionId, workingDir, projectDir } = deps;
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(
-    config.systemPrompt,
-    sessionId,
-    userMessage,
-    config.id
-  );
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -64,8 +57,7 @@ export async function runAgentLoop(
 
   while (iterations < MAX_ITER) {
     try {
-      const { messages: compressed, compressed: didCompress } =
-        await contextManager.maybeCompress(messages);
+      const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages);
       if (didCompress) {
         messages = compressed;
       } else if (iterations >= 5 && iterations % 5 === 0) {
@@ -76,11 +68,7 @@ export async function runAgentLoop(
       const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
       const tools = mode === "ask" ? undefined : availableTools;
 
-      const response = await modelRouter.completeWithProfile(
-        config.modelPreference,
-        messages,
-        tools
-      );
+      const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools);
 
       // 模型达到 token 上限导致截断 → 压缩重试（含断路器）
       if (response.finishReason === "length" && !response.hasToolCalls) {
@@ -134,9 +122,7 @@ export async function runAgentLoop(
         tool_calls: response.toolCalls,
       });
 
-      const toolResults = await Promise.all(
-        response.toolCalls.map((tc) => executeTool(tc, toolCtx, config))
-      );
+      const toolResults = await Promise.all(response.toolCalls.map((tc) => executeTool(tc, toolCtx, config)));
 
       toolCallsExecuted += toolResults.length;
 
@@ -196,18 +182,13 @@ export async function runAgentLoopStream(
   userMessage: string,
   deps: AgentLoopDeps,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<AgentRunResult> {
   const { modelRouter, contextManager, sessionId, workingDir, projectDir } = deps;
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(
-    config.systemPrompt,
-    sessionId,
-    userMessage,
-    config.id
-  );
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -236,8 +217,7 @@ export async function runAgentLoopStream(
     }
 
     try {
-      const { messages: compressed, compressed: didCompress } =
-        await contextManager.maybeCompress(messages);
+      const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages);
       if (didCompress) {
         messages = compressed;
       } else if (iterations >= 5 && iterations % 5 === 0) {
@@ -250,21 +230,14 @@ export async function runAgentLoopStream(
 
       // 流式调用
       callbacks.onThinkingStart?.();
-      const stream = modelRouter.completeStream(
-        config.modelPreference,
-        messages,
-        tools,
-        { signal }
-      );
+      const stream = modelRouter.completeStream(config.modelPreference, messages, tools, { signal });
 
       let fullText = "";
       let streamFinishReason = "";
       const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();
 
-      let chunkSeq = 0;
       for await (const chunk of stream) {
         if (signal?.aborted) break;
-        chunkSeq++;
 
         switch (chunk.type) {
           case "thinking":
@@ -278,18 +251,14 @@ export async function runAgentLoopStream(
             {
               const acc = { id: chunk.toolCallId!, name: chunk.toolName!, args: "" };
               tcAcc.set(tcAcc.size, acc);
-              callbacks.onToolCall?.(
-                chunk.toolName!,
-                "(generating...)",
-                chunk.toolCallId!
-              );
+              callbacks.onToolCall?.(chunk.toolName!, "(generating...)", chunk.toolCallId!);
             }
             break;
           case "tool_call_delta":
             // 累积工具调用参数片段
             for (const [, acc] of tcAcc) {
               if (acc.id === chunk.toolCallId) {
-                acc.args += (chunk.content ?? "");
+                acc.args += chunk.content ?? "";
                 break;
               }
             }
@@ -332,9 +301,7 @@ export async function runAgentLoopStream(
             tool_calls: toolCalls,
           });
 
-          const toolResults = await Promise.all(
-            toolCalls.map((tc) => executeTool(tc, toolCtx, config))
-          );
+          const toolResults = await Promise.all(toolCalls.map((tc) => executeTool(tc, toolCtx, config)));
 
           toolCallsExecuted += toolResults.length;
 
@@ -342,7 +309,7 @@ export async function runAgentLoopStream(
             callbacks.onToolResult?.(
               "",
               result.success,
-              result.success ? result.content.slice(0, 100) : (result.error ?? "")
+              result.success ? result.content.slice(0, 100) : (result.error ?? ""),
             );
             messages.push({
               role: "tool",
@@ -447,11 +414,7 @@ export async function runAgentLoopStream(
   };
 }
 
-async function executeTool(
-  toolCall: ToolCall,
-  ctx: ToolContext,
-  config: AgentConfig
-): Promise<ToolResult> {
+async function executeTool(toolCall: ToolCall, ctx: ToolContext, config: AgentConfig): Promise<ToolResult> {
   const toolName = toolCall.function.name;
 
   const preHookResult = await hookManager.trigger("onToolCallPre", {

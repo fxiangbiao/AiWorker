@@ -3,8 +3,8 @@
  * 流水线: 生成 SKILL.md → 验证 → 评分 → 注册
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { skillRegistry } from "./skill-registry.js";
 
 export interface ValidationResult {
@@ -28,7 +28,10 @@ export class SkillEvolution {
     try {
       const raw = readFileSync(filePath, "utf-8");
       const fm = raw.match(/^---\n([\s\S]*?)\n---/);
-      if (!fm) { errors.push("缺少 YAML frontmatter"); return { valid: false, errors }; }
+      if (!fm) {
+        errors.push("缺少 YAML frontmatter");
+        return { valid: false, errors };
+      }
 
       const content = fm[1];
       if (!content.includes("name:")) errors.push("缺少 name 字段");
@@ -38,9 +41,16 @@ export class SkillEvolution {
       // Validate triggers are valid regex
       const trigMatch = content.match(/^triggers:\s*\n((?:\s*-\s+.+\n?)*)/m);
       if (trigMatch) {
-        const triggers = trigMatch[1].split("\n").filter(Boolean).map(t => t.replace(/^\s*-\s*/, "").trim());
+        const triggers = trigMatch[1]
+          .split("\n")
+          .filter(Boolean)
+          .map((t) => t.replace(/^\s*-\s*/, "").trim());
         for (const t of triggers) {
-          try { new RegExp(t); } catch { errors.push(`无效正则触发词: ${t}`); }
+          try {
+            new RegExp(t);
+          } catch {
+            errors.push(`无效正则触发词: ${t}`);
+          }
         }
       }
     } catch (err) {
@@ -60,9 +70,9 @@ export class SkillEvolution {
       const raw = readFileSync(_filePath, "utf-8");
       const body = raw.replace(/^---[\s\S]*?---\n?/, "").trim();
       let score = 3; // default
-      if (body.length > 800) score += 1;        // 详细说明
-      if (body.length > 1600) score += 0;       // 过长不加分
-      if (body.includes("```")) score += 1;     // 含代码示例
+      if (body.length > 800) score += 1; // 详细说明
+      if (body.length > 1600) score += 0; // 过长不加分
+      if (body.includes("```")) score += 1; // 含代码示例
       // Cap at 5
       return Math.min(score, 5);
     } catch {
@@ -98,12 +108,7 @@ export class SkillEvolution {
   /**
    * 完整流水线: 创建 SKILL.md → 验证 → 评分 → (>=3星)注册
    */
-  evolve(
-    agentId: string,
-    sessionId: string,
-    iterations: number,
-    toolCalls: number
-  ): SkillEvolutionResult | null {
+  evolve(agentId: string, sessionId: string, iterations: number, toolCalls: number): SkillEvolutionResult | null {
     const name = `auto-${agentId}-${Date.now().toString(36)}`;
     const body = [
       "---",
@@ -148,9 +153,12 @@ export class SkillEvolution {
       registered = this.register(pendingPath, agentId);
     }
 
-    return { name, score, registered, path: registered
-      ? resolve(process.cwd(), "skills", agentId, `${name}.md`)
-      : pendingPath };
+    return {
+      name,
+      score,
+      registered,
+      path: registered ? resolve(process.cwd(), "skills", agentId, `${name}.md`) : pendingPath,
+    };
   }
 }
 

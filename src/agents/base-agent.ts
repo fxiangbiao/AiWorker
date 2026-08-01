@@ -19,7 +19,7 @@ export abstract class BaseAgent {
 
   constructor(
     config: AgentConfig,
-    deps: { modelRouter: ModelRouter; contextManager: ContextManager; sessionStore: SessionStore }
+    deps: { modelRouter: ModelRouter; contextManager: ContextManager; sessionStore: SessionStore },
   ) {
     this.config = config;
     this.modelRouter = deps.modelRouter;
@@ -82,8 +82,9 @@ export abstract class BaseAgent {
     this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
 
     // 总结会话并写入 MEMORY.md（有界 ≈2200 字符）
-    this.contextManager.summarizeSession(result.messages, task.instruction, sessionId)
-      .catch(() => { /* 静默失败，不影响主流程 */ });
+    this.contextManager.summarizeSession(result.messages, task.instruction, sessionId).catch(() => {
+      /* 静默失败，不影响主流程 */
+    });
 
     // onTaskComplete Hook — 传入 messages 供 skill evolution 等 handler 使用
     await hookManager.trigger("onTaskComplete", {
@@ -118,7 +119,7 @@ export abstract class BaseAgent {
     workingDir: string,
     projectDir: string,
     callbacks: StreamCallbacks,
-    signal?: AbortSignal
+    signal?: AbortSignal,
   ): Promise<AgentRunResult> {
     const sessionId = task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
 
@@ -145,15 +146,14 @@ export abstract class BaseAgent {
         projectDir,
       },
       callbacks,
-      signal
+      signal,
     );
 
     if (result.text) {
       this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
     }
 
-    this.contextManager.summarizeSession(result.messages, task.instruction, sessionId)
-      .catch(() => {});
+    this.contextManager.summarizeSession(result.messages, task.instruction, sessionId).catch(() => {});
 
     await hookManager.trigger("onTaskComplete", {
       agentId: this.config.id,

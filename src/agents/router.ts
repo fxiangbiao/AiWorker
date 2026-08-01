@@ -116,10 +116,7 @@ export function routeToExpert(input: string): string {
   return bestAgent;
 }
 
-export async function routeToExpertLLM(
-  input: string,
-  modelRouter: ModelRouter
-): Promise<string> {
+export async function routeToExpertLLM(input: string, modelRouter: ModelRouter): Promise<string> {
   const prompt: Message[] = [
     {
       role: "system",
@@ -154,10 +151,7 @@ export async function routeToExpertLLM(
   }
 }
 
-export async function smartRoute(
-  input: string,
-  modelRouter?: ModelRouter
-): Promise<string> {
+export async function smartRoute(input: string, modelRouter?: ModelRouter): Promise<string> {
   const fastResult = routeToExpert(input);
   if (fastResult !== "default") {
     return fastResult;

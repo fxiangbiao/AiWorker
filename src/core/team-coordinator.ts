@@ -12,7 +12,6 @@ import type {
   ExecutionPlan,
   PlanTemplate,
   CoordinatorResult,
-  Message,
   StreamCallbacks,
 } from "../types.js";
 import type { BaseAgent } from "../agents/base-agent.js";
@@ -104,7 +103,7 @@ export class TeamCoordinator {
     workingDir: string,
     projectDir: string,
     callbacks?: StreamCallbacks,
-    signal?: AbortSignal
+    signal?: AbortSignal,
   ): Promise<CoordinatorResult> {
     const stepResults = new Map<string, string>();
     const failedSteps: string[] = [];
@@ -115,7 +114,9 @@ export class TeamCoordinator {
 
       const ready = remaining.filter((s) => s.dependsOn.every((d) => stepResults.has(d)));
       if (ready.length === 0) {
-        const blocked = remaining.map((s) => `${s.id}(缺: ${s.dependsOn.filter((d) => !stepResults.has(d)).join(",")})`);
+        const blocked = remaining.map(
+          (s) => `${s.id}(缺: ${s.dependsOn.filter((d) => !stepResults.has(d)).join(",")})`,
+        );
         const text = `执行计划失败: 步骤间存在循环依赖或死锁 — ${blocked.join(", ")}`;
         return { text, plan, stepResults, failedSteps: remaining.map((s) => s.id), source: "llm" as const };
       }
@@ -134,9 +135,7 @@ export class TeamCoordinator {
             .filter(Boolean)
             .join("\n\n");
 
-          const instruction = context
-            ? `${step.description}\n\n上一步结果:\n${context}`
-            : step.description;
+          const instruction = context ? `${step.description}\n\n上一步结果:\n${context}` : step.description;
 
           callbacks?.onToolCall?.(step.expertId, step.description, step.id);
           callbacks?.onStepStart?.(step.id, step.expertId, step.description);
@@ -147,10 +146,7 @@ export class TeamCoordinator {
 
             const result = await agent.run({ instruction, mode: "craft" }, workingDir, projectDir);
 
-            const summary =
-              result.text.length > 3000
-                ? result.text.slice(0, 3000) + "..."
-                : result.text;
+            const summary = result.text.length > 3000 ? result.text.slice(0, 3000) + "..." : result.text;
             stepResults.set(step.id, summary);
             callbacks?.onToolResult?.(step.expertId, true, summary.slice(0, 100));
             callbacks?.onStepEnd?.(step.id, true);
@@ -166,7 +162,7 @@ export class TeamCoordinator {
             callbacks?.onStepEnd?.(step.id, false);
             return { id: step.id, status: "skipped" as const };
           }
-        })
+        }),
       );
 
       for (const r of batchResults) {
@@ -199,7 +195,7 @@ export class TeamCoordinator {
     workingDir: string,
     projectDir: string,
     callbacks?: StreamCallbacks,
-    signal?: AbortSignal
+    signal?: AbortSignal,
   ): Promise<CoordinatorResult> {
     const agent1 = this.agents[agentA];
     const agent2 = this.agents[agentB];
@@ -216,13 +212,25 @@ export class TeamCoordinator {
     callbacks?.onToolCall?.(agentA, "第一轮分析", "debate-a1");
     const r1 = await agent1.run({ instruction, mode: "craft" }, workingDir, projectDir);
     if (signal?.aborted) {
-      return { text: "辩论已中断", plan: { steps: [], goal: instruction, estimatedSteps: 0 }, stepResults: new Map(), failedSteps: [], source: "llm" };
+      return {
+        text: "辩论已中断",
+        plan: { steps: [], goal: instruction, estimatedSteps: 0 },
+        stepResults: new Map(),
+        failedSteps: [],
+        source: "llm",
+      };
     }
 
     callbacks?.onToolCall?.(agentB, "第一轮分析", "debate-b1");
     const r2 = await agent2.run({ instruction, mode: "craft" }, workingDir, projectDir);
     if (signal?.aborted) {
-      return { text: "辩论已中断", plan: { steps: [], goal: instruction, estimatedSteps: 0 }, stepResults: new Map(), failedSteps: [], source: "llm" };
+      return {
+        text: "辩论已中断",
+        plan: { steps: [], goal: instruction, estimatedSteps: 0 },
+        stepResults: new Map(),
+        failedSteps: [],
+        source: "llm",
+      };
     }
 
     // 互审: 每个 agent 审视对方结论
@@ -235,10 +243,7 @@ export class TeamCoordinator {
     const cr1 = await agent1.run({ instruction: critiqueB, mode: "craft" }, workingDir, projectDir);
 
     // 综合报告
-    const text = this.synthesizeDebate(
-      instruction, agentA, agentB,
-      r1.text, r2.text, cr1.text, cr2.text
-    );
+    const text = this.synthesizeDebate(instruction, agentA, agentB, r1.text, r2.text, cr1.text, cr2.text);
 
     const stepResults = new Map<string, string>();
     stepResults.set("debate-a1", r1.text);
@@ -246,7 +251,13 @@ export class TeamCoordinator {
     stepResults.set("debate-a2", cr1.text);
     stepResults.set("debate-b2", cr2.text);
 
-    return { text, plan: { steps: [], goal: instruction, estimatedSteps: 0 }, stepResults, failedSteps: [], source: "llm" };
+    return {
+      text,
+      plan: { steps: [], goal: instruction, estimatedSteps: 0 },
+      stepResults,
+      failedSteps: [],
+      source: "llm",
+    };
   }
 
   private synthesizeDebate(
@@ -256,7 +267,7 @@ export class TeamCoordinator {
     a1: string,
     b1: string,
     a2: string,
-    b2: string
+    b2: string,
   ): string {
     const parts: string[] = [];
     parts.push(`# 辩论分析: ${goal.slice(0, 100)}`);
@@ -284,7 +295,7 @@ export class TeamCoordinator {
   private async synthesize(
     plan: ExecutionPlan,
     stepResults: Map<string, string>,
-    failedSteps: string[]
+    failedSteps: string[],
   ): Promise<string> {
     const parts: string[] = [];
     parts.push(`# 执行报告: ${plan.goal.slice(0, 100)}`);
@@ -399,12 +410,10 @@ export class TeamCoordinator {
     }
 
     if (count !== steps.length) {
-      const cycleNodes = steps
-        .filter((s) => (inDegree.get(s.id) ?? 0) > 0)
-        .map((s) => s.id);
+      const cycleNodes = steps.filter((s) => (inDegree.get(s.id) ?? 0) > 0).map((s) => s.id);
       throw new Error(
         `检测到循环依赖: ${cycleNodes.join(" → ")}。` +
-        `请手动指定步骤顺序或使用 /plan --linear 选项将步骤展平为线性执行。`
+          `请手动指定步骤顺序或使用 /plan --linear 选项将步骤展平为线性执行。`,
       );
     }
   }
@@ -443,10 +452,7 @@ const TEMPLATES: PlanTemplate[] = [
   {
     id: "game-dev-pipeline",
     name: "游戏开发流水线",
-    matchPattern: [
-      /游戏.*开发|开发.*游戏|制作.*游戏|游戏.*制作/i,
-      /Godot|游戏.*原型|放置.*手游/i,
-    ],
+    matchPattern: [/游戏.*开发|开发.*游戏|制作.*游戏|游戏.*制作/i, /Godot|游戏.*原型|放置.*手游/i],
     steps: [
       {
         id: "s1",
@@ -488,10 +494,7 @@ const TEMPLATES: PlanTemplate[] = [
   {
     id: "product-analysis",
     name: "产品分析报告",
-    matchPattern: [
-      /产品.*分析|竞品.*分析|市场.*调研|分析.*报告/i,
-      /多角度.*分析|从.*角度.*分析/i,
-    ],
+    matchPattern: [/产品.*分析|竞品.*分析|市场.*调研|分析.*报告/i, /多角度.*分析|从.*角度.*分析/i],
     steps: [
       {
         id: "s1",
@@ -526,10 +529,7 @@ const TEMPLATES: PlanTemplate[] = [
   {
     id: "full-stack-feature",
     name: "全栈功能开发",
-    matchPattern: [
-      /开发.*功能|实现.*功能|全栈.*开发|前后端.*开发/i,
-      /添加.*(?:页面|接口|API|组件|模块)/i,
-    ],
+    matchPattern: [/开发.*功能|实现.*功能|全栈.*开发|前后端.*开发/i, /添加.*(?:页面|接口|API|组件|模块)/i],
     steps: [
       {
         id: "s1",
@@ -564,10 +564,7 @@ const TEMPLATES: PlanTemplate[] = [
   {
     id: "investment-analysis",
     name: "投资分析",
-    matchPattern: [
-      /投资.*分析|股票.*分析|基金.*推荐|理财.*方案/i,
-      /资产.*配置|组合.*投资|风险评估/i,
-    ],
+    matchPattern: [/投资.*分析|股票.*分析|基金.*推荐|理财.*方案/i, /资产.*配置|组合.*投资|风险评估/i],
     steps: [
       {
         id: "s1",

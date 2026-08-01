@@ -25,7 +25,7 @@ class ToolRegistry {
     options?: {
       enabled?: boolean;
       availabilityCheck?: RegisteredTool["availabilityCheck"];
-    }
+    },
   ): void {
     this.tools.set(name, {
       definition,

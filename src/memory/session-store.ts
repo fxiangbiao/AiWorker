@@ -9,9 +9,8 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog } from "../types.js";
 
-const segmenter = typeof Intl !== "undefined" && Intl.Segmenter
-  ? new Intl.Segmenter("zh-CN", { granularity: "word" })
-  : null;
+const segmenter =
+  typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter("zh-CN", { granularity: "word" }) : null;
 
 function segmentChinese(text: string): string {
   if (!segmenter) return "";
@@ -114,23 +113,19 @@ export class SessionStore {
   createSession(agentId: string): SessionRecord {
     const id = randomUUID();
     const now = Date.now();
-    const stmt = this.db.prepare(
-      `INSERT INTO sessions (id, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?)`
-    );
+    const stmt = this.db.prepare(`INSERT INTO sessions (id, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?)`);
     stmt.run(id, agentId, now, now);
     return { id, agentId, createdAt: now, updatedAt: now };
   }
 
   /** 追加消息 */
   appendMessage(sessionId: string, message: Message): void {
-    const seqStmt = this.db.prepare(
-      `SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM messages WHERE session_id = ?`
-    );
+    const seqStmt = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM messages WHERE session_id = ?`);
     const { next_seq } = seqStmt.get(sessionId) as { next_seq: number };
 
     const stmt = this.db.prepare(
       `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, seq, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     stmt.run(
       sessionId,
@@ -139,7 +134,7 @@ export class SessionStore {
       message.tool_calls ? JSON.stringify(message.tool_calls) : null,
       message.tool_call_id ?? null,
       next_seq,
-      Date.now()
+      Date.now(),
     );
 
     // 更新会话时间戳
@@ -150,7 +145,7 @@ export class SessionStore {
   getMessages(sessionId: string): Message[] {
     const stmt = this.db.prepare(
       `SELECT role, content, tool_calls, tool_call_id FROM messages
-       WHERE session_id = ? ORDER BY seq ASC`
+       WHERE session_id = ? ORDER BY seq ASC`,
     );
     const rows = stmt.all(sessionId) as Array<{
       role: string;
@@ -196,7 +191,7 @@ export class SessionStore {
          FROM episodic_memory
          WHERE content LIKE ? OR summary LIKE ?
          ORDER BY timestamp DESC
-         LIMIT ?`
+         LIMIT ?`,
       );
       rows = likeStmt.all(`%${query}%`, `%${query}%`, limit) as typeof rows;
     }
@@ -217,8 +212,8 @@ export class SessionStore {
 
     // 按 effectiveWeight 降序，低于 0.05 过滤
     return entries
-      .filter((e) => (e.weight * (e.decayFactor ?? 0)) >= 0.05)
-      .sort((a, b) => (b.weight * (b.decayFactor ?? 0)) - (a.weight * (a.decayFactor ?? 0)))
+      .filter((e) => e.weight * (e.decayFactor ?? 0) >= 0.05)
+      .sort((a, b) => b.weight * (b.decayFactor ?? 0) - a.weight * (a.decayFactor ?? 0))
       .slice(0, limit);
   }
 
@@ -229,12 +224,15 @@ export class SessionStore {
 
     const stmt = this.db.prepare(
       `INSERT INTO episodic_memory (session_id, content, summary, timestamp, weight)
-       VALUES (?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?)`,
     );
     stmt.run(sessionId, enriched, summary, Date.now().toString(), weight.toString());
   }
 
-  private tryFts5Match(query: string, limit: number): Array<{
+  private tryFts5Match(
+    query: string,
+    limit: number,
+  ): Array<{
     session_id: string;
     content: string;
     summary: string;
@@ -242,7 +240,10 @@ export class SessionStore {
     weight: string;
   }> {
     // Sanitize FTS5 special characters to prevent syntax errors
-    const safe = query.replace(/[*"(){}\[\]]/g, " ").replace(/\b(AND|OR|NOT|NEAR)\b/gi, "").trim();
+    const safe = query
+      .replace(/[*"(){}[\]]/g, " ")
+      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, "")
+      .trim();
     if (!safe) return [];
     try {
       const stmt = this.db.prepare(
@@ -250,7 +251,7 @@ export class SessionStore {
          FROM episodic_memory
          WHERE episodic_memory MATCH ?
          ORDER BY rank
-         LIMIT ?`
+         LIMIT ?`,
       );
       return stmt.all(safe, limit) as ReturnType<typeof this.tryFts5Match>;
     } catch {
@@ -266,10 +267,23 @@ export class SessionStore {
        iterations, tool_calls_total, tool_calls_success, tool_calls_failed,
        tokens_prompt, tokens_completion, finish_reason, error)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    stmt.run(log.id, log.sessionId, log.agentId, log.seq, log.userInput,
-      log.startedAt, log.finishedAt ?? Date.now(), log.iterations,
-      log.toolCallsTotal, log.toolCallsSuccess, log.toolCallsFailed,
-      log.tokensPrompt, log.tokensCompletion, log.finishReason, log.error ?? null);
+    stmt.run(
+      log.id,
+      log.sessionId,
+      log.agentId,
+      log.seq,
+      log.userInput,
+      log.startedAt,
+      log.finishedAt ?? Date.now(),
+      log.iterations,
+      log.toolCallsTotal,
+      log.toolCallsSuccess,
+      log.toolCallsFailed,
+      log.tokensPrompt,
+      log.tokensCompletion,
+      log.finishReason,
+      log.error ?? null,
+    );
   }
 
   updateTurnLog(turnId: string, updates: Partial<TurnLog>): void {
@@ -289,17 +303,29 @@ export class SessionStore {
     const stmt = this.db.prepare(`INSERT INTO tool_call_logs
       (id, turn_id, tool_name, iteration, args, started_at, duration_ms, success, result_preview, error)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    stmt.run(log.id, log.turnId, log.toolName, log.iteration, log.args,
-      log.startedAt, log.durationMs, log.success ? 1 : 0,
-      log.resultPreview, log.error ?? null);
+    stmt.run(
+      log.id,
+      log.turnId,
+      log.toolName,
+      log.iteration,
+      log.args,
+      log.startedAt,
+      log.durationMs,
+      log.success ? 1 : 0,
+      log.resultPreview,
+      log.error ?? null,
+    );
   }
 
   getTurnLogs(sessionId: string): TurnLog[] {
-    const rows = this.db.prepare(
-      `SELECT id, session_id, agent_id, seq, user_input, started_at, finished_at,
+    const rows = this.db
+      .prepare(
+        `SELECT id, session_id, agent_id, seq, user_input, started_at, finished_at,
        iterations, tool_calls_total, tool_calls_success, tool_calls_failed,
        tokens_prompt, tokens_completion, finish_reason, error
-       FROM turn_logs WHERE session_id = ? ORDER BY seq`).all(sessionId) as Record<string, unknown>[];
+       FROM turn_logs WHERE session_id = ? ORDER BY seq`,
+      )
+      .all(sessionId) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: r.id as string,
       sessionId: r.session_id as string,
@@ -320,9 +346,12 @@ export class SessionStore {
   }
 
   getToolCallLogs(turnId: string): ToolCallLog[] {
-    const rows = this.db.prepare(
-      `SELECT id, turn_id, tool_name, iteration, args, started_at, duration_ms, success, result_preview, error
-       FROM tool_call_logs WHERE turn_id = ? ORDER BY started_at`).all(turnId) as Record<string, unknown>[];
+    const rows = this.db
+      .prepare(
+        `SELECT id, turn_id, tool_name, iteration, args, started_at, duration_ms, success, result_preview, error
+       FROM tool_call_logs WHERE turn_id = ? ORDER BY started_at`,
+      )
+      .all(turnId) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: r.id as string,
       turnId: r.turn_id as string,

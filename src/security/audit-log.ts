@@ -47,7 +47,7 @@ export class AuditLog {
   log(entry: Omit<AuditEntry, "id">): void {
     const stmt = this.db.prepare(
       `INSERT INTO audit_log (timestamp, agent_id, session_id, action, target, result, detail)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     stmt.run(
       entry.timestamp,
@@ -56,14 +56,12 @@ export class AuditLog {
       entry.action,
       entry.target ?? null,
       entry.result,
-      entry.detail ?? null
+      entry.detail ?? null,
     );
   }
 
   queryBySession(sessionId: string): AuditEntry[] {
-    const stmt = this.db.prepare(
-      `SELECT * FROM audit_log WHERE session_id = ? ORDER BY timestamp ASC`
-    );
+    const stmt = this.db.prepare(`SELECT * FROM audit_log WHERE session_id = ? ORDER BY timestamp ASC`);
     return stmt.all(sessionId) as AuditEntry[];
   }
 

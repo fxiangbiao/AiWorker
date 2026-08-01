@@ -6,14 +6,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute } from "node:path";
 import { exec, type ExecOptions } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import type {
-  ToolDefinition,
-  ToolHandler,
-  ToolResult,
-  RegisteredTool,
-  ToolContext,
-} from "../types.js";
+import type { ToolDefinition, ToolHandler } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { DangerDetector } from "../security/danger-detector.js";
 
@@ -267,9 +260,7 @@ const webSearchHandler: ToolHandler = async (args) => {
       };
     }
 
-    const output = results
-      .map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`)
-      .join("\n\n");
+    const output = results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join("\n\n");
 
     return { tool_call_id: "", success: true, content: output };
   } catch (err) {
@@ -301,9 +292,7 @@ function parseBingResults(html: string, limit: number): Array<{ title: string; u
     const title = titleMatch[2].replace(tagRegex, "").trim();
 
     const snippetMatch = snippetRegex.exec(block);
-    const snippet = snippetMatch
-      ? snippetMatch[1].replace(tagRegex, "").replace(/\s+/g, " ").trim().slice(0, 400)
-      : "";
+    const snippet = snippetMatch ? snippetMatch[1].replace(tagRegex, "").replace(/\s+/g, " ").trim().slice(0, 400) : "";
 
     if (title && url) {
       results.push({ title, url, snippet });

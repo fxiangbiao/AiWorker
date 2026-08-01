@@ -18,19 +18,27 @@ import { skillRegistry } from "./core/skill-registry.js";
 import { initAuditLog, auditLogger } from "./core/audit-logger.js";
 import type { PermissionConfig, HookContext } from "./types.js";
 import { resolve } from "node:path";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 
 const testDataDir = resolve(process.cwd(), "data-test");
 
 beforeAll(() => {
-  try { rmSync(testDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(testDataDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   mkdirSync(testDataDir, { recursive: true });
   registerBuiltinTools();
   initAuditLog(testDataDir);
 });
 
 afterAll(() => {
-  try { rmSync(testDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    rmSync(testDataDir, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
   auditLogger.close();
 });
 
@@ -39,22 +47,46 @@ describe("1. 工具注册表", () => {
     const tools = toolRegistry.getAll();
     expect(tools.length).toBe(6);
   });
-  it("fs_read 可用", () => { expect(toolRegistry.isAvailable("fs_read")).toBe(true); });
-  it("terminal_exec 可用", () => { expect(toolRegistry.isAvailable("terminal_exec")).toBe(true); });
-  it("web_search 可用", () => { expect(toolRegistry.isAvailable("web_search")).toBe(true); });
-  it("不存在工具返回 false", () => { expect(toolRegistry.isAvailable("nonexistent")).toBe(false); });
+  it("fs_read 可用", () => {
+    expect(toolRegistry.isAvailable("fs_read")).toBe(true);
+  });
+  it("terminal_exec 可用", () => {
+    expect(toolRegistry.isAvailable("terminal_exec")).toBe(true);
+  });
+  it("web_search 可用", () => {
+    expect(toolRegistry.isAvailable("web_search")).toBe(true);
+  });
+  it("不存在工具返回 false", () => {
+    expect(toolRegistry.isAvailable("nonexistent")).toBe(false);
+  });
 });
 
 describe("2. 危险操作检测", () => {
   const detector = new DangerDetector();
-  it("拦截 rm -rf /", () => { expect(detector.check("rm -rf /").isDangerous).toBe(true); });
-  it("拦截 rm -rf ~", () => { expect(detector.check("rm -rf ~").isDangerous).toBe(true); });
-  it("拦截 DROP TABLE", () => { expect(detector.check("DROP TABLE users").isDangerous).toBe(true); });
-  it("拦截 git push --force", () => { expect(detector.check("git push --force").isDangerous).toBe(true); });
-  it("拦截 git reset --hard", () => { expect(detector.check("git reset --hard HEAD~3").isDangerous).toBe(true); });
-  it("ls -la 安全", () => { expect(detector.check("ls -la").isDangerous).toBe(false); });
-  it("echo 安全", () => { expect(detector.check("echo hello").isDangerous).toBe(false); });
-  it("访问 .env 触发警告", () => { expect(detector.check("cat .env").level).toBe("warning"); });
+  it("拦截 rm -rf /", () => {
+    expect(detector.check("rm -rf /").isDangerous).toBe(true);
+  });
+  it("拦截 rm -rf ~", () => {
+    expect(detector.check("rm -rf ~").isDangerous).toBe(true);
+  });
+  it("拦截 DROP TABLE", () => {
+    expect(detector.check("DROP TABLE users").isDangerous).toBe(true);
+  });
+  it("拦截 git push --force", () => {
+    expect(detector.check("git push --force").isDangerous).toBe(true);
+  });
+  it("拦截 git reset --hard", () => {
+    expect(detector.check("git reset --hard HEAD~3").isDangerous).toBe(true);
+  });
+  it("ls -la 安全", () => {
+    expect(detector.check("ls -la").isDangerous).toBe(false);
+  });
+  it("echo 安全", () => {
+    expect(detector.check("echo hello").isDangerous).toBe(false);
+  });
+  it("访问 .env 触发警告", () => {
+    expect(detector.check("cat .env").level).toBe("warning");
+  });
 });
 
 describe("3. 权限模型 (Ask/Plan/Craft)", () => {
@@ -70,13 +102,19 @@ describe("3. 权限模型 (Ask/Plan/Craft)", () => {
   };
   const permModel = new PermissionModel(permConfig);
 
-  it("默认 Ask 模式", () => { expect(permModel.getMode()).toBe("ask"); });
-  it("Ask 模式不允许工具调用", () => { expect(permModel.allowsToolCalls()).toBe(false); });
+  it("默认 Ask 模式", () => {
+    expect(permModel.getMode()).toBe("ask");
+  });
+  it("Ask 模式不允许工具调用", () => {
+    expect(permModel.allowsToolCalls()).toBe(false);
+  });
   it("Craft 模式允许工具调用", () => {
     permModel.setMode("craft");
     expect(permModel.allowsToolCalls()).toBe(true);
   });
-  it("Craft 模式高危需确认", () => { expect(permModel.highRiskNeedsConfirm()).toBe(true); });
+  it("Craft 模式高危需确认", () => {
+    expect(permModel.highRiskNeedsConfirm()).toBe(true);
+  });
   it("Plan 模式需确认", () => {
     permModel.setMode("plan");
     expect(permModel.requiresConfirmation()).toBe(true);
@@ -92,7 +130,9 @@ describe("4. 会话存储 (SQLite + FTS5)", () => {
     session = sessionStore.createSession("test-agent");
   });
 
-  it("创建会话成功", () => { expect(session.id).toBeTruthy(); });
+  it("创建会话成功", () => {
+    expect(session.id).toBeTruthy();
+  });
   it("消息历史 2 条", () => {
     sessionStore.appendMessage(session.id, { role: "user", content: "你好" });
     sessionStore.appendMessage(session.id, { role: "assistant", content: "你好！有什么可以帮你的？" });
@@ -113,7 +153,9 @@ describe("4. 会话存储 (SQLite + FTS5)", () => {
     expect(results.length).toBeGreaterThan(0);
   });
 
-  afterAll(() => { sessionStore.close(); });
+  afterAll(() => {
+    sessionStore.close();
+  });
 });
 
 describe("5. 上下文压缩", () => {
@@ -147,9 +189,14 @@ describe("6. Hooks 系统", () => {
   it("onToolCallPre Hook 被调用", async () => {
     hookManager.clear();
     let hookCalled = false;
-    hookManager.on("onToolCallPre", async () => { hookCalled = true; return void 0; });
+    hookManager.on("onToolCallPre", async () => {
+      hookCalled = true;
+      return void 0;
+    });
     await hookManager.trigger("onToolCallPre", {
-      agentId: "test", sessionId: "test", data: { toolName: "fs_read" },
+      agentId: "test",
+      sessionId: "test",
+      data: { toolName: "fs_read" },
     });
     expect(hookCalled).toBe(true);
   });
@@ -157,10 +204,13 @@ describe("6. Hooks 系统", () => {
   it("Hook 拦截生效", async () => {
     hookManager.clear();
     hookManager.on("onToolCallPre", async () => ({
-      proceed: false, message: "测试拦截",
+      proceed: false,
+      message: "测试拦截",
     }));
     const result = await hookManager.trigger("onToolCallPre", {
-      agentId: "test", sessionId: "test", data: {},
+      agentId: "test",
+      sessionId: "test",
+      data: {},
     });
     expect(result.proceed).toBe(false);
   });
@@ -168,17 +218,26 @@ describe("6. Hooks 系统", () => {
   it("拦截消息正确传递", async () => {
     hookManager.clear();
     hookManager.on("onToolCallPre", async () => ({
-      proceed: false, message: "测试拦截",
+      proceed: false,
+      message: "测试拦截",
     }));
     const result = await hookManager.trigger("onToolCallPre", {
-      agentId: "test", sessionId: "test", data: {},
+      agentId: "test",
+      sessionId: "test",
+      data: {},
     });
     expect(result.message).toBe("测试拦截");
   });
 });
 
 describe("7. 工具执行", () => {
-  const ctx = { agentId: "test", sessionId: "test", workingDir: process.cwd(), projectDir: process.cwd(), permissions: "craft" as const };
+  const ctx = {
+    agentId: "test",
+    sessionId: "test",
+    workingDir: process.cwd(),
+    projectDir: process.cwd(),
+    permissions: "craft" as const,
+  };
 
   it("获取 fs_read handler", () => {
     const readHandler = toolRegistry.getHandler("fs_read");
@@ -416,7 +475,10 @@ describe("13. Phase 3 Hook Handlers", () => {
     const handler = createSensitiveDataFilter();
     const ctx = makeCtx({
       event: "onToolCallPre",
-      data: { toolName: "fs_write", args: JSON.stringify({ path: "/tmp/key.pem", content: "-----BEGIN PRIVATE KEY-----\nABCD" }) },
+      data: {
+        toolName: "fs_write",
+        args: JSON.stringify({ path: "/tmp/key.pem", content: "-----BEGIN PRIVATE KEY-----\nABCD" }),
+      },
     });
     const result = await handler(ctx);
     expect(result).toBeDefined();
@@ -499,7 +561,11 @@ describe("13. Phase 3 Hook Handlers", () => {
     // Post-hook: 计算 diff
     const postCtx = makeCtx({
       event: "onToolCallPost",
-      data: { toolName: "fs_write", args: JSON.stringify({ path: testFile }), result: { success: true, content: "ok" } },
+      data: {
+        toolName: "fs_write",
+        args: JSON.stringify({ path: testFile }),
+        result: { success: true, content: "ok" },
+      },
     });
     await handler(postCtx);
 
@@ -632,7 +698,9 @@ describe("14. Team Coordinator", () => {
     const modelRouter = new ModelRouter();
     // 模拟 completeWithProfile 抛出错误（无 API key）
     const originalComplete = modelRouter.completeWithProfile.bind(modelRouter);
-    modelRouter.completeWithProfile = async () => { throw new Error("模拟失败"); };
+    modelRouter.completeWithProfile = async () => {
+      throw new Error("模拟失败");
+    };
 
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord3.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
@@ -658,7 +726,9 @@ describe("14. Team Coordinator", () => {
     const modelRouter = new ModelRouter();
     // 模拟 LLM 快速失败，避免网络超时
     const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
-    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+    modelRouter.completeWithProfile = async () => {
+      throw new Error("模拟");
+    };
 
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord4.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
@@ -667,9 +737,7 @@ describe("14. Team Coordinator", () => {
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
     const plan = {
-      steps: [
-        { id: "s1", description: "测试任务", expertId: "default", dependsOn: [] as string[], critical: true },
-      ],
+      steps: [{ id: "s1", description: "测试任务", expertId: "default", dependsOn: [] as string[], critical: true }],
       goal: "测试",
       estimatedSteps: 1,
     };
@@ -689,7 +757,9 @@ describe("14. Team Coordinator", () => {
 
     const modelRouter = new ModelRouter();
     const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
-    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+    modelRouter.completeWithProfile = async () => {
+      throw new Error("模拟");
+    };
 
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord5.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
@@ -700,7 +770,13 @@ describe("14. Team Coordinator", () => {
     const plan = {
       steps: [
         { id: "s1", description: "第一步", expertId: "default", dependsOn: [] as string[], critical: true },
-        { id: "s2", description: "第二步（依赖 s1）", expertId: "default", dependsOn: ["s1"] as string[], critical: false },
+        {
+          id: "s2",
+          description: "第二步（依赖 s1）",
+          expertId: "default",
+          dependsOn: ["s1"] as string[],
+          critical: false,
+        },
       ],
       goal: "流水线测试",
       estimatedSteps: 2,
@@ -721,7 +797,9 @@ describe("14. Team Coordinator", () => {
 
     const modelRouter = new ModelRouter();
     const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
-    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+    modelRouter.completeWithProfile = async () => {
+      throw new Error("模拟");
+    };
 
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord6.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
@@ -753,7 +831,9 @@ describe("14. Team Coordinator", () => {
 
     const modelRouter = new ModelRouter();
     const origComplete = modelRouter.completeWithProfile.bind(modelRouter);
-    modelRouter.completeWithProfile = async () => { throw new Error("模拟"); };
+    modelRouter.completeWithProfile = async () => {
+      throw new Error("模拟");
+    };
 
     const sessionStore = new SessionStore(resolve(testDataDir, "test-coord7.db"));
     const contextManager = new ContextManager(sessionStore, testDataDir);
@@ -762,9 +842,7 @@ describe("14. Team Coordinator", () => {
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
     const plan = {
-      steps: [
-        { id: "s1", description: "调研", expertId: "research", dependsOn: [] as string[], critical: false },
-      ],
+      steps: [{ id: "s1", description: "调研", expertId: "research", dependsOn: [] as string[], critical: false }],
       goal: "测试汇总",
       estimatedSteps: 1,
     };
@@ -836,11 +914,7 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
     // 写入项目信息
     await mgr.updateMemory("这是 React 18 + TypeScript 项目\n使用 Vitest 做测试");
     // 写入会话历史
-    await mgr.summarizeSession(
-      [{ role: "user", content: "帮我实现一个组件" }],
-      "实现 React 组件",
-      "test-session-1"
-    );
+    await mgr.summarizeSession([{ role: "user", content: "帮我实现一个组件" }], "实现 React 组件", "test-session-1");
 
     const content = readFileSync(resolve(testDataDir, "memory", "MEMORY.md"), "utf-8");
     expect(content).toContain("项目信息");
@@ -863,11 +937,7 @@ describe("15. 记忆系统增强 (Sprint 8)", () => {
 
     // 多次写入会话历史
     for (let i = 0; i < 5; i++) {
-      await mgr.summarizeSession(
-        [{ role: "user", content: `任务 ${i}` }],
-        `任务 ${i}`,
-        `test-session-${i}`
-      );
+      await mgr.summarizeSession([{ role: "user", content: `任务 ${i}` }], `任务 ${i}`, `test-session-${i}`);
     }
 
     const content = readFileSync(resolve(testDataDir, "memory", "MEMORY.md"), "utf-8");
@@ -918,14 +988,22 @@ describe("16. MCP 服务器配置 (Sprint 9)", () => {
   it("MCP 工具服务器直接执行正确", async () => {
     const { spawn } = await import("node:child_process");
 
-    const child = spawn(process.execPath, ["--import", "tsx/esm", resolve(process.cwd(), "src/mcp/builtin-server.ts")], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx/esm", resolve(process.cwd(), "src/mcp/builtin-server.ts")],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
 
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
 
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
     await new Promise((r) => setTimeout(r, 500));
@@ -933,11 +1011,14 @@ describe("16. MCP 服务器配置 (Sprint 9)", () => {
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n");
     await new Promise((r) => setTimeout(r, 500));
 
-    child.stdin.write(JSON.stringify({
-      jsonrpc: "2.0", id: 3,
-      method: "tools/call",
-      params: { name: "math_eval", arguments: { expression: "2+3*4" } },
-    }) + "\n");
+    child.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "math_eval", arguments: { expression: "2+3*4" } },
+      }) + "\n",
+    );
     await new Promise((r) => setTimeout(r, 500));
 
     child.kill();
@@ -946,11 +1027,14 @@ describe("16. MCP 服务器配置 (Sprint 9)", () => {
     const lines = stdout.split("\n").filter(Boolean);
     const responses: Array<{ id: number; result?: unknown; error?: unknown }> = [];
     for (const line of lines) {
-      try { responses.push(JSON.parse(line)); } catch { /* skip */ }
+      try {
+        responses.push(JSON.parse(line));
+      } catch {
+        /* skip */
+      }
     }
 
     const toolsResp = responses.find((r) => r.id === 2);
-    const callResp = responses.find((r) => r.id === 3);
 
     if (responses.length === 0 && stderr) {
       // 如果有 stderr 输出，说明启动有问题
@@ -969,23 +1053,32 @@ describe("16. MCP 服务器配置 (Sprint 9)", () => {
   it("MCP 工具调用返回正确结果", async () => {
     const { spawn } = await import("node:child_process");
 
-    const child = spawn(process.execPath, ["--import", "tsx/esm", resolve(process.cwd(), "src/mcp/builtin-server.ts")], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx/esm", resolve(process.cwd(), "src/mcp/builtin-server.ts")],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
 
     let stdout = "";
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
 
     // initialize
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
     await new Promise((r) => setTimeout(r, 500));
 
     // call uuid_gen
-    child.stdin.write(JSON.stringify({
-      jsonrpc: "2.0", id: 2,
-      method: "tools/call",
-      params: { name: "uuid_gen", arguments: {} },
-    }) + "\n");
+    child.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "uuid_gen", arguments: {} },
+      }) + "\n",
+    );
     await new Promise((r) => setTimeout(r, 500));
 
     child.kill();
@@ -999,7 +1092,9 @@ describe("16. MCP 服务器配置 (Sprint 9)", () => {
           expect(text).toMatch(/^[0-9a-f-]{36}$/);
           return;
         }
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
     // 如果没找到，也接受（spawn 可能在 Windows 上有差异）
   }, 15000);

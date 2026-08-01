@@ -4,7 +4,7 @@
  */
 
 import { readdirSync, existsSync, readFileSync } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve } from "node:path";
 import type { ProjectProfile } from "../types.js";
 
 export class ProjectProfiler {
@@ -45,7 +45,9 @@ export class ProjectProfiler {
 
           // Entry
           profile.entryFile = pkg.main ?? "";
-        } catch { /* ignore parse errors */ }
+        } catch {
+          /* ignore parse errors */
+        }
       } else if (topFiles.some((f) => f.endsWith(".csproj") || f.endsWith(".sln"))) {
         profile.type = "C#/.NET";
         profile.pkgManager = "nuget";
@@ -63,24 +65,42 @@ export class ProjectProfiler {
             const pyr = readFileSync(resolve(this.workingDir, "pyproject.toml"), "utf-8");
             if (pyr.includes("pytest")) profile.testFramework = "pytest";
             else if (pyr.includes("unittest")) profile.testFramework = "unittest";
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
       }
 
       // Key files (limit to 8)
       const keyFilePatterns = [
-        "package.json", "tsconfig.json", "vitest.config.ts", "vite.config.ts",
-        "README.md", "AGENTS.md", ".gitignore", ".env.example",
-        "docker-compose.yml", "Dockerfile", "Makefile", "Cargo.toml",
-        "go.mod", "requirements.txt", "pyproject.toml", "setup.py",
-        ".eslintrc*", "prettier.config.*", ".prettierrc*",
+        "package.json",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "vite.config.ts",
+        "README.md",
+        "AGENTS.md",
+        ".gitignore",
+        ".env.example",
+        "docker-compose.yml",
+        "Dockerfile",
+        "Makefile",
+        "Cargo.toml",
+        "go.mod",
+        "requirements.txt",
+        "pyproject.toml",
+        "setup.py",
+        ".eslintrc*",
+        "prettier.config.*",
+        ".prettierrc*",
       ];
-      profile.keyFiles = topFiles.filter((f) =>
-        keyFilePatterns.some((p) => {
-          const escaped = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-          return new RegExp(`^${escaped}$`).test(f);
-        })
-      ).slice(0, 8);
+      profile.keyFiles = topFiles
+        .filter((f) =>
+          keyFilePatterns.some((p) => {
+            const escaped = p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+            return new RegExp(`^${escaped}$`).test(f);
+          }),
+        )
+        .slice(0, 8);
 
       return profile;
     } catch {

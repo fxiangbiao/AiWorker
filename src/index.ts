@@ -187,7 +187,7 @@ program
     });
 
     // ─── 交互循环 ───
-    let prefillQueue: string[] = [];
+    const prefillQueue: string[] = [];
     let currentSessionId: string | undefined;
 
     while (true) {
@@ -806,13 +806,9 @@ function pickDebateAgents(topic: string, available: string[]): { agentA: string;
   return defaultPair;
 }
 
-function stripAnsiLen(s: string): number {
-  return s.replace(/\x1b\[\d+(;\d+)*m/g, "").length;
-}
-
 function displayWidth(s: string): number {
   let w = 0;
-  // strip ANSI first
+  // eslint-disable-next-line no-control-regex
   const clean = s.replace(/\x1b\[\d+(;\d+)*m/g, "");
   for (const ch of clean) {
     // CJK + fullwidth chars take 2 columns

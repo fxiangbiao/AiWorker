@@ -24,7 +24,7 @@ export class McpHealthCheck {
     pool: McpConnectionPool,
     pingFn: (name: string) => Promise<boolean>,
     onReconnect: ReconnectCallback,
-    options?: HealthCheckOptions
+    options?: HealthCheckOptions,
   ) {
     this.pool = pool;
     this.pingFn = pingFn;

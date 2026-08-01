@@ -92,10 +92,27 @@ function safeEval(expr: string): string {
 }
 
 const ALLOWED_MATH_METHODS = new Set([
-  "abs", "ceil", "floor", "round", "max", "min",
-  "sqrt", "pow", "log", "log2", "log10",
-  "sin", "cos", "tan", "asin", "acos", "atan",
-  "PI", "E", "LN2", "LN10",
+  "abs",
+  "ceil",
+  "floor",
+  "round",
+  "max",
+  "min",
+  "sqrt",
+  "pow",
+  "log",
+  "log2",
+  "log10",
+  "sin",
+  "cos",
+  "tan",
+  "asin",
+  "acos",
+  "atan",
+  "PI",
+  "E",
+  "LN2",
+  "LN10",
 ]);
 
 function callTool(name: string, args: Record<string, unknown>): unknown {
@@ -176,7 +193,8 @@ process.stdin.on("data", (chunk: string) => {
       switch (msg.method) {
         case "initialize":
           respond({
-            jsonrpc: "2.0", id,
+            jsonrpc: "2.0",
+            id,
             result: {
               protocolVersion: "2024-11-05",
               capabilities: { tools: {} },
@@ -194,7 +212,11 @@ process.stdin.on("data", (chunk: string) => {
             const result = callTool(msg.params?.name ?? "", msg.params?.arguments ?? {});
             respond({ jsonrpc: "2.0", id, result });
           } catch (err) {
-            respond({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `错误: ${(err as Error).message}` }], isError: true } });
+            respond({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "text", text: `错误: ${(err as Error).message}` }], isError: true },
+            });
           }
           break;
         }

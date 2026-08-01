@@ -54,7 +54,9 @@ export class ContextManager {
   private async acquireLock(): Promise<() => void> {
     const prev = this._writeLock;
     let release: () => void;
-    this._writeLock = new Promise<void>((r) => { release = r; });
+    this._writeLock = new Promise<void>((r) => {
+      release = r;
+    });
     await prev;
     return release!;
   }
@@ -71,7 +73,10 @@ export class ContextManager {
     const memoryPath = resolve(this.memoryDir, "MEMORY.md");
     const userPath = resolve(this.memoryDir, "USER.md");
     if (!existsSync(memoryPath)) {
-      writeFileSync(memoryPath, `# Agent 记忆\n\n${SECTION_PROJECT}\n\n_(在此记录项目信息)_\n\n${SECTION_HISTORY}\n\n_(自动滚动，最近优先)_\n`);
+      writeFileSync(
+        memoryPath,
+        `# Agent 记忆\n\n${SECTION_PROJECT}\n\n_(在此记录项目信息)_\n\n${SECTION_HISTORY}\n\n_(自动滚动，最近优先)_\n`,
+      );
     }
     if (!existsSync(userPath)) {
       writeFileSync(userPath, "# 用户画像\n\n_(自动更新，有界管理)_\n");
@@ -111,7 +116,7 @@ export class ContextManager {
     systemPrompt: string,
     sessionId: string,
     userMessage: string,
-    agentId?: string
+    agentId?: string,
   ): ContextBreakdown {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -174,7 +179,7 @@ export class ContextManager {
     systemPrompt: string,
     sessionId: string,
     userMessage: string,
-    agentId?: string
+    agentId?: string,
   ): Promise<Message[]> {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -194,9 +199,7 @@ export class ContextManager {
     // 2.5. 工作目录感知 (ProjectProfile)
     if (this.projectProfile) {
       const p = this.projectProfile;
-      const parts: string[] = [
-        `- 项目类型: ${p.type}`,
-      ];
+      const parts: string[] = [`- 项目类型: ${p.type}`];
       if (p.pkgManager) parts.push(`- 包管理器: ${p.pkgManager}`);
       if (p.testFramework) parts.push(`- 测试框架: ${p.testFramework}`);
       if (p.entryFile) parts.push(`- 入口文件: ${p.entryFile}`);
@@ -276,12 +279,7 @@ export class ContextManager {
     await this.appendHistoryEntry(entry);
 
     // 存入 FTS5 跨会话检索
-    this.sessionStore.saveEpisodic(
-      sessionId,
-      taskDescription,
-      result.summary,
-      1.0
-    );
+    this.sessionStore.saveEpisodic(sessionId, taskDescription, result.summary, 1.0);
 
     // 自动更新用户画像
     const profile = this.extractUserProfile(messages);
@@ -303,15 +301,15 @@ export class ContextManager {
     const projectIdx = content.indexOf(SECTION_PROJECT);
     const historyIdx = content.indexOf(SECTION_HISTORY);
 
-    let projectInfo = "";
-    let sessionHistory = "";
+    let projectInfo: string;
+    let sessionHistory: string;
 
     if (projectIdx !== -1 && historyIdx !== -1) {
       projectInfo = content.slice(projectIdx + SECTION_PROJECT.length, historyIdx).trim();
       sessionHistory = content.slice(historyIdx + SECTION_HISTORY.length).trim();
     } else {
-      // 旧格式或损坏，取全部内容作为项目信息
       projectInfo = content;
+      sessionHistory = "";
     }
 
     return { projectInfo, sessionHistory };

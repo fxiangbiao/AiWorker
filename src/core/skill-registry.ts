@@ -3,8 +3,8 @@
  * 设计依据：调研报告 3.3 节 — SKILL.md 运行时动态组装
  */
 
-import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { resolve, extname, basename } from "node:path";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { resolve, basename } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { SkillDef, ToolContext } from "../types.js";
 import { toolRegistry } from "./tool-registry.js";
@@ -58,10 +58,10 @@ class SkillRegistry {
     const meta = parseYaml(yamlStr) as Record<string, unknown>;
 
     return {
-      name: meta.name as string ?? basename(resolve(filePath, "..")),
-      version: meta.version as string ?? "1.0",
+      name: (meta.name as string) ?? basename(resolve(filePath, "..")),
+      version: (meta.version as string) ?? "1.0",
       triggers: (meta.triggers as string[]) ?? [],
-      expert: meta.expert as string ?? "general",
+      expert: (meta.expert as string) ?? "general",
       toolsRequired: (meta.tools_required as string[]) ?? [],
       modelPreference: meta.model_preference as string | undefined,
       body,
@@ -95,26 +95,19 @@ class SkillRegistry {
     return this.getSkillsForAgent(agentId).filter((s) => {
       if (s.toolsRequired.length === 0) return true;
       if (!ctx) return true;
-      return s.toolsRequired.every((toolName) =>
-        toolRegistry.isAvailable(toolName)
-      );
+      return s.toolsRequired.every((toolName) => toolRegistry.isAvailable(toolName));
     });
   }
 
   /** 生成技能列表注入文本（用于 system prompt） */
   getInjectedPrompt(agentId: string, userInput?: string): string {
-    const skills = userInput
-      ? this.match(userInput, agentId)
-      : this.getSkillsForAgent(agentId);
+    const skills = userInput ? this.match(userInput, agentId) : this.getSkillsForAgent(agentId);
 
     if (skills.length === 0) return "";
 
     const header = `\n\n-- 可用技能 --\n以下是你可以使用的专业技能，按需调用：\n`;
     const list = skills
-      .map(
-        (s) =>
-          `### ${s.name}\n触发词: ${s.triggers.join(", ")}\n${s.body.slice(0, 800)}`
-      )
+      .map((s) => `### ${s.name}\n触发词: ${s.triggers.join(", ")}\n${s.body.slice(0, 800)}`)
       .join("\n\n");
 
     return header + list + `\n-- 技能列表结束 --\n`;

@@ -108,7 +108,10 @@ export class TerminalRenderer {
     if (!this.active) return prefill;
     return new Promise<string>((resolve) => {
       const rl = createInterface({ input: process.stdin, output: stdout, terminal: true });
-      rl.question(chalk.cyan("你> "), (answer) => { rl.close(); resolve(answer || prefill); });
+      rl.question(chalk.cyan("你> "), (answer) => {
+        rl.close();
+        resolve(answer || prefill);
+      });
       rl.write(prefill);
     });
   }
@@ -121,16 +124,12 @@ export class TerminalRenderer {
   // ── 内部 ──
 
   private buildStatusText(status: StatusLine): string {
-    const pct = status.tokensMax > 0
-      ? Math.round((status.tokensUsed / status.tokensMax) * 100) : 0;
+    const pct = status.tokensMax > 0 ? Math.round((status.tokensUsed / status.tokensMax) * 100) : 0;
 
-    const tokenStr = status.tokensMax > 0
-      ? `${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)}`
-      : "";
+    const tokenStr = status.tokensMax > 0 ? `${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)}` : "";
     const pctStr = status.tokensMax > 0 ? `${pct}%` : "";
-    const iterStr = status.iteration != null
-      ? `iter ${status.iteration}${status.maxIter ? `/${status.maxIter}` : ""}`
-      : "";
+    const iterStr =
+      status.iteration != null ? `iter ${status.iteration}${status.maxIter ? `/${status.maxIter}` : ""}` : "";
     const queueStr = status.queueSize > 0 ? `排队:${status.queueSize}` : "";
     const toolStr = status.toolName ? `🛠 ${status.toolName}` : "";
 
@@ -153,6 +152,7 @@ export class TerminalRenderer {
     const { columns } = stdout;
     const maxWidth = Math.max(40, columns - 4);
 
+    // eslint-disable-next-line no-control-regex
     const stripAnsi = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
     const leftLen = stripAnsi(line).length;
     const rightLen = stripAnsi(right).length;
@@ -164,7 +164,9 @@ export class TerminalRenderer {
         tokenStr ? (pct > 80 ? chalk.bold.yellow(tokenStr) : chalk.white(tokenStr)) : "",
         toolStr ? chalk.blue(toolStr) : "",
         queueStr ? chalk.yellow(queueStr) : "",
-      ].filter(Boolean).join(sep);
+      ]
+        .filter(Boolean)
+        .join(sep);
       line = compact;
     }
 
@@ -182,7 +184,10 @@ export class TerminalRenderer {
   private async fallbackPrompt(): Promise<string> {
     const rl = createInterface({ input: process.stdin, output: stdout, terminal: true });
     return new Promise<string>((resolve) => {
-      rl.question(chalk.cyan("你> "), (answer) => { rl.close(); resolve(answer); });
+      rl.question(chalk.cyan("你> "), (answer) => {
+        rl.close();
+        resolve(answer);
+      });
     });
   }
 }

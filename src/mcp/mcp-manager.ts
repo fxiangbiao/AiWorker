@@ -4,9 +4,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { ToolResult, McpServerConfig, McpToolDef, McpServerStatus, ToolDefinition, ToolHandler } from "../types.js";
+import type {
+  ToolResult,
+  McpServerConfig,
+  McpToolDef,
+  McpServerStatus,
+  ToolDefinition,
+  ToolHandler,
+} from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { McpConnectionPool } from "./connection-pool.js";
 import { McpHealthCheck } from "./health-check.js";
@@ -48,7 +54,7 @@ class McpManager {
     this.healthCheck = new McpHealthCheck(
       this.pool,
       (name) => this.ping(name),
-      (name) => this.triggerReconnect(name)
+      (name) => this.triggerReconnect(name),
     );
   }
 
@@ -171,7 +177,7 @@ class McpManager {
       capabilities: {},
       clientInfo: { name: "aiworker", version: "0.1.0" },
     });
-    conn.capabilities = (initResult as Record<string, unknown>)?.capabilities as Record<string, unknown> ?? {};
+    conn.capabilities = ((initResult as Record<string, unknown>)?.capabilities as Record<string, unknown>) ?? {};
     conn.initialized = true;
 
     // 发送 initialized 通知
@@ -212,12 +218,12 @@ class McpManager {
               ? content.map((c: { text?: string }) => c.text ?? "").join("\n")
               : JSON.stringify(result);
             return { tool_call_id: "", success: true, content: text };
-          } catch (err) {
+    } catch {
             return {
               tool_call_id: "",
               success: false,
               content: "",
-              error: `MCP 工具调用失败: ${(err as Error).message}`,
+              error: "MCP 工具调用失败",
             };
           }
         };
@@ -228,7 +234,7 @@ class McpManager {
           },
         });
       }
-    } catch (err) {
+    } catch {
       // 工具发现失败，静默降级
     }
   }

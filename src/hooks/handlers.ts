@@ -31,7 +31,7 @@ export interface HandlerDependencies {
 export function createDangerousCommandBlock(deps: HandlerDependencies): HookHandler {
   const detector = deps.dangerDetector ?? new DangerDetector();
   return async (ctx) => {
-    const { toolName, args } = ctx.data;
+    const { args } = ctx.data;
     const input = typeof args === "string" ? args : JSON.stringify(args);
     const check = detector.check(input);
     if (check.isDangerous) {
@@ -115,12 +115,12 @@ export function createFallbackModel(deps: HandlerDependencies): HookHandler {
  */
 export function createSensitiveDataFilter(): HookHandler {
   const patterns: RegExp[] = [
-    /sk-[a-zA-Z0-9]{20,}/,               // OpenAI / 类 OpenAI API keys
+    /sk-[a-zA-Z0-9]{20,}/, // OpenAI / 类 OpenAI API keys
     /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/i,
-    /ghp_[a-zA-Z0-9]{36}/,                // GitHub PAT
-    /gho_[a-zA-Z0-9]{36}/,                // GitHub OAuth
-    /xox[bpras]-[a-zA-Z0-9-]+/,          // Slack tokens
-    /AKIA[0-9A-Z]{16}/,                   // AWS access key
+    /ghp_[a-zA-Z0-9]{36}/, // GitHub PAT
+    /gho_[a-zA-Z0-9]{36}/, // GitHub OAuth
+    /xox[bpras]-[a-zA-Z0-9-]+/, // Slack tokens
+    /AKIA[0-9A-Z]{16}/, // AWS access key
     /(password|passwd|pwd)\s*[:=]\s*\S+/i,
     /(api[_-]?key|apikey)\s*[:=]\s*\S+/i,
   ];
@@ -131,9 +131,7 @@ export function createSensitiveDataFilter(): HookHandler {
     if (ctx.event === "onToolCallPre") {
       const toolName = ctx.data.toolName as string;
       if (toolName === "terminal_exec" || toolName === "fs_write") {
-        input = typeof ctx.data.args === "string"
-          ? ctx.data.args
-          : JSON.stringify(ctx.data.args ?? {});
+        input = typeof ctx.data.args === "string" ? ctx.data.args : JSON.stringify(ctx.data.args ?? {});
       }
     }
 
@@ -146,9 +144,7 @@ export function createSensitiveDataFilter(): HookHandler {
     for (const pattern of patterns) {
       if (pattern.test(input)) {
         const match = input.match(pattern)?.[0] ?? "";
-        const masked = match.length > 8
-          ? match.slice(0, 4) + "****" + match.slice(-4)
-          : "****";
+        const masked = match.length > 8 ? match.slice(0, 4) + "****" + match.slice(-4) : "****";
 
         return {
           proceed: false,
@@ -177,9 +173,18 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
     if (loadedSessions.has(ctx.sessionId)) return;
 
     const projectFiles = [
-      "README.md", "package.json", "AGENTS.md", "CONTRIBUTING.md",
-      ".env.example", "tsconfig.json", "composer.json", "Cargo.toml",
-      "pyproject.toml", "go.mod", "Makefile", "Dockerfile",
+      "README.md",
+      "package.json",
+      "AGENTS.md",
+      "CONTRIBUTING.md",
+      ".env.example",
+      "tsconfig.json",
+      "composer.json",
+      "Cargo.toml",
+      "pyproject.toml",
+      "go.mod",
+      "Makefile",
+      "Dockerfile",
     ];
 
     const loaded: string[] = [];
@@ -210,7 +215,9 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
           result: "success",
           detail: loaded.map((l) => l.split("\n")[0].replace("--- ", "").replace(" ---", "")).join(", "),
         });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     loadedSessions.set(ctx.sessionId, Date.now());
@@ -239,16 +246,14 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
     if (toolName !== "terminal_exec" && toolName !== "fs_write") return;
 
     const detector = deps.dangerDetector ?? new DangerDetector();
-    const input = typeof ctx.data.args === "string"
-      ? ctx.data.args
-      : JSON.stringify(ctx.data.args ?? {});
+    const input = typeof ctx.data.args === "string" ? ctx.data.args : JSON.stringify(ctx.data.args ?? {});
     const check = detector.check(input);
 
     // 仅高危或警告级别需要确认
     if (check.level === "safe") return;
 
     const confirmed = await interactiveConfirm(
-      `${check.isDangerous ? "高危" : "注意"}: ${check.message ?? toolName}。是否继续？`
+      `${check.isDangerous ? "高危" : "注意"}: ${check.message ?? toolName}。是否继续？`,
     );
 
     if (!confirmed) {
@@ -311,7 +316,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
       if (oldContent === undefined) return; // 新文件，无 diff
 
       // 读取新内容
-      let newContent = "";
+      let newContent: string;
       try {
         newContent = readFileSync(filePath, "utf-8");
       } catch {
@@ -333,7 +338,9 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
           result: "success",
           detail: `+${diff.added} -${diff.removed} 行`,
         });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
 
       // 也保存快照到磁盘
       try {
@@ -343,7 +350,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         writeFileSync(
           resolve(snapDir, `${safeName}.diff`),
           `${diff.text}\n---\nold: ${oldContent.length} chars\nnew: ${newContent.length} chars`,
-          "utf-8"
+          "utf-8",
         );
       } catch {
         // 静默失败
@@ -366,9 +373,9 @@ export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHan
   return async (ctx) => {
     if (ctx.event !== "onTaskComplete") return;
 
-    const iterations = ctx.data.iterations as number ?? 0;
-    const toolCalls = ctx.data.toolCallsExecuted as number ?? 0;
-    const truncated = ctx.data.truncated as boolean ?? false;
+    const iterations = (ctx.data.iterations as number) ?? 0;
+    const toolCalls = (ctx.data.toolCallsExecuted as number) ?? 0;
+    const truncated = (ctx.data.truncated as boolean) ?? false;
 
     // Threshold: iter >= 3 AND toolCalls >= 3 AND task succeeded (not truncated, not error)
     if (iterations < 3 || toolCalls < 3 || truncated) return;
@@ -376,16 +383,11 @@ export function createEvaluateSkillCreation(_deps: HandlerDependencies): HookHan
     // Cooldown: same agent max 3 evaluations per hour
     const now = Date.now();
     const last = cooldownTrack.get(ctx.agentId);
-    if (last && (now - last) < 20 * 60 * 1000) return; // 20 min cooldown for simplicity
+    if (last && now - last < 20 * 60 * 1000) return; // 20 min cooldown for simplicity
     cooldownTrack.set(ctx.agentId, now);
 
     try {
-      const result = skillEvolution.evolve(
-        ctx.agentId,
-        ctx.sessionId,
-        iterations,
-        toolCalls
-      );
+      const result = skillEvolution.evolve(ctx.agentId, ctx.sessionId, iterations, toolCalls);
 
       if (result && result.registered) {
         stdout.write(`\n${chalk.green(`✓ 新技能沉淀: ${result.name} (${result.score}★)`)}\n`);
@@ -413,7 +415,10 @@ const turnSeq = new Map<string, number>();
 
 export function createTurnLogger(deps: HandlerDependencies): HookHandler {
   const store = deps.sessionStore;
-  if (!store) return async () => { /* no-op */ };
+  if (!store)
+    return async () => {
+      /* no-op */
+    };
 
   return async (ctx) => {
     if (ctx.event !== "onTaskComplete") return;
@@ -425,14 +430,15 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     const userInput = messages?.find((m) => m.role === "user")?.content.slice(0, 500) ?? "";
 
     // Count tool successes/failures from messages (assistant tool_calls vs. tool results)
-    let toolCallsTotal = (ctx.data.toolCallsExecuted as number) ?? 0;
+    const toolCallsTotal = (ctx.data.toolCallsExecuted as number) ?? 0;
     let toolCallsSuccess = 0;
     let toolCallsFailed = 0;
     if (messages) {
       for (const m of messages) {
         if (m.role === "tool") {
           const isError = m.content.startsWith("Error:");
-          if (isError) toolCallsFailed++; else toolCallsSuccess++;
+          if (isError) toolCallsFailed++;
+          else toolCallsSuccess++;
         }
       }
       if (toolCallsSuccess + toolCallsFailed === 0) {
@@ -457,15 +463,20 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
         toolCallsFailed,
         tokensPrompt: deps.modelRouter?.getPromptTokens() ?? 0,
         tokensCompletion: deps.modelRouter?.getCompletionTokens() ?? 0,
-        finishReason: (ctx.data.truncated ? "length" : "stop"),
+        finishReason: ctx.data.truncated ? "length" : "stop",
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 }
 
 export function createToolCallLogger(deps: HandlerDependencies): HookHandler {
   const store = deps.sessionStore;
-  if (!store) return async () => { /* no-op */ };
+  if (!store)
+    return async () => {
+      /* no-op */
+    };
 
   let callStart = 0;
 
@@ -493,7 +504,9 @@ export function createToolCallLogger(deps: HandlerDependencies): HookHandler {
         success: result?.success ?? true,
         resultPreview: (result?.content ?? "").slice(0, 500),
       });
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 }
 
@@ -537,7 +550,11 @@ function extractFilePath(args: unknown): string | null {
 }
 
 function tryParseJson(s: string): unknown {
-  try { return JSON.parse(s); } catch { return null; }
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 function computeSimpleDiff(oldText: string, newText: string): { added: number; removed: number; text: string } | null {

@@ -59,10 +59,7 @@ export interface ToolContext {
   permissions: PermissionMode;
 }
 
-export type ToolHandler = (
-  args: Record<string, unknown>,
-  ctx: ToolContext
-) => Promise<ToolResult>;
+export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
 
 export interface RegisteredTool {
   definition: ToolDefinition;
@@ -266,12 +263,7 @@ export interface EpisodicEntry {
 
 // ===== Hooks =====
 
-export type HookEvent =
-  | "onMessage"
-  | "onToolCallPre"
-  | "onToolCallPost"
-  | "onTaskComplete"
-  | "onError";
+export type HookEvent = "onMessage" | "onToolCallPre" | "onToolCallPost" | "onTaskComplete" | "onError";
 
 export interface HookContext {
   event: HookEvent;

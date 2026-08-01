@@ -104,7 +104,7 @@ export class ContextCompressor {
     const toCompress = conversation.slice(0, splitIdx);
     const toKeep = conversation.slice(splitIdx);
 
-    let summary = "";
+    let summary: string;
 
     if (this.modelProvider) {
       try {
@@ -146,9 +146,7 @@ export class ContextCompressor {
       },
       {
         role: "user",
-        content: messages
-          .map((m) => `[${m.role}]: ${m.content.slice(0, 500)}`)
-          .join("\n\n"),
+        content: messages.map((m) => `[${m.role}]: ${m.content.slice(0, 500)}`).join("\n\n"),
       },
     ];
 
@@ -165,7 +163,9 @@ export class ContextCompressor {
   private simpleSummary(messages: Message[]): string {
     const userMessages = messages.filter((m) => m.role === "user");
     const toolMessages = messages.filter((m) => m.role === "tool");
-    return `历史包含 ${userMessages.length} 条用户消息和 ${toolMessages.length} 条工具结果。` +
-      `用户最近意图: ${userMessages[userMessages.length - 1]?.content.slice(0, 200) ?? "N/A"}`;
+    return (
+      `历史包含 ${userMessages.length} 条用户消息和 ${toolMessages.length} 条工具结果。` +
+      `用户最近意图: ${userMessages[userMessages.length - 1]?.content.slice(0, 200) ?? "N/A"}`
+    );
   }
 }

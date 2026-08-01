@@ -11,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import type {
   ModelCompleteOptions,
   ModelResponse,
-  ModelProvider,
   Message,
   ToolCall,
   ToolDefinition,
@@ -148,7 +147,7 @@ export class ModelRouter {
     preference: string,
     messages: Message[],
     tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
   ): Promise<ModelResponse> {
     const profile = this.getProfile(preference);
     return this.complete({
@@ -177,8 +176,9 @@ export class ModelRouter {
     const provider = this.config.default.provider;
     const price = this.config.pricing?.[provider];
     if (!price) return 0;
-    return (this.totalPromptTokens / 1_000_000) * price.prompt +
-           (this.totalCompletionTokens / 1_000_000) * price.completion;
+    return (
+      (this.totalPromptTokens / 1_000_000) * price.prompt + (this.totalCompletionTokens / 1_000_000) * price.completion
+    );
   }
 
   resetTokenUsage(): void {
@@ -195,7 +195,7 @@ export class ModelRouter {
     preference: string,
     messages: Message[],
     tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
   ): AsyncGenerator<StreamChunk> {
     const profile = this.getProfile(preference);
     this.currentProfile = profile.model;
