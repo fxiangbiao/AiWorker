@@ -55,6 +55,7 @@ export interface ToolContext {
   agentId: string;
   sessionId: string;
   workingDir: string;
+  projectDir: string;
   permissions: PermissionMode;
 }
 

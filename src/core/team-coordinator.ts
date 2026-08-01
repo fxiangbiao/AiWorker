@@ -102,6 +102,7 @@ export class TeamCoordinator {
   async execute(
     plan: ExecutionPlan,
     workingDir: string,
+    projectDir: string,
     callbacks?: StreamCallbacks,
     signal?: AbortSignal
   ): Promise<CoordinatorResult> {
@@ -139,7 +140,7 @@ export class TeamCoordinator {
             const agent = this.agents[step.expertId];
             if (!agent) throw new Error(`未知专家: ${step.expertId}`);
 
-            const result = await agent.run({ instruction, mode: "craft" }, workingDir);
+            const result = await agent.run({ instruction, mode: "craft" }, workingDir, projectDir);
 
             const summary =
               result.text.length > 3000

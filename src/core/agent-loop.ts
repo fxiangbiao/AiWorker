@@ -28,6 +28,7 @@ export interface AgentLoopDeps {
   contextManager: ContextManager;
   sessionId: string;
   workingDir: string;
+  projectDir: string;
 }
 
 export async function runAgentLoop(
@@ -35,7 +36,7 @@ export async function runAgentLoop(
   userMessage: string,
   deps: AgentLoopDeps
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionId, workingDir } = deps;
+  const { modelRouter, contextManager, sessionId, workingDir, projectDir } = deps;
 
   contextManager.freezeSnapshot();
 
@@ -55,6 +56,7 @@ export async function runAgentLoop(
     agentId: config.id,
     sessionId,
     workingDir,
+    projectDir,
     permissions: mode,
   };
 
@@ -170,7 +172,7 @@ export async function runAgentLoopStream(
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionId, workingDir } = deps;
+  const { modelRouter, contextManager, sessionId, workingDir, projectDir } = deps;
 
   contextManager.freezeSnapshot();
 
@@ -190,6 +192,7 @@ export async function runAgentLoopStream(
     agentId: config.id,
     sessionId,
     workingDir,
+    projectDir,
     permissions: mode,
   };
 

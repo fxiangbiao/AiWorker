@@ -44,13 +44,16 @@ program
   .option("-m, --mode <mode>", "权限模式: ask | plan | craft", "craft")
   .option("-d, --dir <directory>", "工作目录", process.cwd())
   .option("--data-dir <directory>", "数据目录", resolve(process.cwd(), "data"))
+  .option("-p, --project-dir <directory>", "项目输出目录", resolve(process.cwd(), "ai_default_project"))
   .action(async (options) => {
     const workingDir = resolve(options.dir);
     const dataDir = resolve(options.dataDir);
+    const projectDir = resolve(options.projectDir);
 
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(resolve(dataDir, "memory"), { recursive: true });
     mkdirSync(resolve(dataDir, "audit"), { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
 
     renderer.init();
 
@@ -270,7 +273,7 @@ program
         };
 
         try {
-          const result = await coordinator.execute(plan, workingDir, callbacks);
+          const result = await coordinator.execute(plan, workingDir, projectDir, callbacks);
           stdout.write(chalk.cyan("\n📋 汇总报告:\n"));
           stdout.write(result.text);
           stdout.write(`\n`);
@@ -370,6 +373,7 @@ program
         const result = await agent.runStream(
           { instruction: trimmed, mode: currentMode, workingDir },
           workingDir,
+          projectDir,
           streamCallbacks
         );
 

@@ -44,8 +44,8 @@ const readFileDef: ToolDefinition = {
   },
 };
 
-const readFileHandler: ToolHandler = async (args) => {
-  const filePath = resolve(args.path as string);
+const readFileHandler: ToolHandler = async (args, ctx) => {
+  const filePath = resolve(ctx.workingDir, args.path as string);
   if (!existsSync(filePath)) {
     return {
       tool_call_id: "",
@@ -81,7 +81,7 @@ const writeFileDef: ToolDefinition = {
 };
 
 const writeFileHandler: ToolHandler = async (args, ctx) => {
-  const filePath = resolve(args.path as string);
+  const filePath = resolve(ctx.projectDir, args.path as string);
 
   // 权限检查：Craft 模式下高危需确认
   const dangerCheck = detector.check(`write ${filePath}`);
@@ -122,7 +122,7 @@ const listDirDef: ToolDefinition = {
 };
 
 const listDirHandler: ToolHandler = async (args, ctx) => {
-  const dirPath = resolve((args.path as string) ?? ctx.workingDir);
+  const dirPath = resolve(ctx.workingDir, (args.path as string) ?? ".");
   if (!existsSync(dirPath)) {
     return { tool_call_id: "", success: false, content: "", error: `目录不存在: ${dirPath}` };
   }

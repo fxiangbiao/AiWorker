@@ -178,7 +178,7 @@ describe("6. Hooks 系统", () => {
 });
 
 describe("7. 工具执行", () => {
-  const ctx = { agentId: "test", sessionId: "test", workingDir: process.cwd(), permissions: "craft" as const };
+  const ctx = { agentId: "test", sessionId: "test", workingDir: process.cwd(), projectDir: process.cwd(), permissions: "craft" as const };
 
   it("获取 fs_read handler", () => {
     const readHandler = toolRegistry.getHandler("fs_read");
@@ -674,7 +674,7 @@ describe("14. Team Coordinator", () => {
       estimatedSteps: 1,
     };
 
-    const result = await coordinator.execute(plan, testDataDir);
+    const result = await coordinator.execute(plan, testDataDir, testDataDir);
     expect(result).toBeDefined();
     expect(typeof result.text).toBe("string");
 
@@ -706,7 +706,7 @@ describe("14. Team Coordinator", () => {
       estimatedSteps: 2,
     };
 
-    const result = await coordinator.execute(plan, testDataDir);
+    const result = await coordinator.execute(plan, testDataDir, testDataDir);
     expect(result.plan.steps.length).toBe(2);
     expect(typeof result.text).toBe("string");
 
@@ -739,7 +739,7 @@ describe("14. Team Coordinator", () => {
       estimatedSteps: 3,
     };
 
-    const result = await coordinator.execute(plan, testDataDir);
+    const result = await coordinator.execute(plan, testDataDir, testDataDir);
     expect(typeof result.text).toBe("string");
 
     modelRouter.completeWithProfile = origComplete;
@@ -769,7 +769,7 @@ describe("14. Team Coordinator", () => {
       estimatedSteps: 1,
     };
 
-    const result = await coordinator.execute(plan, testDataDir);
+    const result = await coordinator.execute(plan, testDataDir, testDataDir);
     expect(result.text).toContain("测试汇总");
     expect(result.text).toContain("s1");
 

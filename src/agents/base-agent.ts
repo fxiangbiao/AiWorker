@@ -50,7 +50,7 @@ export abstract class BaseAgent {
   /**
    * 执行任务
    */
-  async run(task: Task, workingDir: string): Promise<AgentRunResult> {
+  async run(task: Task, workingDir: string, projectDir: string): Promise<AgentRunResult> {
     // 创建或复用会话
     const sessionId = task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
 
@@ -75,6 +75,7 @@ export abstract class BaseAgent {
       contextManager: this.contextManager,
       sessionId,
       workingDir: task.workingDir ?? workingDir,
+      projectDir,
     });
 
     // 持久化助手回复
@@ -114,6 +115,7 @@ export abstract class BaseAgent {
   async runStream(
     task: Task,
     workingDir: string,
+    projectDir: string,
     callbacks: StreamCallbacks,
     signal?: AbortSignal
   ): Promise<AgentRunResult> {
@@ -139,6 +141,7 @@ export abstract class BaseAgent {
         contextManager: this.contextManager,
         sessionId,
         workingDir: task.workingDir ?? workingDir,
+        projectDir,
       },
       callbacks,
       signal
