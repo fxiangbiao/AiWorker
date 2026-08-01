@@ -6,7 +6,7 @@
     "apiKey": "${DEEPSEEK_API_KEY}"
   },
   "pricing": {
-    "deepseek": { "prompt": 0.14, "completion": 0.28 }
+    "deepseek": { "prompt": 1, "completion": 2 }
   },
   "profiles": {
     "coding": { "temperature": 0.2 },

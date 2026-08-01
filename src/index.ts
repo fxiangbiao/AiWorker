@@ -244,7 +244,7 @@ program
         const cost = modelRouter.getCost();
         stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()}\n`));
         stdout.write(chalk.gray(`Token: ${modelRouter.getTokenUsage()} (提示: ${modelRouter.getPromptTokens()}, 生成: ${modelRouter.getCompletionTokens()})`));
-        if (cost > 0) stdout.write(chalk.gray(` | 成本: $${cost.toFixed(4)}`));
+        if (cost > 0) stdout.write(          chalk.gray(` | 成本: ¥${cost.toFixed(4)}`));
         stdout.write(chalk.gray(`\n技能: ${skillCount} | 排队: ${prefillQueue.length}\n`));
         renderer.printStatus({
           mode: currentMode, model: modelRouter.getCurrentModel(),
@@ -539,7 +539,7 @@ program
         }
 
         const cost = modelRouter.getCost();
-        const costStr = cost > 0 ? `, $${cost.toFixed(4)}` : "";
+        const costStr = cost > 0 ? `, ¥${cost.toFixed(4)}` : "";
         stdout.write(
           chalk.gray(`\n[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}${costStr}]\n`)
         );
