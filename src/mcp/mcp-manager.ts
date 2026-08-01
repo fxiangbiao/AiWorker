@@ -177,7 +177,7 @@ class McpManager {
       const tools = ((result as Record<string, unknown>)?.tools as McpToolDef[]) ?? [];
 
       for (const mcpTool of tools) {
-        const toolName = `mcp:${serverName}:${mcpTool.name}`;
+        const toolName = `mcp_${serverName}_${mcpTool.name}`;
         if (toolRegistry.isAvailable(toolName)) {
           toolRegistry.unregister(toolName);
         }
@@ -254,7 +254,7 @@ class McpManager {
         name,
         transport: conn.config.transport,
         connected: conn.initialized,
-        toolCount: toolRegistry.getAll().filter((t) => t.definition.function.name.startsWith(`mcp:${name}:`)).length,
+        toolCount: toolRegistry.getAll().filter((t) => t.definition.function.name.startsWith(`mcp_${name}_`)).length,
       };
     }
     return statuses;
@@ -267,7 +267,7 @@ class McpManager {
     this.healthCheck.stop(name);
 
     for (const tool of toolRegistry.getAll()) {
-      if (tool.definition.function.name.startsWith(`mcp:${name}:`)) {
+      if (tool.definition.function.name.startsWith(`mcp_${name}_`)) {
         toolRegistry.unregister(tool.definition.function.name);
       }
     }
@@ -309,7 +309,7 @@ class McpManager {
     this.connections.delete(name);
 
     for (const tool of toolRegistry.getAll()) {
-      if (tool.definition.function.name.startsWith(`mcp:${name}:`)) {
+      if (tool.definition.function.name.startsWith(`mcp_${name}_`)) {
         toolRegistry.unregister(tool.definition.function.name);
       }
     }
