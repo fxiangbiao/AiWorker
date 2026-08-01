@@ -17,7 +17,7 @@
   ],
   "onTaskComplete": [
     { "handler": "updateMemory" },
-    { "handler": "evaluateSkillCreation" },
+    { "handler": "evaluateSkillCreation", "enabled": true },
     { "handler": "turnLogger" }
   ],
   "onError": [

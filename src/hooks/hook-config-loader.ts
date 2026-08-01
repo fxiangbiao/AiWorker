@@ -27,6 +27,7 @@ interface HookEntry {
   handler: string;
   tools?: string[];
   options?: Record<string, unknown>;
+  enabled?: boolean;
 }
 
 interface HooksConfig {
@@ -76,6 +77,8 @@ export function loadHooksFromConfig(configPath: string, deps: HandlerDependencie
     if (!entries) continue;
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
+      if (entry.enabled === false) continue;
+
       const factory = handlerFactories[entry.handler];
       if (!factory) continue;
 

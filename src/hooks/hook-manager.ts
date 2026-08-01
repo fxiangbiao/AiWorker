@@ -52,6 +52,11 @@ class HookManager {
     return true;
   }
 
+  /** 检查指定 ID 的 Hook 是否已注册 */
+  has(id: string): boolean {
+    return this.hooks.some((h) => h.id === id);
+  }
+
   /**
    * 触发事件
    * 依次执行所有 hook，任一返回 proceed=false 则中止并返回拦截

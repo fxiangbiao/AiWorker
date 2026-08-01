@@ -19,6 +19,8 @@ import { initAuditLog } from "./core/audit-logger.js";
 import { DangerDetector } from "./security/danger-detector.js";
 import { PermissionModel } from "./security/permission-model.js";
 import { loadHooksFromConfig } from "./hooks/hook-config-loader.js";
+import { hookManager } from "./hooks/hook-manager.js";
+import { createEvaluateSkillCreation } from "./hooks/handlers.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
@@ -315,7 +317,7 @@ program
           ["/new",             "开启新会话",             "清空上下文和 token 计数，重新开始"],
           ["/log",             "查看监控日志",           "当前 session 的轮次摘要表"],
           ["/context",         "上下文占用分析",         "分层 token 占比 + MCP 工具列表"],
-          ["/thinking",        "切换思考展示",           "折叠/展开模型的推理过程"],
+          ["/skill-evo",       "技能沉淀开关",           "开启/关闭 LLM 自动提取技能"],
           ["/skill <名称>",    "手动激活技能",           "如 /code-review, /debug, /data-cleaning"],
           ["/status",          "显示运行状态",           "模式/模型/token/排队"],
           ["/help",            "帮助信息",               "显示此表"],
@@ -366,6 +368,20 @@ program
           mode: currentMode, model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(), tokensMax: 8000, queueSize: prefillQueue.length,
         });
+        continue;
+      }
+
+      if (trimmed === "/skill-evo") {
+        const id = "onTaskComplete:evaluateSkillCreation";
+        if (hookManager.has(id)) {
+          hookManager.off(id);
+          stdout.write(chalk.yellow("✓ 技能自动沉淀: 关闭\n"));
+        } else {
+          // Re-register — factory needs the same deps as initial setup
+          const handler = createEvaluateSkillCreation({ sessionStore, modelRouter });
+          hookManager.on("onTaskComplete", handler, { id, priority: 10 });
+          stdout.write(chalk.green("✓ 技能自动沉淀: 开启\n"));
+        }
         continue;
       }
 
