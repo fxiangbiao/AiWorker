@@ -139,6 +139,7 @@ export class TeamCoordinator {
             : step.description;
 
           callbacks?.onToolCall?.(step.expertId, step.description, step.id);
+          callbacks?.onStepStart?.(step.id, step.expertId, step.description);
 
           try {
             const agent = this.agents[step.expertId];
@@ -152,14 +153,17 @@ export class TeamCoordinator {
                 : result.text;
             stepResults.set(step.id, summary);
             callbacks?.onToolResult?.(step.expertId, true, summary.slice(0, 100));
+            callbacks?.onStepEnd?.(step.id, true);
             return { id: step.id, status: "ok" as const };
           } catch (err) {
             if (step.critical) {
+              callbacks?.onStepEnd?.(step.id, false);
               throw err;
             }
             failedSteps.push(step.id);
             stepResults.set(step.id, `[${step.expertId}] 步骤失败，已跳过`);
             callbacks?.onToolResult?.(step.expertId, false, (err as Error).message);
+            callbacks?.onStepEnd?.(step.id, false);
             return { id: step.id, status: "skipped" as const };
           }
         })

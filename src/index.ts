@@ -308,22 +308,41 @@ program
         }
 
         const plan = planResult.plan;
-        stdout.write(chalk.green(`✓ 计划已生成 (${plan.steps.length} 步, ${planResult.source})\n`));
+        stdout.write(chalk.green(`✓ 计划已生成 (${plan.steps.length} 步, ${planResult.source})\n\n`));
 
+        // 打印步骤列表作为进度模板
+        const stepStatus: Record<string, string> = {};
         for (const step of plan.steps) {
           const deps = step.dependsOn.length > 0 ? chalk.gray(` ← ${step.dependsOn.join(", ")}`) : "";
-          stdout.write(`  ${chalk.cyan(step.id)}: ${chalk.yellow(step.expertId)} — ${step.description}${deps}\n`);
+          stdout.write(`  ${chalk.cyan("⚪")} ${chalk.cyan(step.id)}: ${chalk.yellow(step.expertId)} — ${step.description}${deps}\n`);
+          stepStatus[step.id] = "⚪";
         }
 
         stdout.write("\n");
 
         const callbacks: StreamCallbacks = {
+          onStepStart: (stepId, expertId) => {
+            const step = plan.steps.find((s) => s.id === stepId);
+            if (step) {
+              stepStatus[stepId] = "🔵";
+              stdout.write(`  ${chalk.cyan("🔵")} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${step.description} ${chalk.dim("(进行中...)")}\n`);
+            }
+          },
+          onStepEnd: (stepId, success) => {
+            const step = plan.steps.find((s) => s.id === stepId);
+            if (step) {
+              const icon = success ? chalk.green("✅") : chalk.red("❌");
+              const status = success ? "" : chalk.gray(" (已跳过)");
+              stepStatus[stepId] = success ? "✅" : "❌";
+              stdout.write(`  ${icon} ${chalk.cyan(stepId)}: ${chalk.yellow(step.expertId)} — ${step.description}${status}\n`);
+            }
+          },
           onToolCall: (expertId, desc) => {
-            stdout.write(`${chalk.blue(`🔧 ${expertId}`)}: ${desc}\n`);
+            stdout.write(`    ${chalk.blue(`🔧 ${expertId}`)}: ${desc}\n`);
           },
           onToolResult: (_name, success, summary) => {
-            const icon = success ? chalk.green("✓") : chalk.red("✗");
-            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+            const icon = success ? chalk.green("  ✓") : chalk.red("  ✗");
+            stdout.write(`    ${icon} ${summary.slice(0, 80)}\n`);
           },
         };
 

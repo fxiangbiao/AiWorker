@@ -115,6 +115,9 @@ export interface StreamCallbacks {
   onThinkingStart?: () => void;
   onToolCall?: (name: string, args: string, id: string) => void;
   onToolResult?: (name: string, success: boolean, summary: string) => void;
+  onStepStart?: (stepId: string, expertId: string, desc: string) => void;
+  onStepEnd?: (stepId: string, success: boolean) => void;
+  onFileDiff?: (filePath: string, added: number, removed: number) => void;
 }
 
 // ===== 智能体 =====
