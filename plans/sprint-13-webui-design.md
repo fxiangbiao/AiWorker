@@ -339,14 +339,21 @@ src/
 |------|------|------|
 | 2026-08-01 | 初版 Web UI (Tokyo Night 终端风格) | `751985c` |
 | 2026-08-01 | 修复 FOREIGN KEY 约束 (ensureSession) | `60f6c40` |
-| 2026-08-01 | Web UI v2 — AI-Native 风格重设计 (基于 ui-ux-pro-max-skill) | `1c0c1f2` |
+| 2026-08-01 | Web UI v2 — AI-Native 风格 (ui-ux-pro-max-skill) | `1c0c1f2` |
+| 2026-08-01 | Web UI v3 — Claude 浅色系风格 | `ccfddf5` |
+| 2026-08-01 | UI 修复: dir 图标/路径显示/emoji 渲染/token 去上限 | `209c337`~`6972938` |
+| 2026-08-01 | UI 重构: 时间线渲染 + Agent 卡片 + 思考/工具折叠 | `3934d8a`~`78a5f09` |
+| 2026-08-01 | 右侧面板: 文件变更 + 技能列表 | `1df39cb` |
+| 2026-08-01 | agent-loop: onToolResult 修复 toolName 传参 | `1df39cb` |
 
 ### 最终实现 vs 原计划差异
 
 | 原计划 | 实际 |
 |--------|------|
-| Tokyo Night 暗色终端 | AI-Native UI (靛紫主色 + 流式光晕) |
-| 模拟终端 prompt 输入 | AI-Native 输入框 (聚焦发光 ring) |
+| Tokyo Night 暗色终端 | Claude 浅色系 (`#F9F8F6` + `#D97706` 暖橙) |
+| 模拟终端 prompt 输入 | 圆形发送按钮 + 圆角胶囊模式切换 |
+| 工具合并展示 | 时间线 timeline[] 保留 thinking↔tool 交错顺序 |
+| GET /sessions 端点 | 未实现 (localStorage 客户端管理) |
 | 等宽字体全界面 | Inter (UI) + JetBrains Mono (代码) |
 | 无过渡动画 | fadeIn 入场 + 流式光晕 + 工具脉冲 |
 | GET /sessions 端点 | 未实现（localStorage 客户端管理） |

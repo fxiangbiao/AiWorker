@@ -2,9 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-## 当前状态: Sprint 12
+## 当前状态: Sprint 13
 
-> 92 项测试全绿 | 最近更新: 2026-08-01 (Sprint 12: M2.1 + ESLint + 测试 + HTTP Server)
+> 92 项测试全绿 | 最近更新: 2026-08-01 (Web UI v3 Claude 风格 + 多项修复)
 
 ### 已实现
 
@@ -27,6 +27,8 @@
 - **技能自进化**: 复杂任务后自动沉淀 SKILL.md (M2), 支持配置开关 (`hooks.json` + `/skill-evo` 命令)
 - **监控日志**: 轮次日志 (TurnLog) + 工具调用日志 (ToolCallLog), SQLite 持久化, `/log` 命令查看
 - **终端 UI**: 流式输出 + 状态栏 + spinner + 思考展示折叠 + 输入排队 + CJK 对齐 + Windows raw mode 兼容
+- **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents
+- **Web UI**: 单文件 `web/index.html`，Claude 风格浅色系 + SSE 流式 + Agent 卡片时间线布局 + 思考/工具可折叠 + 文件变更面板
 - **安全加固**: 并发写互斥锁、连续截断断路器 (3次)、FTS5 注入防护、`new Function()` 沙箱白名单
 
 ---
@@ -181,3 +183,4 @@ npm run build # tsc 编译 (含类型检查)
 | 11 | 多轮会话/技能自进化/目录感知/监控日志/上下文透明 | 完成 |
 | — | Code Review 两轮 (20 项修复) | 完成 |
 | 12 | M2.1 技能自进化 v2 + ESLint/Prettier + 测试扩展 + HTTP Server | 完成 |
+| 13 | Web UI (Claude 风格浅色系 + SSE 流式 + 时间线卡片布局) + 多项 UI/UX 修复 | 完成 |
