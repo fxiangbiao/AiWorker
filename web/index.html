@@ -225,7 +225,7 @@ function renderTimeline(timeline){
   while(i<timeline.length){
     const t=timeline[i];
     if(t.type==='thinking'){
-      html+=`<div class="think-block${t.open?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考${t.steps?` (${t.steps} 步)`:''}</div><div class="think-body">${esc(t.content)}</div></div>`;
+      html+=`<div class="think-block${t.open?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考</div><div class="think-body">${esc(t.content)}</div></div>`;
       i++;
     }else{
       let group=[],j=i;
@@ -284,7 +284,7 @@ function sendMessage(){
 }
 function handleSSE(data){
   switch(data.type){
-    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];const last=agent.timeline[agent.timeline.length-1];if(last&&last.type==='thinking'){last.content+=(data.content||'');last.steps=(last.steps||0)+1}else{agent.timeline.push({type:'thinking',content:data.content||'',steps:1,open:false})}renderAll();scrollBottom();break}
+    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];const last=agent.timeline[agent.timeline.length-1];if(last&&last.type==='thinking'){last.content+=(data.content||'')}else{agent.timeline.push({type:'thinking',content:data.content||'',open:false})}renderAll();scrollBottom();break}
     case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
     case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];agent.timeline.push({type:'tool',name:data.name,args:data.args,id:data.id,result:false});renderAll();scrollBottom();break}
     case 'tool_result':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent||!agent.timeline)break;for(let i=agent.timeline.length-1;i>=0;i--){const t=agent.timeline[i];if(t.type==='tool'&&!t.result){t.result=true;t.duration=data.duration;t.resultPreview=data.summary;t.toolName=data.name;if(!data.success)t.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(t.args||'{}');if(a.filePath)STATE.diffs.push({filePath:a.filePath,added:0,removed:0})}catch(e){}break}}renderAll();scrollBottom();break}
