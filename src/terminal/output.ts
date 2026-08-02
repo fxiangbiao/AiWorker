@@ -1,0 +1,142 @@
+/**
+ * StreamOutputRenderer — 流式输出渲染器
+ *
+ * 职责：
+ * - 累积 chunk 直到换行，逐行渲染（保证流式实时性且边界完整）
+ * - fence 状态机跟踪代码块开合，代码块即时画边框
+ * - 工具调用紧凑行渲染（id 关联 + 耗时）
+ *
+ * 所有方法只输出到 stdout，不维护终端光标状态（状态栏由 renderer 管理）
+ */
+
+import { stdout } from "node:process";
+import chalk from "chalk";
+import { renderLine, renderInline } from "./markdown.js";
+
+interface ToolRow {
+  id: string;
+  name: string;
+  startTime: number;
+  argsPreview: string;
+}
+
+export class StreamOutputRenderer {
+  private buf = "";
+  private inFence = false;
+  private fenceLang = "";
+  private tools = new Map<string, ToolRow>();
+
+  /**
+   * 写入流式文本 chunk（onTextDelta 调用）
+   */
+  writeChunk(text: string): void {
+    this.buf += text;
+    // 按换行切分渲染
+    while (true) {
+      const nl = this.buf.indexOf("\n");
+      if (nl === -1) break;
+      const line = this.buf.slice(0, nl);
+      this.buf = this.buf.slice(nl + 1);
+      this.emitLine(line);
+    }
+  }
+
+  /** 冲刷剩余缓冲（回答结束时调用） */
+  flush(): void {
+    if (this.buf) {
+      this.emitLine(this.buf);
+      this.buf = "";
+    }
+    // 未闭合代码块补底框
+    if (this.inFence) {
+      stdout.write(chalk.gray("─".repeat(44)) + "\n");
+      this.inFence = false;
+    }
+  }
+
+  private emitLine(line: string): void {
+    const result = renderLine(line, this.inFence);
+
+    if (result.fenceStart) {
+      this.inFence = true;
+      this.fenceLang = result.lang ?? "code";
+      stdout.write(`${chalk.dim(this.fenceLang)} ${chalk.gray("─".repeat(40))}\n`);
+      return;
+    }
+    if (result.fenceEnd) {
+      this.inFence = false;
+      stdout.write(chalk.gray("─".repeat(44)) + "\n");
+      return;
+    }
+    if (this.inFence) {
+      stdout.write(`${chalk.cyan("▍")} ${chalk.white(line)}\n`);
+      return;
+    }
+    if (result.rendered !== null) {
+      stdout.write(result.rendered + "\n");
+    } else {
+      stdout.write(line + "\n");
+    }
+  }
+
+  /** 工具调用开始（onToolCall） */
+  toolStart(name: string, args: string, id: string): void {
+    const preview = this.sanitizePreview(args, 40);
+    const marker = `${chalk.blue(`🔧 ${name}`)}${preview ? chalk.dim(` ${preview}`) : ""}`;
+    this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: preview });
+    stdout.write(`  ${marker}\n`);
+  }
+
+  /** 工具调用结束（onToolResult） */
+  toolResult(name: string, success: boolean, summary: string, id: string): void {
+    const row = this.tools.get(id);
+    if (!row) {
+      // 无关联 onToolCall（如外部调用）— 单行输出
+      const icon = success ? chalk.green("✓") : chalk.red("✗");
+      stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+      return;
+    }
+
+    const durMs = Date.now() - row.startTime;
+    const durStr = durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs}ms`;
+    const icon = success ? chalk.green("✓") : chalk.red("✗");
+    const summaryStr = summary ? ` ${summary.slice(0, 80)}` : "";
+    const line = `${chalk.blue(`🔧 ${row.name}`)}${row.argsPreview ? chalk.dim(` ${row.argsPreview}`) : ""} ${chalk.gray(`⌁ ${durStr}`)} ${icon}${summaryStr}`;
+
+    // 原地更新：回退一行，清行，重写
+    stdout.write(`\r\x1b[1A\x1b[2K  ${line}\n`);
+    this.tools.delete(id);
+  }
+
+  /** 文件 diff 计数行（onFileDiff） */
+  fileDiff(filePath: string, added: number, removed: number): void {
+    stdout.write(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}\n`);
+  }
+
+  /** 打印单行普通文本（保留换行语义） */
+  writeLine(text: string): void {
+    stdout.write(text + "\n");
+  }
+
+  /** 工具名带符号（计划 DAG 用） */
+  stepStart(stepId: string, expertId: string, desc: string): void {
+    stdout.write(`  ${chalk.cyan("🔵")} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${desc} ${chalk.dim("(进行中...)")}\n`);
+  }
+
+  stepEnd(stepId: string, expertId: string, desc: string, success: boolean): void {
+    const icon = success ? chalk.green("✅") : chalk.red("❌");
+    const status = success ? "" : chalk.gray(" (已跳过)");
+    stdout.write(`  ${icon} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${desc}${status}\n`);
+  }
+
+  private sanitizePreview(s: string, max: number): string {
+    if (!s) return "";
+    let clean = s.replace(/\s+/g, " ").trim();
+    if (clean.length > max) clean = clean.slice(0, max) + "…";
+    return clean;
+  }
+}
+
+export function renderInlineStyled(text: string): string {
+  return renderInline(text);
+}

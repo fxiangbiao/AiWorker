@@ -11,13 +11,19 @@ export class InputCollector {
   private buf = "";
   private queue: string[] = [];
   private handler: ((data: Buffer) => void) | null = null;
+  private onInterrupt: (() => void) | null = null;
+  private interruptFirstAt = 0;
 
-  /** onFirstKey: 首个可打印字符键入时调用（用于停止 spinner） */
-  startListening(onFirstKey?: () => void): void {
+  /** onFirstKey: 首个可打印字符键入时调用（用于停止 spinner）
+   *  onInterrupt: Ctrl+C 连按（2s 内第二次）时调用（用于中断 Agent）
+   */
+  startListening(onFirstKey?: () => void, onInterrupt?: () => void): void {
     if (this.listening) return;
     this.listening = true;
     this.queue = [];
     this.buf = "";
+    this.onInterrupt = onInterrupt ?? null;
+    this.interruptFirstAt = 0;
 
     if (typeof stdin.setRawMode === "function") {
       stdin.setRawMode(true);
@@ -43,7 +49,19 @@ export class InputCollector {
             stdout.write("\b \b");
           }
         } else if (ch === "\x03") {
-          // Ctrl+C
+          // Ctrl+C: 空闲时退出进程由 SIGINT 处理；raw mode 下此处拦截。
+          // 连按（2s 内第二次）触发中断回调。
+          const now = Date.now();
+          if (this.onInterrupt) {
+            if (this.interruptFirstAt === 0) {
+              this.interruptFirstAt = now;
+            } else if (now - this.interruptFirstAt <= 2000) {
+              this.onInterrupt();
+              this.interruptFirstAt = 0;
+            } else {
+              this.interruptFirstAt = now;
+            }
+          }
         } else if (ch >= " ") {
           if (firstChar) {
             firstChar = false;
@@ -62,6 +80,8 @@ export class InputCollector {
   stopListening(): string[] {
     if (!this.listening) return [];
     this.listening = false;
+    this.onInterrupt = null;
+    this.interruptFirstAt = 0;
 
     if (this.handler) {
       stdin.removeListener("data", this.handler);

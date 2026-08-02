@@ -2,9 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-## 当前状态: Sprint 13
+## 当前状态: Sprint 14
 
-> 92 项测试全绿 | 最近更新: 2026-08-01 (Web UI v3 Claude 风格 + 多项修复)
+> 92 项测试全绿 | 最近更新: 2026-08-02 (TUI 终端升级: Markdown 渲染 + 中断控制 + 历史/补全 + 会话切换)
 
 ### 已实现
 
@@ -26,7 +26,9 @@
 - **项目目录隔离**: `--project-dir` 参数, Agent 文件输出归入指定目录 + 路径遍历防护
 - **技能自进化**: 复杂任务后自动沉淀 SKILL.md (M2), 支持配置开关 (`hooks.json` + `/skill-evo` 命令)
 - **监控日志**: 轮次日志 (TurnLog) + 工具调用日志 (ToolCallLog), SQLite 持久化, `/log` 命令查看
-- **终端 UI**: 流式输出 + 状态栏 + spinner + 思考展示折叠 + 输入排队 + CJK 对齐 + Windows raw mode 兼容
+- **终端 UI**: 流式 Markdown 渲染 (代码块边框 + 标题/列表/表格 + CJK 对齐) + 工具调用紧凑行 (耗时 + 并发 id 配对) + 常驻状态栏 (迭代/排队) + 思考展示折叠 + 输入排队 + Windows raw mode 兼容
+- **TUI 交互**: 运行中断 (Ctrl+C 连按 + AbortSignal) + 命令历史持久化 (`data/.aiworker_history`) + Tab 补全 (`/命令` + 技能名) + 多会话浏览/切换 (`/sessions` + `/switch`)
+- **原始 Markdown 复制**: Web UI 回答卡片「⧉ 复制」按钮 + TUI `/copy` 命令 (clip.exe/pbcopy/xclip)
 - **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents
 - **Web UI**: 单文件 `web/index.html`，Claude 风格浅色系 + SSE 流式 + Agent 卡片时间线布局 + 思考/工具可折叠 + 文件变更面板
 - **安全加固**: 并发写互斥锁、连续截断断路器 (3次)、FTS5 注入防护、`new Function()` 沙箱白名单

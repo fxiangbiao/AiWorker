@@ -23,7 +23,7 @@ export interface HandlerDependencies {
   permissionModel?: PermissionModel;
   sessionStore?: SessionStore;
   modelRouter?: ModelRouter;
-  onFileDiff?: (filePath: string, added: number, removed: number) => void;
+  onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
 }
 
 /**
@@ -327,7 +327,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
       const diff = computeSimpleDiff(oldContent, newContent);
       if (!diff) return;
 
-      deps.onFileDiff?.(filePath, diff.added, diff.removed);
+      deps.onFileDiff?.(filePath, diff.added, diff.removed, diff.text);
 
       try {
         auditLogger.log({

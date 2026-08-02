@@ -183,6 +183,46 @@ export class SessionStore {
     });
   }
 
+  /** 列出最近会话（含消息数 + 首条用户消息摘要） */
+  listSessions(limit = 20): Array<{
+    id: string;
+    agentId: string;
+    createdAt: number;
+    updatedAt: number;
+    summary: string | null;
+    messageCount: number;
+    firstUserMsg: string | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT s.id, s.agent_id, s.created_at, s.updated_at, s.summary,
+                (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
+                (SELECT content FROM messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.seq ASC LIMIT 1) AS first_user
+         FROM sessions s
+         ORDER BY s.updated_at DESC
+         LIMIT ?`,
+      )
+      .all(limit) as Array<{
+      id: string;
+      agent_id: string;
+      created_at: number;
+      updated_at: number;
+      summary: string | null;
+      msg_count: number;
+      first_user: string | null;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      agentId: r.agent_id,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      summary: r.summary,
+      messageCount: r.msg_count,
+      firstUserMsg: r.first_user ? r.first_user.replace(/\s+/g, " ").slice(0, 60) : null,
+    }));
+  }
+
   /** 保存会话摘要 */
   setSummary(sessionId: string, summary: string): void {
     this.db.prepare(`UPDATE sessions SET summary = ? WHERE id = ?`).run(summary, sessionId);
