@@ -11,7 +11,8 @@
 
 import { stdout } from "node:process";
 import chalk from "chalk";
-import { renderLine, renderInline } from "./markdown.js";
+import { renderLine, defaultTableState, type TableState } from "./markdown.js";
+import { highlightLine } from "./highlight.js";
 
 interface ToolRow {
   id: string;
@@ -25,6 +26,7 @@ export class StreamOutputRenderer {
   private inFence = false;
   private fenceLang = "";
   private tools = new Map<string, ToolRow>();
+  private tableState: TableState = defaultTableState();
 
   /**
    * 写入流式文本 chunk（onTextDelta 调用）
@@ -55,12 +57,13 @@ export class StreamOutputRenderer {
   }
 
   private emitLine(line: string): void {
-    const result = renderLine(line, this.inFence);
+    const result = renderLine(line, this.inFence, this.tableState);
 
     if (result.fenceStart) {
       this.inFence = true;
-      this.fenceLang = result.lang ?? "code";
-      stdout.write(`${chalk.dim(this.fenceLang)} ${chalk.gray("─".repeat(40))}\n`);
+      this.fenceLang = result.lang ?? "";
+      const header = this.fenceLang ? `${chalk.dim(this.fenceLang)} ` : "";
+      stdout.write(`${header}${chalk.gray("─".repeat(40))}\n`);
       return;
     }
     if (result.fenceEnd) {
@@ -69,9 +72,10 @@ export class StreamOutputRenderer {
       return;
     }
     if (this.inFence) {
-      stdout.write(`${chalk.cyan("▍")} ${chalk.white(line)}\n`);
+      stdout.write(`${chalk.cyan("▍")} ${highlightLine(line, this.fenceLang)}\n`);
       return;
     }
+    if (result.tableState) this.tableState = result.tableState;
     if (result.rendered !== null) {
       stdout.write(result.rendered + "\n");
     } else {
@@ -135,8 +139,4 @@ export class StreamOutputRenderer {
     if (clean.length > max) clean = clean.slice(0, max) + "…";
     return clean;
   }
-}
-
-export function renderInlineStyled(text: string): string {
-  return renderInline(text);
 }

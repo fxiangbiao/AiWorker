@@ -191,7 +191,6 @@ export class TerminalRenderer {
   private buildStatusText(status: StatusLine): string {
     // 累计消耗 token（会话级），无窗口分母；窗口占用用真实 windowPct 单独显示
     const tokenStr = status.tokensUsed > 0 ? `token ${this.fmt(status.tokensUsed)}` : "";
-    const pctStr = status.windowPct != null ? `${status.windowPct}%` : "";
     const iterStr =
       status.iteration != null ? `iter ${status.iteration}${status.maxIter ? `/${status.maxIter}` : ""}` : "";
     const queueStr = status.queueSize > 0 ? `排队:${status.queueSize}` : "";
@@ -200,15 +199,14 @@ export class TerminalRenderer {
     const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", craft: "执行" };
     const modeLabel = modeLabels[status.mode] ?? status.mode;
 
+    // 上下文窗口占用进度条（10 格）
+    const barStr = status.windowPct != null ? this.renderWindowBar(status.windowPct) : "";
+
     const parts = [
       chalk.bold.cyan(`[${status.mode.toUpperCase()}] ${modeLabel}`),
       status.model ? chalk.white(status.model) : "",
       tokenStr ? chalk.white(tokenStr) : "",
-      pctStr
-        ? status.windowPct! > 80
-          ? chalk.bold.yellow(`窗口 ${pctStr}`)
-          : chalk.white(`窗口 ${pctStr}`)
-        : "",
+      barStr ? barStr : "",
       iterStr ? chalk.white(iterStr) : "",
       toolStr ? chalk.blue(toolStr) : "",
       queueStr ? chalk.yellow(queueStr) : "",
@@ -231,7 +229,7 @@ export class TerminalRenderer {
         chalk.bold.cyan(`[${status.mode.toUpperCase()}]`),
         status.model ? chalk.white(status.model) : "",
         tokenStr ? chalk.white(tokenStr) : "",
-        pctStr ? (status.windowPct! > 80 ? chalk.bold.yellow(`窗口 ${pctStr}`) : chalk.white(`窗口 ${pctStr}`)) : "",
+        barStr ? barStr : "",
         toolStr ? chalk.blue(toolStr) : "",
         queueStr ? chalk.yellow(queueStr) : "",
       ]
@@ -244,6 +242,17 @@ export class TerminalRenderer {
     const pad = Math.max(2, maxWidth - finalLeftLen - rightLen);
 
     return `${chalk.gray("─")} ${line}${" ".repeat(pad)}${right} ${chalk.gray("─")}`;
+  }
+
+  /** 上下文窗口占用进度条（10 格）+ 百分比，>80% 红 / >60% 黄 / 其余绿 */
+  private renderWindowBar(pct: number): string {
+    const total = 10;
+    const filled = Math.round((Math.min(pct, 100) / 100) * total);
+    const empty = total - filled;
+    const fill = "█".repeat(filled);
+    const rest = "░".repeat(empty);
+    const color = pct > 80 ? chalk.red : pct > 60 ? chalk.yellow : chalk.green;
+    return color(`[${fill}${rest}] ${pct}%`);
   }
 
   private fmt(n: number): string {

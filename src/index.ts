@@ -330,14 +330,18 @@ program
           stdout.write(chalk.gray("暂无历史会话\n"));
         } else {
           stdout.write("\n┌──────┬────────────┬────────────┬──────────────┬──────────────────────┐\n");
-          stdout.write("│ 序号 │ 时间        │ 消息数      │ Agent         │ 摘要                 │\n");
+          stdout.write(
+            `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
+          );
           stdout.write("├──────┼────────────┼────────────┼──────────────┼──────────────────────┤\n");
           sessions.forEach((s, i) => {
             const time = new Date(s.updatedAt).toLocaleDateString();
             const agentLabel = s.agentId.length > 12 ? s.agentId.slice(0, 12) : s.agentId;
-            const summary = (s.firstUserMsg ?? s.summary ?? "(无)").slice(0, 22);
+            let summary = s.firstUserMsg ?? s.summary ?? "(无)";
+            // CJK 安全截断（displayWidth 计 2 列/字，列宽 20）
+            while (displayWidth(summary) > 20) summary = summary.slice(0, -1);
             stdout.write(
-              `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.messageCount).padEnd(10)} │ ${agentLabel.padEnd(12)} │ ${summary.padEnd(20)} │\n`,
+              `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
             );
           });
           stdout.write(`└──────┴────────────┴────────────┴──────────────┴──────────────────────┘\n`);
