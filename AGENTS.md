@@ -4,11 +4,12 @@
 ```bash
 npm run dev          # tsx 直接运行 CLI（无需编译）
 npm run build        # tsc → dist/
-npm test             # vitest run（smoke-test.ts，85 项测试）
+npm test             # vitest run（smoke-test.ts，92 项测试）
 npx tsc --noEmit     # 仅类型检查
+npx eslint src/      # ESLint 代码规范检查
 ```
 
-- **无 lint/formatter 配置** — 本项目不包含 ESLint 或 Prettier。
+- **ESLint 已配置** — `npx eslint src/` 进行代码规范检查。
 
 ## 环境要求
 - 默认需要 `DEEPSEEK_API_KEY` 环境变量（`config/models.json` 通过 `${DEEPSEEK_API_KEY}` 引用）。
@@ -80,6 +81,9 @@ npm start -- --dir /some/path --mode <ask|plan|craft> --data-dir <path> --projec
 | `/context [查询]` | 上下文占用分析 | 分层 token 占比条形图 + MCP 工具列表 |
 | `/skill-evo` | 技能沉淀开关 | 运行时开启/关闭自动技能提取 |
 | `/status` | 显示状态 | 模式/模型/token/成本/技能数/排队数 |
+| `/sessions` | 浏览会话 | CJK 对齐表格，显示最近 50 个历史会话 |
+| `/switch <序号>` | 切换会话 | 加载指定历史会话消息到当前上下文 |
+| `/copy` | 复制回答 | 复制最后一次回答的原始 Markdown 到剪贴板 |
 | `/help` | 帮助 | 显示命令表 |
 | `/exit` | 退出 | — |
 
@@ -90,6 +94,33 @@ npm start -- --dir /some/path --mode <ask|plan|craft> --data-dir <path> --projec
 - **`thinkingFirstLine`**: 用 `thinkingLineCaptured` 标志持续累积到遇 `\n`，而非仅首个 chunk。
 - **CJK 对齐**: `displayWidth()`/`padToWidth()` 处理 CJK 字符占 2 列的情况。
 - **模型流式 token 计数**: `completeStream` 循环内仅捕获最终 usage 值，循环外一次性 `+=`，避免 DeepSeek 多 chunk 带 usage 导致计数膨胀。
+
+### Markdown 渲染
+- `src/terminal/markdown.ts` — 行级渲染器 (`renderLine`) + 整块渲染 (`renderMarkdown`)。
+- 代码块使用**左侧色条**（`▍` 前缀），无固定边框。
+- 表格**轻量美化**：表头加粗 + 分隔符着色 + 分隔线，不跨行对齐。
+- `[text](url)` → OSC 8 蓝色下划线超链接（Ctrl+Click 跳转，终端不支持时降级蓝色下划线）。
+- 空语言标签的代码块不显示 `code` 标记。
+
+### 流式输出渲染器
+- `src/terminal/output.ts` — `StreamOutputRenderer` 缓冲行 + fence 状态机。
+- `onToolResult` 新增 `id` 参数（`tool_call_id`），`Map<id, startTime>` 关联 + 耗时显示。
+- 表格状态通过 `tableState` 统一管理（消除 `output.ts` 和 `markdown.ts` 的重复逻辑）。
+- `onIterationStart` / `onFileDiff` 回调支持。
+
+### 语法高亮
+- `src/terminal/highlight.ts` — 自研 tokenizer，零外部依赖。
+- 字符串/注释先占位保护再着色其余 token。
+- 语言分发: ts/js/python/sql/json/html/css/bash + generic fallback。
+
+### 状态栏
+- 窗口占用进度条 `[███████░░░] 65%`（绿色/黄色/红色分级），基于 `contextManager.getContextBreakdown()` 真实占比。
+- 窗口占用仅低频 `printStatus` 计算，避免 FTS5 500ms 高频开销。
+
+### 会话管理
+- `src/memory/session-store.ts` — `listSessions` 方法 + `/sessions` CLI + CJK `displayWidth` 对齐。
+- `/switch <序号>` — 加载历史会话消息到当前上下文。
+- `/copy` — 复制最后回答原始 Markdown（Windows clip.exe / macOS pbcopy / Linux xclip）。
 
 ---
 
@@ -160,14 +191,15 @@ npm start -- --dir /some/path --mode <ask|plan|craft> --data-dir <path> --projec
 - 通过 `context-manager.ts` → `assembleContext()` 注入系统提示词。
 - 依赖缺失的技能在运行时自动隐藏（降级）。
 
-### 技能自进化 (M2)
-- `src/core/skill-evolution.ts` — 复杂任务后自动沉淀 SKILL.md 候选。
+### 技能自进化 (M2.1)
+- `src/core/skill-evolution.ts` — 复杂任务后自动沉淀 SKILL.md。
 - 触发阈值: iterations >= 3, toolCalls >= 3, 未截断。
-- 生成 → 验证 → 评分 → >= 3★ 注册到 `skills/{expert}/`。
+- 两条路径: `evolveV2()` (LLM 知识提取 + 去重 Jaccard + 评分) 和 `evolve()` (模板兜底)。
+- 生成 → 验证 (YAML/字段/触发词) → 去重 (名称 + Jaccard 0.5) → 评分 (body 长度 + 代码块数) → >= 3★ 注册到 `skills/{expert}/`。
 - **配置开关**:
   - 配置文件: `config/hooks.json` 中 `evaluateSkillCreation` 条目设置 `"enabled": false` 永久关闭。
   - 运行时: `/skill-evo` 命令切换当前会话开关（`hookManager.on/off`）。
-- **注意**: 当前为模板空壳版本，M2.1 将接入 LLM 知识提取 + 去重 + 用户确认。
+- **注意**: 无用户确认环节 (全自动注册)，默认关闭以避免噪声。`skills/pending/` 存放评分不足的候选。
 
 ---
 

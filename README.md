@@ -2,9 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-## 当前状态: Sprint 14
+## 当前状态: Sprint 15
 
-> 92 项测试全绿 | 最近更新: 2026-08-02 (TUI 终端升级: Markdown 渲染 + 中断控制 + 历史/补全 + 会话切换)
+> 92 项测试全绿 | 最近更新: 2026-08-02 (Markdown 视觉优化: 代码语法高亮 + 表格美化 + OSC 8 超链接 + 窗口进度条 + 标题行对齐)
 
 ### 已实现
 
@@ -26,9 +26,10 @@
 - **项目目录隔离**: `--project-dir` 参数, Agent 文件输出归入指定目录 + 路径遍历防护
 - **技能自进化**: 复杂任务后自动沉淀 SKILL.md (M2), 支持配置开关 (`hooks.json` + `/skill-evo` 命令)
 - **监控日志**: 轮次日志 (TurnLog) + 工具调用日志 (ToolCallLog), SQLite 持久化, `/log` 命令查看
-- **终端 UI**: 流式 Markdown 渲染 (代码块边框 + 标题/列表/表格 + CJK 对齐) + 工具调用紧凑行 (耗时 + 并发 id 配对) + 常驻状态栏 (迭代/排队) + 思考展示折叠 + 输入排队 + Windows raw mode 兼容
-- **TUI 交互**: 运行中断 (Ctrl+C 连按 + AbortSignal) + 命令历史持久化 (`data/.aiworker_history`) + Tab 补全 (`/命令` + 技能名) + 多会话浏览/切换 (`/sessions` + `/switch`)
+- **终端 UI**: 流式 Markdown 渲染 (代码块左侧色条 + 语法高亮 + 标题层级 + 表格美化 + OSC 8 超链接) + 工具调用紧凑行 (耗时 + id 配对) + 常驻状态栏 (迭代/排队/窗口占用进度条) + 思考展示折叠 + 输入排队 + Windows raw mode 兼容
+- **TUI 交互**: 运行中断 (Ctrl+C 连按 + AbortSignal) + 命令历史持久化 (`data/.aiworker_history`) + Tab 补全 (`/命令` + 技能名) + 多会话浏览/切换 (`/sessions` + `/switch`) + CJK 对齐 (`/sessions`/`/help`/`/context`)
 - **原始 Markdown 复制**: Web UI 回答卡片「⧉ 复制」按钮 + TUI `/copy` 命令 (clip.exe/pbcopy/xclip)
+- **语法高亮**: 自研 tokenizer (`src/terminal/highlight.ts`)，按 fence lang 分发 (ts/js/python/sql/json/html/css/bash + generic)，无 highlight.js 依赖
 - **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents
 - **Web UI**: 单文件 `web/index.html`，Claude 风格浅色系 + SSE 流式 + Agent 卡片时间线布局 + 思考/工具可折叠 + 文件变更面板
 - **安全加固**: 并发写互斥锁、连续截断断路器 (3次)、FTS5 注入防护、`new Function()` 沙箱白名单
@@ -77,6 +78,9 @@ export OPENAI_API_KEY=sk-...         # lite 本地模型 (可选, localhost:8000
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/skill-evo` | 技能自动沉淀开关 |
 | `/status` | 显示运行状态 (模式/模型/token/成本) |
+| `/sessions` | 浏览历史会话列表 |
+| `/switch <序号>` | 切换到指定会话 |
+| `/copy` | 复制最后一次回答 (原始 Markdown) |
 | `/help` | 帮助信息 |
 | `/exit` | 退出 |
 
@@ -134,15 +138,18 @@ aiworker/
 │   │   ├── danger-detector.ts
 │   │   ├── permission-model.ts
 │   │   └── audit-log.ts
-│   ├── terminal/         # 终端 UI (3 文件)
+│   ├── terminal/         # 终端 UI (6 文件)
 │   │   ├── renderer.ts
 │   │   ├── input.ts
-│   │   └── ansi.ts
+│   │   ├── ansi.ts
+│   │   ├── markdown.ts    # Markdown 行级渲染器
+│   │   ├── output.ts      # 流式输出渲染器
+│   │   └── highlight.ts   # 语法高亮 tokenizer
 │   ├── tools/            # 内置工具 (1 文件)
 │   │   └── builtin.ts
 │   ├── types.ts          # 核心类型定义 (362 LOC)
 │   ├── index.ts          # CLI 入口
-│   └── smoke-test.ts     # 冒烟测试 (85 tests)
+│   └── smoke-test.ts     # 冒烟测试 (92 tests)
 ├── data/                 # 运行时数据 (gitignored)
 ├── ai_default_project/   # Agent 默认输出目录 (gitignored)
 ├── AGENTS.md             # AI 辅助开发指南
@@ -156,7 +163,7 @@ aiworker/
 ## 冒烟测试
 
 ```bash
-npm test      # vitest run, 85 tests
+npm test      # vitest run, 92 tests
 npm run build # tsc 编译 (含类型检查)
 ```
 
@@ -186,3 +193,5 @@ npm run build # tsc 编译 (含类型检查)
 | — | Code Review 两轮 (20 项修复) | 完成 |
 | 12 | M2.1 技能自进化 v2 + ESLint/Prettier + 测试扩展 + HTTP Server | 完成 |
 | 13 | Web UI (Claude 风格浅色系 + SSE 流式 + 时间线卡片布局) + 多项 UI/UX 修复 | 完成 |
+| 14 | TUI 终端升级 (Markdown 流式渲染 + 中断控制 + 历史/补全 + 会话切换 + 复制 + 状态栏) | 完成 |
+| 15 | Markdown 视觉优化 (代码语法高亮 + 表格美化 + OSC 8 超链接 + 状态栏进度条 + 标题行对齐) | 完成 |
