@@ -11,12 +11,16 @@ import { enableVT } from "./ansi.js";
 import chalk from "chalk";
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export interface StatusLine {
   mode: string;
   model: string;
+  /** 累计消耗 token（会话级） */
   tokensUsed: number;
-  tokensMax: number;
+  /** 当前上下文窗口占用百分比 (0-100)，可选；传了才显示 */
+  windowPct?: number;
   queueSize: number;
   extra?: string;
   toolName?: string;
@@ -82,6 +86,50 @@ export class TerminalRenderer {
 
   // ── 输入 / 生命周期 ──
 
+  /** 最近一次 prompt 的 readline 实例（供 history 追加） */
+  private lastRl: import("node:readline").Interface | null = null;
+
+  private historyFile = "";
+  private historyLines: string[] = [];
+  private completer: ((line: string) => [string[], string]) | null = null;
+
+  /** 设置历史持久化文件 + 补全器 */
+  configureInput(historyFile: string, completer?: (line: string) => [string[], string]): void {
+    this.historyFile = historyFile;
+    this.completer = completer ?? null;
+    this.historyLines = this.loadHistory();
+  }
+
+  /** 记录一条命令到历史（由主循环调用） */
+  recordHistory(line: string): void {
+    if (!this.historyFile || !line.trim()) return;
+    this.historyLines.push(line.trim());
+    // 去重相邻
+    if (this.historyLines.length > 1 && this.historyLines[this.historyLines.length - 2] === line.trim()) {
+      this.historyLines.pop();
+    }
+    this.historyLines = this.historyLines.slice(-500);
+    this.saveHistory();
+  }
+
+  private loadHistory(): string[] {
+    try {
+      const raw = readFileSync(this.historyFile, "utf-8");
+      return raw.split("\n").map((l) => l.trim()).filter(Boolean).slice(-500);
+    } catch {
+      return [];
+    }
+  }
+
+  private saveHistory(): void {
+    try {
+      mkdirSync(dirname(this.historyFile), { recursive: true });
+      writeFileSync(this.historyFile, this.historyLines.join("\n") + "\n", "utf-8");
+    } catch {
+      // ignore
+    }
+  }
+
   async prompt(): Promise<string> {
     if (!this.active) return this.fallbackPrompt();
     if (stdin.isPaused()) stdin.resume();
@@ -95,10 +143,27 @@ export class TerminalRenderer {
     // reliably after raw-mode cycles with inputCollector.
     await new Promise<void>((r) => setTimeout(r, 50));
 
-    const rl = createInterface({ input: process.stdin, output: stdout, terminal: true, prompt: "" });
+    const rl = createInterface({
+      input: process.stdin,
+      output: stdout,
+      terminal: true,
+      prompt: "",
+      completer: this.completer ?? undefined,
+      historySize: 200,
+    });
+    // 注入持久化历史（readline 内部 _history 数组）
+    const internal = rl as unknown as { history: string[] };
+    if (Array.isArray(internal.history)) {
+      internal.history.length = 0;
+      for (const h of this.historyLines) {
+        internal.history.push(h);
+      }
+    }
+    this.lastRl = rl;
     return new Promise<string>((resolve) => {
       rl.question(chalk.cyan("你> "), (answer) => {
         rl.close();
+        this.lastRl = null;
         resolve(answer);
       });
     });
@@ -124,10 +189,8 @@ export class TerminalRenderer {
   // ── 内部 ──
 
   private buildStatusText(status: StatusLine): string {
-    const pct = status.tokensMax > 0 ? Math.round((status.tokensUsed / status.tokensMax) * 100) : 0;
-
-    const tokenStr = status.tokensMax > 0 ? `${this.fmt(status.tokensUsed)}/${this.fmt(status.tokensMax)}` : "";
-    const pctStr = status.tokensMax > 0 ? `${pct}%` : "";
+    // 累计消耗 token（会话级），无窗口分母；窗口占用用真实 windowPct 单独显示
+    const tokenStr = status.tokensUsed > 0 ? `token ${this.fmt(status.tokensUsed)}` : "";
     const iterStr =
       status.iteration != null ? `iter ${status.iteration}${status.maxIter ? `/${status.maxIter}` : ""}` : "";
     const queueStr = status.queueSize > 0 ? `排队:${status.queueSize}` : "";
@@ -136,10 +199,14 @@ export class TerminalRenderer {
     const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", craft: "执行" };
     const modeLabel = modeLabels[status.mode] ?? status.mode;
 
+    // 上下文窗口占用进度条（10 格）
+    const barStr = status.windowPct != null ? this.renderWindowBar(status.windowPct) : "";
+
     const parts = [
       chalk.bold.cyan(`[${status.mode.toUpperCase()}] ${modeLabel}`),
       status.model ? chalk.white(status.model) : "",
-      tokenStr ? (pct > 80 ? chalk.bold.yellow(`${tokenStr} ${pctStr}`) : chalk.white(`${tokenStr} ${pctStr}`)) : "",
+      tokenStr ? chalk.white(tokenStr) : "",
+      barStr ? barStr : "",
       iterStr ? chalk.white(iterStr) : "",
       toolStr ? chalk.blue(toolStr) : "",
       queueStr ? chalk.yellow(queueStr) : "",
@@ -161,7 +228,8 @@ export class TerminalRenderer {
       const compact = [
         chalk.bold.cyan(`[${status.mode.toUpperCase()}]`),
         status.model ? chalk.white(status.model) : "",
-        tokenStr ? (pct > 80 ? chalk.bold.yellow(tokenStr) : chalk.white(tokenStr)) : "",
+        tokenStr ? chalk.white(tokenStr) : "",
+        barStr ? barStr : "",
         toolStr ? chalk.blue(toolStr) : "",
         queueStr ? chalk.yellow(queueStr) : "",
       ]
@@ -174,6 +242,17 @@ export class TerminalRenderer {
     const pad = Math.max(2, maxWidth - finalLeftLen - rightLen);
 
     return `${chalk.gray("─")} ${line}${" ".repeat(pad)}${right} ${chalk.gray("─")}`;
+  }
+
+  /** 上下文窗口占用进度条（10 格）+ 百分比，>80% 红 / >60% 黄 / 其余绿 */
+  private renderWindowBar(pct: number): string {
+    const total = 10;
+    const filled = Math.round((Math.min(pct, 100) / 100) * total);
+    const empty = total - filled;
+    const fill = "█".repeat(filled);
+    const rest = "░".repeat(empty);
+    const color = pct > 80 ? chalk.red : pct > 60 ? chalk.yellow : chalk.green;
+    return color(`[${fill}${rest}] ${pct}%`);
   }
 
   private fmt(n: number): string {

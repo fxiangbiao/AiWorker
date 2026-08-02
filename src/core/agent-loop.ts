@@ -229,6 +229,7 @@ export async function runAgentLoopStream(
       const tools = mode === "ask" ? undefined : availableTools;
 
       // 流式调用
+      callbacks.onIterationStart?.(iterations);
       callbacks.onThinkingStart?.();
       const stream = modelRouter.completeStream(config.modelPreference, messages, tools, { signal });
 
@@ -312,6 +313,7 @@ export async function runAgentLoopStream(
               toolName,
               result.success,
               result.success ? result.content.slice(0, 100) : (result.error ?? ""),
+              result.tool_call_id,
             );
             messages.push({
               role: "tool",

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
 /**
  * AiWorker CLI 入口 — 流式交互版本
  */
@@ -8,6 +8,7 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import { stdout } from "node:process";
+import { spawn } from "node:child_process";
 
 import { ModelRouter } from "./core/model-router.js";
 import { ContextManager } from "./core/context-manager.js";
@@ -34,6 +35,7 @@ import { TeamCoordinator } from "./core/team-coordinator.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { inputCollector } from "./terminal/input.js";
+import { StreamOutputRenderer } from "./terminal/output.js";
 import { startServer } from "./server.js";
 import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
 
@@ -60,6 +62,19 @@ program
     mkdirSync(projectDir, { recursive: true });
 
     renderer.init();
+
+    const outputRenderer = new StreamOutputRenderer();
+
+    // TUI 输入配置：历史持久化 + Tab 补全
+    const commands = ["/plan", "/debate", "/mode", "/new", "/log", "/context", "/skill", "/skill-evo", "/status", "/thinking", "/copy", "/help", "/exit", "/sessions", "/switch"];
+    const completer = (line: string): [string[], string] => {
+      if (!line.startsWith("/")) return [[], line];
+      const skillNames = skillRegistry.getAll().map((s) => `/skill ${s.name}`);
+      const all = [...commands, ...skillNames];
+      const hits = all.filter((c) => c.toLowerCase().startsWith(line.toLowerCase()));
+      return [hits.length ? hits.slice(0, 10) : [], line];
+    };
+    renderer.configureInput(resolve(dataDir, ".aiworker_history"), completer);
 
     // ─── Banner ───
     stdout.write(chalk.cyan("╔══════════════════════════════════════╗\n"));
@@ -122,10 +137,19 @@ program
       permissionModel,
       sessionStore,
       modelRouter,
-      onFileDiff: (filePath, added, removed) => {
-        renderer.writeLine(
-          `  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`,
-        );
+      onFileDiff: (filePath, added, removed, diffText) => {
+        outputRenderer.fileDiff(filePath, added, removed);
+        if (diffText && diffText.trim()) {
+          for (const line of diffText.split("\n")) {
+            if (line.startsWith("+ ")) {
+              stdout.write(`    ${chalk.green(line)}\n`);
+            } else if (line.startsWith("- ")) {
+              stdout.write(`    ${chalk.red(line)}\n`);
+            } else {
+              stdout.write(`    ${chalk.gray(line)}\n`);
+            }
+          }
+        }
       },
     });
     if (hooksCount > 0) {
@@ -202,13 +226,28 @@ program
       mode: currentMode,
       model: modelRouter.getCurrentModel(),
       tokensUsed: 0,
-      tokensMax: 8000,
       queueSize: 0,
     });
 
     // ─── 交互循环 ───
     const prefillQueue: string[] = [];
+    let lastAnswerRaw = "";
     let currentSessionId: string | undefined;
+
+    // 计算当前上下文窗口占用百分比（低频调用：仅 printStatus / 命令后）
+    const statusWindowPct = (): number | undefined => {
+      try {
+        const agent = agents[routeToExpert("")];
+        const bd = contextManager.getContextBreakdown(
+          agent.getConfig().systemPrompt,
+          currentSessionId ?? "",
+          "",
+        );
+        return bd.windowSize > 0 ? Math.round((bd.total / bd.windowSize) * 100) : undefined;
+      } catch {
+        return undefined;
+      }
+    };
 
     while (true) {
       let input: string;
@@ -219,6 +258,9 @@ program
         // 直接消费排队消息，不阻塞等待输入
       } else {
         input = await renderer.prompt();
+        if (input && input.trim()) {
+          renderer.recordHistory(input.trim());
+        }
       }
 
       let trimmed = input ? input.trim() : "";
@@ -227,7 +269,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         // Defensive: prevent busy-loop if stdin is broken on Windows
@@ -249,7 +291,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: 0,
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -279,6 +321,82 @@ program
             chalk.gray(`累计: ${turns.length} 轮, ${(totalDur / 1000).toFixed(1)}s, ${totalTools} 次工具调用\n`),
           );
         }
+        continue;
+      }
+
+      if (trimmed === "/sessions") {
+        const sessions = sessionStore.listSessions(20);
+        if (sessions.length === 0) {
+          stdout.write(chalk.gray("暂无历史会话\n"));
+        } else {
+          stdout.write("\n┌──────┬────────────┬────────────┬──────────────┬──────────────────────┐\n");
+          stdout.write(
+            `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
+          );
+          stdout.write("├──────┼────────────┼────────────┼──────────────┼──────────────────────┤\n");
+          sessions.forEach((s, i) => {
+            const time = new Date(s.updatedAt).toLocaleDateString();
+            const agentLabel = s.agentId.length > 12 ? s.agentId.slice(0, 12) : s.agentId;
+            let summary = s.firstUserMsg ?? s.summary ?? "(无)";
+            // CJK 安全截断（displayWidth 计 2 列/字，列宽 20）
+            while (displayWidth(summary) > 20) summary = summary.slice(0, -1);
+            stdout.write(
+              `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
+            );
+          });
+          stdout.write(`└──────┴────────────┴────────────┴──────────────┴──────────────────────┘\n`);
+          stdout.write(chalk.gray(`共 ${sessions.length} 个会话，/switch <序号> 切换\n`));
+        }
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          windowPct: statusWindowPct(),
+          queueSize: prefillQueue.length,
+        });
+        continue;
+      }
+
+      if (trimmed.startsWith("/switch ")) {
+        const arg = trimmed.slice(8).trim();
+        const sessions = sessionStore.listSessions(20);
+        const idx = parseInt(arg, 10);
+        let target: { id: string } | undefined;
+        if (!Number.isNaN(idx) && idx >= 1 && idx <= sessions.length) {
+          target = sessions[idx - 1];
+        } else {
+          target = sessions.find((s) => s.id.startsWith(arg));
+        }
+        if (target) {
+          currentSessionId = target.id;
+          stdout.write(chalk.green(`✓ 已切换到会话 (${arg})\n`));
+        } else {
+          stdout.write(chalk.red("未找到该会话，/sessions 查看列表\n"));
+        }
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          windowPct: statusWindowPct(),
+          queueSize: prefillQueue.length,
+        });
+        continue;
+      }
+
+      if (trimmed === "/copy") {
+        if (!lastAnswerRaw) {
+          stdout.write(chalk.gray("暂无回答可复制（先发送一条消息）\n"));
+        } else {
+          await copyToClipboard(lastAnswerRaw);
+          stdout.write(chalk.green(`✓ 已复制原始 Markdown 到剪贴板 (${lastAnswerRaw.length} 字符)\n`));
+        }
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          windowPct: statusWindowPct(),
+          queueSize: prefillQueue.length,
+        });
         continue;
       }
 
@@ -348,7 +466,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -365,6 +483,9 @@ program
           ["/skill-evo", "技能沉淀开关", "开启/关闭 LLM 自动提取技能"],
           ["/skill <名称>", "手动激活技能", "如 /code-review, /debug, /data-cleaning"],
           ["/status", "显示运行状态", "模式/模型/token/排队"],
+          ["/sessions", "浏览历史会话", "列出最近会话，/switch <序号> 切换"],
+          ["/switch <序号>", "切换会话", "恢复指定会话上下文继续对话"],
+          ["/copy", "复制回答", "复制上次回答的原始 Markdown 到剪贴板"],
           ["/help", "帮助信息", "显示此表"],
           ["/exit", "退出", ""],
         ];
@@ -394,7 +515,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -414,7 +535,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -427,7 +548,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -456,7 +577,7 @@ program
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
-            tokensMax: 8000,
+            windowPct: statusWindowPct(),
             queueSize: prefillQueue.length,
           });
           continue;
@@ -489,7 +610,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -504,7 +625,7 @@ program
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
-            tokensMax: 8000,
+            windowPct: statusWindowPct(),
             queueSize: prefillQueue.length,
           });
           continue;
@@ -522,7 +643,7 @@ program
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
-            tokensMax: 8000,
+            windowPct: statusWindowPct(),
             queueSize: prefillQueue.length,
           });
           continue;
@@ -586,7 +707,7 @@ program
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
           tokensUsed: modelRouter.getTokenUsage(),
-          tokensMax: 8000,
+          windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
         continue;
@@ -606,7 +727,7 @@ program
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
-            tokensMax: 8000,
+            windowPct: statusWindowPct(),
             queueSize: prefillQueue.length,
           });
           continue;
@@ -659,7 +780,6 @@ program
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
-            tokensMax: 8000,
             queueSize: prefillQueue.length + inputCollector.getQueueSize(),
             iteration: undefined,
             maxIter: agents[expertId]?.getConfig().maxIterations,
@@ -679,7 +799,19 @@ program
       startSpinner();
       startLiveStatus();
 
-      inputCollector.startListening(() => stopSpinner(true));
+      const abortController = new AbortController();
+      inputCollector.startListening(
+        () => stopSpinner(true),
+        () => {
+          // Ctrl+C 连按中断当前 Agent
+          if (!abortController.signal.aborted) {
+            abortController.abort();
+            stopSpinner();
+            stopLiveStatus();
+            stdout.write(chalk.yellow(`\n⏹ 已中断 Agent（Ctrl+C 再按一次退出）\n`));
+          }
+        },
+      );
 
       // 标记：spinner 被用户打断后，首个 token 到达时重新建立输出行
       let needReprefix = false;
@@ -692,6 +824,18 @@ program
 
       try {
         const streamCallbacks: StreamCallbacks = {
+          onIterationStart: (iteration) => {
+            if (liveStatusActive) {
+              renderer.updateLiveStatus({
+                mode: currentMode,
+                model: modelRouter.getCurrentModel(),
+                tokensUsed: modelRouter.getTokenUsage(),
+                queueSize: prefillQueue.length + inputCollector.getQueueSize(),
+                iteration,
+                maxIter: agents[expertId]?.getConfig().maxIterations,
+              });
+            }
+          },
           onThinkingStart: () => {
             if (!showThinking) return;
             thinkingStarted = false;
@@ -735,16 +879,15 @@ program
               stdout.write("\n");
               needThinkingBreak = false;
             }
-            stdout.write(text);
+            outputRenderer.writeChunk(text);
           },
-          onToolCall: (name) => {
+          onToolCall: (name, args, id) => {
             stopSpinner();
             stopLiveStatus();
-            stdout.write(`\n  ${chalk.blue(`🔧 ${name}`)}`);
+            outputRenderer.toolStart(name, args, id);
           },
-          onToolResult: (_name, success, summary) => {
-            const icon = success ? chalk.green("✓") : chalk.red("✗");
-            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+          onToolResult: (name, success, summary, id) => {
+            outputRenderer.toolResult(name, success, summary, id ?? "");
           },
         };
 
@@ -753,11 +896,14 @@ program
           workingDir,
           projectDir,
           streamCallbacks,
+          abortController.signal,
         );
         currentSessionId = result.sessionId;
+        if (result.text) lastAnswerRaw = result.text;
 
         stopSpinner();
         stopLiveStatus();
+        outputRenderer.flush();
 
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
@@ -790,7 +936,7 @@ program
         mode: currentMode,
         model: modelRouter.getCurrentModel(),
         tokensUsed: modelRouter.getTokenUsage(),
-        tokensMax: 8000,
+        windowPct: statusWindowPct(),
         queueSize: prefillQueue.length,
       });
     }
@@ -841,6 +987,27 @@ function padToWidth(s: string, targetWidth: number): string {
   const w = displayWidth(s);
   if (w >= targetWidth) return s;
   return s + " ".repeat(targetWidth - w);
+}
+
+/** 复制文本到系统剪贴板（Windows: clip.exe, macOS: pbcopy, Linux: xclip） */
+async function copyToClipboard(text: string): Promise<void> {
+  const platform = process.platform;
+  const cmd = platform === "win32" ? "clip" : platform === "darwin" ? "pbcopy" : "xclip";
+  const args = platform === "linux" ? ["-selection", "clipboard"] : [];
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(cmd, args, { shell: platform === "win32" });
+    let err = "";
+    child.on("error", (e) => {
+      err = e.message;
+    });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(err || `clipboard command failed (code ${code})`));
+    });
+    child.stdin.write(text);
+    child.stdin.end();
+  });
 }
 
 program.parse();

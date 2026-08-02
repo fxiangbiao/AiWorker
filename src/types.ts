@@ -110,11 +110,12 @@ export interface StreamCallbacks {
   onTextDelta?: (text: string) => void;
   onThinkingDelta?: (text: string) => void;
   onThinkingStart?: () => void;
+  onIterationStart?: (iteration: number) => void;
   onToolCall?: (name: string, args: string, id: string) => void;
-  onToolResult?: (name: string, success: boolean, summary: string) => void;
+  onToolResult?: (name: string, success: boolean, summary: string, id?: string) => void;
   onStepStart?: (stepId: string, expertId: string, desc: string) => void;
   onStepEnd?: (stepId: string, success: boolean) => void;
-  onFileDiff?: (filePath: string, added: number, removed: number) => void;
+  onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
 }
 
 // ===== 智能体 =====
