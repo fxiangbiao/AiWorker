@@ -11,6 +11,7 @@ import chalk from "chalk";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import type { StreamCallbacks, Task, AgentRunResult } from "./types.js";
+import type { SessionStore } from "./memory/session-store.js";
 
 interface DelegateAgent {
   runStream(
@@ -29,6 +30,7 @@ interface ServerDeps {
   createAgent: (agentId: string) => DelegateAgent | undefined;
   getAgentList: () => { id: string; name: string }[];
   skillNames: string[];
+  sessionStore?: SessionStore;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +39,7 @@ const webDir = resolve(__dirname, "..", "web");
 interface ChatRequest {
   message: string;
   agentId?: string;
+  mode?: string;
 }
 
 function parseBody(req: IncomingMessage): Promise<string> {
@@ -128,6 +131,21 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    if (url === "/sessions" && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessions = deps.sessionStore.listSessions(50);
+      sendJSON(res, 200, { sessions });
+      return;
+    }
+
+    if (url.startsWith("/sessions/") && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice("/sessions/".length);
+      const messages = deps.sessionStore.getMessages(sessionId);
+      sendJSON(res, 200, { sessionId, messages });
+      return;
+    }
+
     if (url === "/chat" && req.method === "POST") {
       let body: string;
       try {
@@ -177,6 +195,8 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
           onThinkingDelta: (text) => write({ type: "thinking", content: text }),
           onThinkingStart: () => write({ type: "thinking_start" }),
+          onIterationStart: (iteration) => write({ type: "iteration", iteration }),
+          onFileDiff: (filePath, diffText) => write({ type: "diff", filePath, diffText }),
         };
 
         const task: Task = {

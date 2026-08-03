@@ -183,6 +183,7 @@ program
           getAgentList: () =>
             Object.entries(agents).map(([id, a]) => ({ id, name: a.getName() })),
           skillNames: skillRegistry.getAll().map((s) => s.name),
+          sessionStore,
         },
         port,
       );

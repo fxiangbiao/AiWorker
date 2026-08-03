@@ -8,6 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -98,6 +100,13 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 .tool-card .tc-result{margin-top:6px;font-size:12px;color:var(--success);font-weight:500}
 .tool-card.error .tc-result{color:var(--error)}
 .tool-card .tc-result .diff-link{cursor:pointer;color:var(--primary);font-weight:500;text-decoration:underline;text-underline-offset:2px}
+/* spinner */
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+.live-label{font-size:11px;color:var(--dim);display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border)}
+/* iteration separator */
+.iter-sep{display:flex;align-items:center;gap:10px;margin:16px 0;font-size:11px;color:var(--dim)}
+.iter-sep::before,.iter-sep::after{content:'';flex:1;height:1px;background:var(--border)}
 /* input */
 #input-area{padding:16px 48px 20px;flex-shrink:0}
 #input-area .input-row{display:flex;align-items:flex-end;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s}
@@ -177,7 +186,8 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 </div>
 
 <script>
-marked.setOptions({breaks:true,gfm:true});
+marked.setOptions({breaks:true,gfm:true,highlight:(code,lang)=>{try{return hljs.highlight(code,{language:lang||'plaintext'}).value}catch(e){return esc(code)}}});
+function renderMarkdown(t){try{return marked.parse(t).replace(/<a /g,'<a target="_blank" rel="noopener" ')}catch(e){return esc(t)}}
 const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
 const STATE={mode:'craft',agentId:'default',chatId:null,chats:[],messages:[],sending:false,abort:null,diffs:[]};
 const PRICING={prompt:1,completion:2};
@@ -222,7 +232,6 @@ function initModes(){
 }
 function setInputState(s){STATE.sending=s;$('#inp').disabled=s;$('#send-btn').disabled=s;$('#inp').placeholder=s?'AiWorker 正在处理...':'输入消息，Enter 发送...';if(!s)$('#inp').focus()}
 function scrollBottom(){const el=$('#msg-list');el.scrollTop=el.scrollHeight}
-function renderMarkdown(t){try{return marked.parse(t)}catch(e){return esc(t)}}
 function renderTimeline(timeline){
   let html='',i=0;
   while(i<timeline.length){
@@ -246,7 +255,9 @@ function renderTimeline(timeline){
 function renderToolCard(m){
   const cls=m.result?m.error?'error':'':'';
   let args='';try{args=typeof m.args==='string'?m.args:JSON.stringify(m.args,null,2)}catch(e){}
-  let result='';if(m.result&&!m.error)result=`<div class="tc-result">${m.resultPreview?esc(m.resultPreview.slice(0,200)):''}${m.duration?` &middot; ${m.duration}ms`:''}</div>`;
+  let result='';
+  if(m.pending&&!m.result)result=`<div class="tc-result" style="color:var(--dim)"><span class="spin"></span>执行中...</div>`;
+  else if(m.result&&!m.error)result=`<div class="tc-result">${m.resultPreview?esc(m.resultPreview.slice(0,200)):''}${m.duration?` &middot; ${m.duration}ms`:''}</div>`;
   if(m.error)result=`<div class="tc-result" style="color:var(--error)">${esc(m.error)}</div>`;
   return `<div class="tool-card ${cls}"><div class="tc-header"><span class="tc-icon">&#9881;</span> ${esc(m.name||'tool')}</div><div class="tc-args">${esc(args)}</div>${result}</div>`;
 }
@@ -295,14 +306,101 @@ function sendMessage(){
   .catch(e=>{if(e.name!=='AbortError'){const d=document.createElement('div');d.className='error-banner';d.textContent=e.message;$('#msg-list').appendChild(d);scrollBottom()}})
   .finally(()=>{setInputState(false);STATE.abort=null;saveMsgs(STATE.chatId,STATE.messages);pollStatus()});
 }
+let _rafId=null;
+function _flushText(){
+  const agent=STATE.messages.filter(m=>m.role==='assistant').pop();
+  const el=$('#msg-list').querySelector('.agent-card:last-child .answer-block .content');
+  if(el&&agent)el.innerHTML=renderMarkdown(agent.content);
+  _rafId=null;
+}
+function _flushThinking(){
+  const agent=STATE.messages.filter(m=>m.role==='assistant').pop();
+  if(!agent||!agent.timeline)return;
+  const lastT=agent.timeline.filter(t=>t.type==='thinking').pop();
+  const body=$('#msg-list').querySelector('.agent-card:last-child .think-block:last-of-type .think-body');
+  if(body&&lastT)body.textContent=lastT.content;
+}
+function _rebuildLastTimeline(){
+  const agent=STATE.messages.filter(m=>m.role==='assistant').pop();
+  const card=$('#msg-list').querySelector('.agent-card:last-child');
+  if(!card||!agent)return;
+  const tlEl=card.querySelector('.timeline');
+  const open={};card.querySelectorAll('.think-block.open').forEach(el=>open[[...el.parentElement.children].indexOf(el)]=true);
+  if(tlEl||agent.timeline){
+    let html='';
+    if(!tlEl){html='<div class="timeline">';card.insertBefore(document.createElement('div'),card.firstChild)}
+    const tEl=card.querySelector('.timeline');if(!tEl)return;
+    let i=0;
+    while(i<(agent.timeline||[]).length){
+      const t=agent.timeline[i];
+      if(t.type==='thinking'){
+        html+=`<div class="think-block${open[i]?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考</div><div class="think-body">${esc(t.content||'')}</div></div>`;
+        i++;
+      }else{
+        let group=[],j=i;
+        while(j<agent.timeline.length&&agent.timeline[j].type==='tool'){group.push(agent.timeline[j]);j++}
+        if(group.length===1){
+          html+=renderToolCard(group[0]);
+        }else{
+          html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${group.length})</div><div class="tools-body">${group.map(t=>renderToolCard(t)).join('')}</div></div>`;
+        }
+        i=j;
+      }
+    }
+    tEl.innerHTML=html;
+  }
+  const ansEl=card.querySelector('.answer-block .content');
+  if(ansEl&&agent.content)ansEl.innerHTML=renderMarkdown(agent.content);
+}
 function handleSSE(data){
   switch(data.type){
-    case 'thinking':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];const last=agent.timeline[agent.timeline.length-1];if(last&&last.type==='thinking'){last.content+=(data.content||'')}else{agent.timeline.push({type:'thinking',content:data.content||'',open:false})}renderAll();scrollBottom();break}
-    case 'text':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';renderAll();scrollBottom()}break}
-    case 'tool_call':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];agent.timeline.push({type:'tool',name:data.name,args:data.args,id:data.id,result:false});renderAll();scrollBottom();break}
-    case 'tool_result':{const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent||!agent.timeline)break;for(let i=agent.timeline.length-1;i>=0;i--){const t=agent.timeline[i];if(t.type==='tool'&&!t.result){t.result=true;t.duration=data.duration;t.resultPreview=data.summary;t.toolName=data.name;if(!data.success)t.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(t.args||'{}');if(a.filePath)STATE.diffs.push({filePath:a.filePath,added:0,removed:0})}catch(e){}break}}renderAll();scrollBottom();break}
-    case 'done':{if(data.tokenUsage){totalTokens=data.tokenUsage.total||0;currentModel=data.model}updateStatusBar();break}
-    case 'error':{const d=document.createElement('div');d.className='error-banner';d.textContent=data.message;$('#msg-list').appendChild(d);scrollBottom();break}
+    case 'thinking_start':{
+      const card=$('#msg-list').querySelector('.agent-card:last-child');
+      if(card&&!card._thinkingLabel){
+        const label=document.createElement('div');
+        label.className='live-label';label._thinkingLabel=true;
+        label.innerHTML='<span class="spin"></span>思考中...';
+        card.insertBefore(label,card.firstChild);card._thinkingLabel=true;
+      }
+      scrollBottom();break;
+    }
+    case 'thinking':{
+      const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;
+      agent.timeline=agent.timeline||[];
+      const last=agent.timeline[agent.timeline.length-1];
+      if(last&&last.type==='thinking'){last.content+=(data.content||'')}else{agent.timeline.push({type:'thinking',content:data.content||'',open:false})}
+      const card=$('#msg-list').querySelector('.agent-card:last-child');
+      if(card&&card._thinkingLabel){const lb=card.querySelector('.live-label');if(lb)lb.remove();card._thinkingLabel=false}
+      _rebuildLastTimeline();_flushThinking();scrollBottom();break;
+    }
+    case 'text':{
+      const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';if(!_rafId)_rafId=requestAnimationFrame(_flushText)}scrollBottom();break;
+    }
+    case 'tool_call':{
+      const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent)break;agent.timeline=agent.timeline||[];
+      agent.timeline.push({type:'tool',name:data.name,args:data.args,id:data.id,result:false,pending:true});
+      _rebuildLastTimeline();scrollBottom();break;
+    }
+    case 'tool_result':{
+      const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(!agent||!agent.timeline)break;
+      for(let i=agent.timeline.length-1;i>=0;i--){const t=agent.timeline[i];if(t.type==='tool'&&!t.result){t.result=true;t.duration=data.duration;t.resultPreview=data.summary;t.toolName=data.name;t.pending=false;if(!data.success)t.error=data.summary;if(data.name==='fs_write')try{const a=JSON.parse(t.args||'{}');if(a.filePath){STATE.diffs.push({filePath:a.filePath,added:0,removed:0});renderDiffs()}}catch(e){}break}}
+      _rebuildLastTimeline();scrollBottom();break;
+    }
+    case 'iteration':{
+      const card=$('#msg-list').querySelector('.agent-card:last-child');
+      if(card){const sep=document.createElement('div');sep.className='iter-sep';sep.textContent=`Iteration ${data.iteration}`;card.appendChild(sep)}
+      break;
+    }
+    case 'diff':{
+      const exist=STATE.diffs.find(d=>d.filePath===data.filePath);if(!exist){STATE.diffs.push({filePath:data.filePath,added:0,removed:0});renderDiffs()}
+      break;
+    }
+    case 'done':{
+      if(data.tokenUsage){totalTokens=data.tokenUsage.total||0;currentModel=data.model}renderAll();break;
+    }
+    case 'error':{
+      const d=document.createElement('div');d.className='error-banner';d.textContent=data.message;$('#msg-list').appendChild(d);scrollBottom();break;
+    }
   }
 }
 function init(){
