@@ -275,9 +275,6 @@ function renderMessages(){
   }
   el.innerHTML=html;scrollBottom();
 }
-  }
-  el.innerHTML=html;scrollBottom();
-}
 function copyAnswer(btn){
   const raw=decodeURIComponent(btn.getAttribute('data-md')||'');
   const done=()=>{const old=btn.textContent;btn.textContent='✓ 已复制';setTimeout(()=>{btn.textContent=old},1500)};
