@@ -104,6 +104,8 @@ body{font-family:var(--font-ui);font-size:13px;background:var(--bg);color:var(--
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 .live-label{font-size:11px;color:var(--dim);display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--border)}
+.iter-sep{display:flex;align-items:center;gap:10px;margin:16px 0;font-size:11px;color:var(--dim)}
+.iter-sep::before,.iter-sep::after{content:'';flex:1;height:1px;background:var(--border)}
 /* input */
 #input-area{padding:16px 48px 20px;flex-shrink:0}
 #input-area .input-row{display:flex;align-items:flex-end;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;box-shadow:var(--shadow);transition:border-color .15s,box-shadow .15s}
@@ -266,9 +268,13 @@ function renderMessages(){
     else if(m.role==='assistant'||m.role==='agent'){
       html+=`<div class="msg agent-card">`;
       if(m.timeline&&m.timeline.length>0)html+=`<div class="timeline">${renderTimeline(m.timeline)}</div>`;
-      if(m.content)html+=`<div class="answer-block"><div class="ab-top"><span class="ab-label" style="font-size:11px;color:var(--dim)">回答</span><button class="ab-copy" onclick="copyAnswer(this)" data-md="${encodeURIComponent(m.content)}" title="复制原始 Markdown">⧉ 复制</button></div><div class="content">${renderMarkdown(m.content)}</div></div>`;
+      else html+=`<div class="timeline"></div>`;
+      html+=`<div class="answer-block"><div class="ab-top"><span class="ab-label" style="font-size:11px;color:var(--dim)">回答</span><button class="ab-copy" onclick="copyAnswer(this)" data-md="${encodeURIComponent(m.content||'')}" title="复制原始 Markdown">&#10713; 复制</button></div><div class="content">${m.content?renderMarkdown(m.content):''}</div></div>`;
       html+=`</div>`;
     }
+  }
+  el.innerHTML=html;scrollBottom();
+}
   }
   el.innerHTML=html;scrollBottom();
 }
@@ -310,44 +316,35 @@ function _flushText(){
   if(el&&agent)el.innerHTML=renderMarkdown(agent.content);
   _rafId=null;
 }
-function _flushThinking(){
+function _flushAnswerBlock(){
   const agent=STATE.messages.filter(m=>m.role==='assistant').pop();
-  if(!agent||!agent.timeline)return;
-  const lastT=agent.timeline.filter(t=>t.type==='thinking').pop();
-  const body=$('#msg-list').querySelector('.agent-card:last-child .think-block:last-of-type .think-body');
-  if(body&&lastT)body.textContent=lastT.content;
+  const block=$('#msg-list').querySelector('.agent-card:last-child .answer-block');
+  if(!block||!agent)return;
+  const copyBtn=block.querySelector('.ab-copy');
+  if(copyBtn)copyBtn.setAttribute('data-md',encodeURIComponent(agent.content||''));
+  const contentEl=block.querySelector('.content');
+  if(contentEl)contentEl.innerHTML=agent.content?renderMarkdown(agent.content):'';
 }
 function _rebuildLastTimeline(){
+  const tlEl=$('#msg-list').querySelector('.agent-card:last-child .timeline');
   const agent=STATE.messages.filter(m=>m.role==='assistant').pop();
-  const card=$('#msg-list').querySelector('.agent-card:last-child');
-  if(!card||!agent)return;
-  const tlEl=card.querySelector('.timeline');
-  const open={};card.querySelectorAll('.think-block.open').forEach(el=>open[[...el.parentElement.children].indexOf(el)]=true);
-  if(tlEl||agent.timeline){
-    let html='';
-    if(!tlEl){html='<div class="timeline">';card.insertBefore(document.createElement('div'),card.firstChild)}
-    const tEl=card.querySelector('.timeline');if(!tEl)return;
-    let i=0;
-    while(i<(agent.timeline||[]).length){
-      const t=agent.timeline[i];
-      if(t.type==='thinking'){
-        html+=`<div class="think-block${open[i]?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考</div><div class="think-body">${esc(t.content||'')}</div></div>`;
-        i++;
-      }else{
-        let group=[],j=i;
-        while(j<agent.timeline.length&&agent.timeline[j].type==='tool'){group.push(agent.timeline[j]);j++}
-        if(group.length===1){
-          html+=renderToolCard(group[0]);
-        }else{
-          html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${group.length})</div><div class="tools-body">${group.map(t=>renderToolCard(t)).join('')}</div></div>`;
-        }
-        i=j;
-      }
+  if(!tlEl||!agent||!agent.timeline)return;
+  const open={};tlEl.querySelectorAll('.think-block.open').forEach((el,i)=>{open[i]=true});
+  let html='',i=0;
+  while(i<agent.timeline.length){
+    const t=agent.timeline[i];
+    if(t.type==='thinking'){
+      html+=`<div class="think-block${open[i]?' open':''}" onclick="this.classList.toggle('open')"><div class="think-toggle"><span class="arrow">&#9654;</span>思考</div><div class="think-body">${esc(t.content||'')}</div></div>`;
+      i++;
+    }else{
+      let group=[],j=i;
+      while(j<agent.timeline.length&&agent.timeline[j].type==='tool'){group.push(agent.timeline[j]);j++}
+      if(group.length===1)html+=renderToolCard(group[0]);
+      else html+=`<div class="tools-group"><div class="tools-toggle" onclick="this.parentElement.classList.toggle('open')"><span class="arrow">&#9654;</span>工具调用 (${group.length})</div><div class="tools-body">${group.map(t=>renderToolCard(t)).join('')}</div></div>`;
+      i=j;
     }
-    tEl.innerHTML=html;
   }
-  const ansEl=card.querySelector('.answer-block .content');
-  if(ansEl&&agent.content)ansEl.innerHTML=renderMarkdown(agent.content);
+  tlEl.innerHTML=html;
 }
 function handleSSE(data){
   switch(data.type){
@@ -368,7 +365,7 @@ function handleSSE(data){
       if(last&&last.type==='thinking'){last.content+=(data.content||'')}else{agent.timeline.push({type:'thinking',content:data.content||'',open:false})}
       const card=$('#msg-list').querySelector('.agent-card:last-child');
       if(card&&card._thinkingLabel){const lb=card.querySelector('.live-label');if(lb)lb.remove();card._thinkingLabel=false}
-      _rebuildLastTimeline();_flushThinking();scrollBottom();break;
+      _rebuildLastTimeline();scrollBottom();break;
     }
     case 'text':{
       const agent=STATE.messages.filter(m=>m.role==='assistant').pop();if(agent){agent.content+=data.content||'';if(!_rafId)_rafId=requestAnimationFrame(_flushText)}scrollBottom();break;
@@ -385,6 +382,11 @@ function handleSSE(data){
     }
     case 'diff':{
       const exist=STATE.diffs.find(d=>d.filePath===data.filePath);if(!exist){STATE.diffs.push({filePath:data.filePath,added:0,removed:0});renderDiffs()}
+      break;
+    }
+    case 'iteration':{
+      const card=$('#msg-list').querySelector('.agent-card:last-child');
+      if(card){const sep=document.createElement('div');sep.className='iter-sep';sep.textContent=`Iteration ${data.iteration}`;card.appendChild(sep)}
       break;
     }
     case 'done':{

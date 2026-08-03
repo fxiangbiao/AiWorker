@@ -195,7 +195,7 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
           onThinkingDelta: (text) => write({ type: "thinking", content: text }),
           onThinkingStart: () => write({ type: "thinking_start" }),
-          onIterationStart: () => {},
+          onIterationStart: (iteration) => write({ type: "iteration", iteration }),
           onFileDiff: (filePath, diffText) => write({ type: "diff", filePath, diffText }),
         };
 
