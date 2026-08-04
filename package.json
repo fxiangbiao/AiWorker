@@ -10,6 +10,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "set NODE_OPTIONS=--no-deprecation && tsx src/index.ts",
+    "web:dev": "cd web && npx vite --port 5173",
+    "web:build": "cd web && npx vite build",
     "start": "set NODE_OPTIONS=--no-deprecation && node dist/index.js",
     "test": "set NODE_OPTIONS=--no-deprecation && vitest run",
     "test:watch": "set NODE_OPTIONS=--no-deprecation && vitest",

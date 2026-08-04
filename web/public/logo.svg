@@ -1,0 +1,188 @@
+<svg viewBox="0 0 2400 2400" xmlns="http://www.w3.org/2000/svg" width="2400" height="2400">
+  <title>AiWorker Logo</title>
+  <desc>AiWorker — multi-agent, MCP, Skills, browser, knowledge, writing.</desc>
+
+  <defs>
+    <linearGradient id="mainGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#7B42F5"/>
+      <stop offset="45%" stop-color="#5B6FE8"/>
+      <stop offset="100%" stop-color="#00C6E3"/>
+    </linearGradient>
+    <linearGradient id="nodeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#7B42F5"/>
+      <stop offset="100%" stop-color="#00C6E3"/>
+    </linearGradient>
+    <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#7B42F5"/>
+      <stop offset="100%" stop-color="#00C6E3"/>
+    </linearGradient>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+    <filter id="nodeShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="12"/>
+      <feOffset dx="2" dy="9"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="aShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dx="0" dy="8"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.12"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="neuronGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+
+  <rect width="2400" height="2400" fill="#FFFFFF"/>
+
+  <!-- 6 nodes, 60° spacing, scale 1.52x, ~75% canvas -->
+  <g transform="translate(1200, 1200) scale(1.52) translate(-1203, -1102)">
+
+    <!-- Soft glow behind A -->
+    <ellipse cx="1200" cy="1080" rx="320" ry="360" fill="url(#mainGrad)" opacity="0.05" filter="url(#softGlow)"/>
+
+    <!-- Organic threads -->
+    <g opacity="0.08" stroke="url(#lineGrad)" fill="none" stroke-linecap="round">
+      <path d="M 801 779 Q 900 830 980 870" stroke-width="2" stroke-dasharray="4 8"/>
+      <path d="M 1257 613 Q 1230 700 1215 790" stroke-width="1.5" stroke-dasharray="3 9"/>
+      <path d="M 1670 881 Q 1520 950 1360 1010" stroke-width="2" stroke-dasharray="4 8"/>
+      <path d="M 1600 1381 Q 1460 1350 1310 1300" stroke-width="2" stroke-dasharray="3 7"/>
+      <path d="M 1128 1590 Q 1150 1480 1180 1350" stroke-width="2" stroke-dasharray="3 7"/>
+      <path d="M 735 1278 Q 870 1270 1000 1250" stroke-width="2" stroke-dasharray="3 7"/>
+    </g>
+
+    <!-- Floating particles -->
+    <g fill="url(#nodeGrad)">
+      <circle cx="620"  cy="950"  r="5" opacity="0.14"/>
+      <circle cx="1400" cy="700"  r="4" opacity="0.11"/>
+      <circle cx="1060" cy="1680" r="5" opacity="0.12"/>
+      <circle cx="1750" cy="1150" r="4" opacity="0.09"/>
+      <circle cx="1150" cy="530"  r="4" opacity="0.10"/>
+      <circle cx="580"  cy="1100" r="4" opacity="0.09"/>
+      <circle cx="1700" cy="550"  r="4" opacity="0.10"/>
+      <circle cx="660"  cy="1450" r="4" opacity="0.09"/>
+    </g>
+
+    <!-- ====== Central "A" ====== -->
+    <path d="M 970 1330 L 1185 830 Q 1200 810 1215 830 L 1430 1330 L 1345 1330 L 1200 970 L 1055 1330 Z"
+          fill="url(#mainGrad)" filter="url(#aShadow)"/>
+    <path d="M 970 1330 L 1185 830 Q 1196 813 1204 830 L 1200 830 L 1055 1330 Z"
+          fill="#FFFFFF" opacity="0.13"/>
+
+    <!-- ====== Neural constellation (moved down 30px, scaled 1.2x) ====== -->
+    <g>
+      <circle cx="1226" cy="1106" r="31" fill="#7B42F5" opacity="0.15" filter="url(#neuronGlow)"/>
+      <path d="M 1170 1082 Q 1206 1086 1226 1106" stroke="url(#lineGrad)" stroke-width="3.5" opacity="0.55" fill="none" stroke-linecap="round"/>
+      <path d="M 1226 1106 Q 1212 1118 1190 1138" stroke="url(#lineGrad)" stroke-width="3"   opacity="0.40" fill="none" stroke-linecap="round"/>
+      <path d="M 1226 1106 Q 1246 1130 1242 1158" stroke="url(#lineGrad)" stroke-width="3"   opacity="0.30" fill="none" stroke-linecap="round" stroke-dasharray="4 4"/>
+      <path d="M 1190 1138 Q 1166 1149 1150 1168" stroke="url(#lineGrad)" stroke-width="3"   opacity="0.45" fill="none" stroke-linecap="round"/>
+      <path d="M 1190 1138 Q 1222 1142 1242 1158" stroke="url(#lineGrad)" stroke-width="2.5" opacity="0.25" fill="none" stroke-linecap="round" stroke-dasharray="3 5"/>
+      <path d="M 1150 1168 Q 1130 1114 1170 1082" stroke="url(#lineGrad)" stroke-width="2.5" opacity="0.18" fill="none" stroke-linecap="round" stroke-dasharray="3 6"/>
+      <circle cx="1170" cy="1082" r="12"  fill="url(#nodeGrad)"/>
+      <circle cx="1166" cy="1078" r="4"   fill="#FFFFFF" opacity="0.5"/>
+      <circle cx="1226" cy="1106" r="17"  fill="url(#nodeGrad)"/>
+      <circle cx="1222" cy="1101" r="5"   fill="#FFFFFF" opacity="0.5"/>
+      <circle cx="1190" cy="1138" r="8"   fill="url(#nodeGrad)"/>
+      <circle cx="1188" cy="1134" r="2.5" fill="#FFFFFF" opacity="0.4"/>
+      <circle cx="1150" cy="1168" r="13"  fill="url(#nodeGrad)"/>
+      <circle cx="1146" cy="1163" r="4"   fill="#FFFFFF" opacity="0.45"/>
+      <circle cx="1242" cy="1158" r="11"  fill="url(#nodeGrad)"/>
+      <circle cx="1238" cy="1155" r="3"   fill="#FFFFFF" opacity="0.4"/>
+      <path d="M 1206 1084 L 1208 1088 L 1214 1091 L 1208 1094 L 1206 1098 L 1204 1094 L 1198 1091 L 1204 1088 Z"
+            fill="#FFFFFF" opacity="0.6"/>
+    </g>
+
+    <!-- ============================================== -->
+    <!--  6 nodes at ~60° spacing around A center       -->
+    <!--  r=505 (toolbox r=470), all node circles r=100  -->
+    <!-- ============================================== -->
+
+    <!-- Node 1: Toolbox — top (7°, r=470) — (1257, 613) -->
+    <g filter="url(#nodeShadow)">
+      <circle cx="1257" cy="613" r="100" fill="url(#nodeGrad)"/>
+      <g stroke="#FFFFFF" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M 1221 592 Q 1221 566 1257 566 Q 1293 566 1293 592"/>
+        <rect x="1201" y="592" width="112" height="68" rx="10"/>
+        <line x1="1257" y1="592" x2="1257" y2="616"/>
+        <line x1="1201" y1="616" x2="1313" y2="616"/>
+      </g>
+    </g>
+
+    <!-- Node 2: Terminal >_ — upper-right (67°, r=510) — (1670, 881) -->
+    <g filter="url(#nodeShadow)">
+      <circle cx="1670" cy="881" r="100" fill="url(#nodeGrad)"/>
+      <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="1630,857 1655,881 1630,905" stroke-width="8"/>
+      </g>
+      <rect x="1670" y="901" width="42" height="8" rx="2" fill="#FFFFFF" stroke="none"/>
+    </g>
+
+    <!-- Node 3: Browser — lower-right (127°, r=500) — (1600, 1381) -->
+    <g filter="url(#nodeShadow)">
+      <circle cx="1600" cy="1381" r="100" fill="url(#nodeGrad)"/>
+      <g stroke="#FFFFFF" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1552" y="1345" width="96" height="72" rx="8"/>
+        <line x1="1552" y1="1365" x2="1648" y2="1365"/>
+        <rect x="1588" y="1349" width="52" height="12" rx="6" fill="none" stroke-width="5"/>
+        <!-- Content: image placeholder + text lines -->
+        <rect x="1560" y="1372" width="28" height="18" rx="2" stroke-width="3"/>
+        <line x1="1592" y1="1376" x2="1638" y2="1376" stroke-width="3"/>
+        <line x1="1592" y1="1384" x2="1638" y2="1384" stroke-width="3"/>
+        <line x1="1560" y1="1396" x2="1638" y2="1396" stroke-width="3"/>
+        <line x1="1560" y1="1404" x2="1624" y2="1404" stroke-width="3"/>
+      </g>
+      <g fill="#FFFFFF" stroke="none">
+        <circle cx="1558" cy="1355" r="3.5"/>
+        <circle cx="1568" cy="1355" r="3.5"/>
+        <circle cx="1578" cy="1355" r="3.5"/>
+      </g>
+    </g>
+
+    <!-- Node 4: Open book — bottom (188°, r=515) — (1128, 1590) -->
+    <g filter="url(#nodeShadow)">
+      <circle cx="1128" cy="1590" r="100" fill="url(#nodeGrad)"/>
+      <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M 1128 1558 C 1112 1546 1087 1546 1072 1553 L 1075 1632 C 1089 1625 1112 1625 1128 1634 Z" stroke-width="8"/>
+        <path d="M 1128 1558 C 1144 1546 1169 1546 1184 1553 L 1181 1632 C 1167 1625 1144 1625 1128 1634 Z" stroke-width="8"/>
+        <line x1="1128" y1="1558" x2="1128" y2="1634" stroke-width="4"/>
+        <line x1="1087" y1="1574" x2="1118" y2="1579" stroke-width="3"/>
+        <line x1="1087" y1="1586" x2="1118" y2="1591" stroke-width="3"/>
+        <line x1="1087" y1="1598" x2="1118" y2="1603" stroke-width="3"/>
+        <line x1="1138" y1="1579" x2="1169" y2="1574" stroke-width="3"/>
+        <line x1="1138" y1="1591" x2="1169" y2="1586" stroke-width="3"/>
+        <line x1="1138" y1="1603" x2="1169" y2="1598" stroke-width="3"/>
+      </g>
+    </g>
+
+    <!-- Node 5: Writing — document only — left (247°, r=505) — (735, 1278) -->
+    <g filter="url(#nodeShadow)">
+      <circle cx="735" cy="1278" r="100" fill="url(#nodeGrad)"/>
+      <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Document (enlarged) -->
+        <rect x="695" y="1234" width="80" height="88" rx="4" stroke-width="8"/>
+        <line x1="706" y1="1254" x2="764" y2="1254" stroke-width="4"/>
+        <line x1="706" y1="1274" x2="764" y2="1274" stroke-width="4"/>
+        <line x1="706" y1="1294" x2="742" y2="1294" stroke-width="4"/>
+      </g>
+    </g>
+
+    <!-- Node 6: Multi-agent — upper-left (307°, r=500) — (801, 779) -->
+    <g filter="url(#nodeShadow)">
+      <circle cx="801" cy="779" r="100" fill="url(#nodeGrad)"/>
+      <g fill="#FFFFFF">
+        <circle cx="753" cy="745" r="20"/>
+        <circle cx="849" cy="745" r="20"/>
+        <circle cx="801" cy="829" r="20"/>
+      </g>
+      <g stroke="#FFFFFF" stroke-width="8" fill="none" stroke-linecap="round">
+        <line x1="753" y1="745" x2="849" y2="745"/>
+        <line x1="753" y1="745" x2="801" y2="829"/>
+        <line x1="849" y1="745" x2="801" y2="829"/>
+      </g>
+    </g>
+
+  </g>
+</svg>

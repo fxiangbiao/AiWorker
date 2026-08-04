@@ -11,6 +11,17 @@ npx eslint src/      # ESLint 代码规范检查
 
 - **ESLint 已配置** — `npx eslint src/` 进行代码规范检查。
 
+## Web UI (Svelte 5 + Vite)
+- **路径**: `web/` 目录，独立 `package.json`，与根项目分离。
+- **框架**: Svelte 5 + Vite 6，组件文件 `.svelte`，状态用 `$state` rune。
+- **构建**: `npm run web:build` → `web/dist/`，开发: `npm run web:dev` → `localhost:5173`（API 代理到 3000）。
+- **入口**: `web/src/App.svelte` → `TopBar` / `Sidebar` / `ChatPanel` / `DiffPanel` / `StatusBar`。
+- **状态管理**: `web/src/lib/stores/chat.svelte.ts` — `$state` 对象包裹所有聊天状态（mode/agentId/chats/messages/diffs），`stream.svelte.ts` — 流式发送状态。
+- **组件**: 15 个 `.svelte` 文件，按功能分层：布局组件（TopBar/Sidebar/StatusBar）、消息组件（AgentCard→ThinkBlock/ToolCard/AnswerBlock）、输入组件（InputArea）。
+- **SSE 流式**: `ChatPanel.handleSSE()` 直接 mutate `store.messages`，`$state` Proxy 自动触发组件重渲染。
+- **安全**: `DOMPurify` 消毒 `marked.parse()` 输出，防止 XSS。
+- **依赖**: `marked` + `highlight.js` + `dompurify`（npm 包，非 CDN）。
+
 ## 环境要求
 - 默认需要 `DEEPSEEK_API_KEY` 环境变量（`config/models.json` 通过 `${DEEPSEEK_API_KEY}` 引用）。
 - lite 本地模型需要 `OPENAI_API_KEY`（指向 `localhost:8000`）。

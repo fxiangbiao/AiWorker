@@ -2,9 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-## 当前状态: Sprint 15
+## 当前状态: Sprint 17
 
-> 92 项测试全绿 | 最近更新: 2026-08-02 (Markdown 视觉优化: 代码语法高亮 + 表格美化 + OSC 8 超链接 + 窗口进度条 + 标题行对齐)
+> 92 项测试全绿 | 最近更新: 2026-08-04 (Web UI Svelte + Vite 重构: 组件化架构 + 蓝紫科技风主题 + 代码审查)
 
 ### 已实现
 
@@ -30,8 +30,8 @@
 - **TUI 交互**: 运行中断 (Ctrl+C 连按 + AbortSignal) + 命令历史持久化 (`data/.aiworker_history`) + Tab 补全 (`/命令` + 技能名) + 多会话浏览/切换 (`/sessions` + `/switch`) + CJK 对齐 (`/sessions`/`/help`/`/context`)
 - **原始 Markdown 复制**: Web UI 回答卡片「⧉ 复制」按钮 + TUI `/copy` 命令 (clip.exe/pbcopy/xclip)
 - **语法高亮**: 自研 tokenizer (`src/terminal/highlight.ts`)，按 fence lang 分发 (ts/js/python/sql/json/html/css/bash + generic)，无 highlight.js 依赖
-- **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents
-- **Web UI**: 单文件 `web/index.html`，Claude 风格浅色系 + SSE 流式 + Agent 卡片时间线布局 + 思考/工具可折叠 + 文件变更面板
+- **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents / GET /sessions
+- **Web UI**: Svelte 5 + Vite 组件化架构 (`web/src/`)，15 个组件 + 4 个 store + DOMPurify XSS 防护 + 蓝紫科技风主题
 - **安全加固**: 并发写互斥锁、连续截断断路器 (3次)、FTS5 注入防护、`new Function()` 沙箱白名单
 
 ---
@@ -150,6 +150,7 @@ aiworker/
 │   ├── types.ts          # 核心类型定义 (362 LOC)
 │   ├── index.ts          # CLI 入口
 │   └── smoke-test.ts     # 冒烟测试 (92 tests)
+├── web/                 # Web UI Svelte 5 + Vite (15 组件)
 ├── data/                 # 运行时数据 (gitignored)
 ├── ai_default_project/   # Agent 默认输出目录 (gitignored)
 ├── AGENTS.md             # AI 辅助开发指南
@@ -195,3 +196,5 @@ npm run build # tsc 编译 (含类型检查)
 | 13 | Web UI (Claude 风格浅色系 + SSE 流式 + 时间线卡片布局) + 多项 UI/UX 修复 | 完成 |
 | 14 | TUI 终端升级 (Markdown 流式渲染 + 中断控制 + 历史/补全 + 会话切换 + 复制 + 状态栏) | 完成 |
 | 15 | Markdown 视觉优化 (代码语法高亮 + 表格美化 + OSC 8 超链接 + 状态栏进度条 + 标题行对齐) | 完成 |
+| 16 | Web UI 增强 (highlight.js 语法高亮 + 流式性能 + 体验优化) | 完成 |
+| 17 | Web UI Svelte + Vite 重构 (组件化 + $state rune + 蓝紫主题 + code review) | 完成 |

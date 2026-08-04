@@ -826,16 +826,7 @@ program
       try {
         const streamCallbacks: StreamCallbacks = {
           onIterationStart: (iteration) => {
-            if (liveStatusActive) {
-              renderer.updateLiveStatus({
-                mode: currentMode,
-                model: modelRouter.getCurrentModel(),
-                tokensUsed: modelRouter.getTokenUsage(),
-                queueSize: prefillQueue.length + inputCollector.getQueueSize(),
-                iteration,
-                maxIter: agents[expertId]?.getConfig().maxIterations,
-              });
-            }
+            stdout.write(`\n${chalk.dim(`── 迭代 ${iteration}`)}\n`);
           },
           onThinkingStart: () => {
             if (!showThinking) return;
