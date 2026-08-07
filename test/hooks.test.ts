@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { resolve } from "node:path";
-import { writeFileSync, existsSync, readdirSync } from "node:fs";
+import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import { hookManager } from "../src/hooks/hook-manager.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { DangerDetector } from "../src/security/danger-detector.js";
@@ -189,26 +189,40 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(existsSync(snapDir)).toBe(true);
   });
 
-  it("captureDiff 对新文件不报错", async () => {
+  it("captureDiff 对新文件写入磁盘快照（added = 新文件行数）", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const handler = createCaptureDiff({});
 
     const newFile = resolve(testDir, "new-file.txt");
+    try {
+      rmSync(newFile, { force: true });
+    } catch {
+      /* ignore */
+    }
 
+    // Pre-hook: 文件不存在，不保存快照
     const preCtx = makeCtx({
       event: "onToolCallPre",
-      data: { toolName: "fs_write", args: JSON.stringify({ path: newFile, content: "new content" }) },
+      data: { toolName: "fs_write", args: JSON.stringify({ path: newFile, content: "line1\nline2\nline3\n" }) },
     });
     await handler(preCtx);
 
-    writeFileSync(newFile, "new content", "utf-8");
+    // 创建新文件
+    writeFileSync(newFile, "line1\nline2\nline3\n", "utf-8");
 
     const postCtx = makeCtx({
       event: "onToolCallPost",
       data: { toolName: "fs_write", args: JSON.stringify({ path: newFile }), result: { success: true, content: "ok" } },
     });
-    const result = await handler(postCtx);
-    expect(result).toBeUndefined();
+    await handler(postCtx);
+
+    // 磁盘快照包含 diff 内容（含 + line 行）
+    const snapDir = resolve(process.cwd(), "data", "snapshots", "test-session");
+    expect(existsSync(snapDir)).toBe(true);
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBeGreaterThan(0);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    expect(content).toContain("+ line1");
   });
 
   // 13d. EvaluateSkillCreation

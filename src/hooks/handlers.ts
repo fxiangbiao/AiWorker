@@ -314,7 +314,6 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
 
       const sessionSnap = snapshots.get(ctx.sessionId);
       const oldContent = sessionSnap?.get(filePath);
-      if (oldContent === undefined) return; // 新文件，无 diff
 
       // 读取新内容
       let newContent: string;
@@ -324,11 +323,25 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         return;
       }
 
-      const diff = computeSimpleDiff(oldContent, newContent);
-      if (!diff) return;
+      let added: number;
+      let removed: number;
+      let diffText: string;
 
-      deps.onFileDiff?.(filePath, diff.added, diff.removed, diff.text);
-
+      if (oldContent !== undefined) {
+        const diff = computeSimpleDiff(oldContent, newContent);
+        if (!diff) return;
+        added = diff.added;
+        removed = diff.removed;
+        diffText = diff.text;
+      } else {
+        // 新文件：无旧内容，added = 新文件行数
+        added = newContent.split("\n").filter((l) => l.length > 0).length;
+        removed = 0;
+        diffText = newContent
+          .split("\n")
+          .map((l) => `+ ${l}`)
+          .join("\n");
+      }
       try {
         auditLogger.log({
           timestamp: Date.now(),
@@ -337,11 +350,13 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
           action: `file_diff:${filePath}`,
           target: filePath.slice(0, 200),
           result: "success",
-          detail: `+${diff.added} -${diff.removed} 行`,
+          detail: `+${added} -${removed} 行`,
         });
       } catch {
         /* ignore */
       }
+
+      deps.onFileDiff?.(filePath, added, removed, diffText);
 
       // 也保存快照到磁盘
       try {
@@ -350,7 +365,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
         writeFileSync(
           resolve(snapDir, `${safeName}.diff`),
-          `${diff.text}\n---\nold: ${oldContent.length} chars\nnew: ${newContent.length} chars`,
+          `${diffText}\n---\nold: ${oldContent?.length ?? 0} chars\nnew: ${newContent.length} chars`,
           "utf-8",
         );
       } catch {

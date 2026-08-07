@@ -1,12 +1,12 @@
 # AGENTS.md — AiWorker
 
-多智能体个人 AI Agent 助手：7 专家路由 + 工具/MCP + Skills + Hooks + 三层记忆。TUI 终端与 Web UI 双界面。135 项测试。
+多智能体个人 AI Agent 助手：7 专家路由 + 工具/MCP + Skills + Hooks + 三层记忆。TUI 终端与 Web UI 双界面。
 
 ## 常用命令
 ```bash
 npm run dev            # tsx 直接运行 CLI（无需编译）
 npm run build          # tsc → dist/
-npm test               # vitest run（test/ 目录，135 项）
+npm test               # vitest run（test/ 目录）
 npx tsc --noEmit       # 仅类型检查
 npx eslint src/        # ESLint 检查
 npm run web:dev        # Web UI 开发 :5173（API 代理 3000）
@@ -68,11 +68,19 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `--server` 模式跳过 TUI；CJK 用 `displayWidth()`/`padToWidth()` 对齐
 
 ### HTTP Server 与 Web UI
-- `src/server.ts` — GET `/agents` `/status` `/tools` `/sessions`(+/:id)；POST `/chat` SSE 流式；托管 `web/dist/`
-- `web/` — Svelte 5 + Vite 6，独立 package.json；`$state` rune；`ChatPanel.handleSSE()` 直接 mutate `store.messages` 触发重渲染；`DOMPurify` 消毒 `marked.parse()` 输出防 XSS
+- `src/server.ts` — **所有 API 统一 `/api/v1` 前缀**（`API_PREFIX` 常量 + `apiUrl()` 辅助）；静态资源托管仅排除 `/api`，新增端点用 `apiUrl("/xxx")` 注册即自动生效
+- 端点：GET `/api/v1/agents` `/status` `/tools` `/sessions`(+/:id) `/context` `/logs` `/skills`；POST `/api/v1/chat` `/plan` `/debate` SSE 流式；托管 `web/dist/`
+- `/plan` SSE 事件序列：plan → step_start → step_end → done；`/debate`：debate_start → done；两者均经 `deps.coordinator`（ServerDeps 依赖注入）
+- `pickDebateAgents` 在 `src/core/team-coordinator.ts` 导出，CLI 与 HTTP 共用
+- `/chat` 接受 `sessionId`：Web UI 用 chat id 作为 sessionId 持久化到 SQLite
+- `web/` — Svelte 5 + Vite 6，独立 package.json；API 常量在 `chat.svelte.ts` 导出 `API = "/api/v1"`（fetch 统一走该常量）；vite proxy 为 `/api → :3000`
+- `ChatPanel.handleSSE()` 直接 mutate `store.messages` 触发重渲染；`DOMPurify` 消毒 `marked.parse()` 输出防 XSS；`store.inputMode` 控制输入模式（chat/plan/debate），协作/辩论复用 `handleCollabSSE` 渲染步骤/工具/阶段提示
+- `SystemPanel.svelte`（context/logs/skills 管理面板）、`PlanStepsBlock.svelte`（/plan 步骤状态机）
+- `/chat` 透传 `task.mode`（权限模式），BaseAgent.runStream 消费；`captureDiff` 写磁盘快照 + 审计 + CLI 输出（Web 不展示文件变更，待重设计）
 
 ## 测试
-- `test/` 9 文件 + `helpers.ts`：`makeTestDir(name)` 创建独立 `data-test/<name>/`（防并行 worker 冲突），`setupEnv` 注册内置工具 + 审计
+- `test/` + `helpers.ts`：`makeTestDir(name)` 创建独立 `data-test/<name>/`（防并行 worker 冲突），`setupEnv` 注册内置工具 + 审计
+- `server.test.ts`：HTTP 端点覆盖（mock coordinator/agent + listen(0) 随机端口 + fetch，避免真实 LLM）
 - vitest 配置在 `vitest.config.ts`（include `test/**/*.test.ts`）
 
 ## CLI 交互命令

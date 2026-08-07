@@ -4,7 +4,7 @@
   import TopBar from "./components/TopBar.svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import ChatPanel from "./components/ChatPanel.svelte";
-  import DiffPanel from "./components/DiffPanel.svelte";
+  import SystemPanel from "./components/SystemPanel.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import { skills } from "./lib/stores/status";
   import {
@@ -13,6 +13,9 @@
     loadSettings,
     loadMessages,
     saveChats,
+    syncServerSessions,
+    loadRemoteMessages,
+    API,
   } from "./lib/stores/chat.svelte";
   import { serverOnline, currentModel, totalTokens, workingDir, projectDir } from "./lib/stores/status";
   import { fmtN } from "./lib/utils/format";
@@ -21,7 +24,7 @@
   let rightHidden = $state(false);
 
   function pollStatus() {
-    fetch("/status")
+    fetch(`${API}/status`)
       .then((r) => r.json())
       .then((d) => {
         totalTokens.set(d.tokenUsage?.total || 0);
@@ -35,7 +38,7 @@
   }
 
   function loadAgents() {
-    fetch("/agents")
+    fetch(`${API}/agents`)
       .then((r) => r.json())
       .then((d) => {
         agents = d.agents || [];
@@ -53,11 +56,17 @@
     saveChats(store.chats);
   }
 
-  function handleSwitch(id: string) {
+  async function handleSwitch(id: string) {
     store.activeChatId = id;
     const loaded = loadMessages(id);
-    store.messages.length = 0;
-    store.messages.push(...loaded);
+    if (loaded.length === 0) {
+      const remote = await loadRemoteMessages(id);
+      store.messages.length = 0;
+      store.messages.push(...remote);
+    } else {
+      store.messages.length = 0;
+      store.messages.push(...loaded);
+    }
   }
 
   onMount(() => {
@@ -71,6 +80,7 @@
       store.messages.push(...loaded);
     }
     pollStatus();
+    syncServerSessions();
     const intv = setInterval(pollStatus, 30000);
     return () => clearInterval(intv);
   });
@@ -81,16 +91,9 @@
   <Sidebar onNewChat={handleNewChat} onSwitch={handleSwitch} />
   <ChatPanel />
   <div class="right-panel" id="right-panel">
-    <DiffPanel />
     <div class="rp-section">
-      <div class="rp-title">技能</div>
-      {#if $skills.length > 0}
-        {#each $skills as s}
-          <div class="skill-item">&#9670; {s}</div>
-        {/each}
-      {:else}
-        <div class="empty">暂无技能</div>
-      {/if}
+      <div class="rp-title">系统</div>
+      <SystemPanel />
     </div>
   </div>
 </div>

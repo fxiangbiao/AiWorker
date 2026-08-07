@@ -31,7 +31,7 @@ import { FinancialAgent } from "./agents/financial-agent.js";
 import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
-import { TeamCoordinator } from "./core/team-coordinator.js";
+import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
@@ -194,11 +194,21 @@ program
           modelRouter,
           workingDir,
           projectDir,
+          coordinator,
           createAgent: (agentId: string) => agents[agentId] ?? agents["default"],
           getAgentList: () =>
             Object.entries(agents).map(([id, a]) => ({ id, name: a.getName() })),
           skillNames: skillRegistry.getAll().map((s) => s.name),
+          getSkills: () =>
+            skillRegistry.getAll().map((s) => ({
+              name: s.name,
+              description: s.description ?? "",
+              expert: s.expert ?? "general",
+            })),
           sessionStore,
+          getContextBreakdown: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) =>
+            contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
+          getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
         },
         port,
       );
@@ -1053,32 +1063,6 @@ program
     renderer.destroy();
     sessionStore.close();
   });
-
-function pickDebateAgents(topic: string, available: string[]): { agentA: string; agentB: string } {
-  const defaultPair = { agentA: "research", agentB: "coding" };
-
-  if (available.length < 2) return defaultPair;
-
-  const has = (id: string) => available.includes(id);
-
-  if (/投资|股票|基金|理财|财务|资产/i.test(topic) && has("financial") && has("data-analysis")) {
-    return { agentA: "financial", agentB: "data-analysis" };
-  }
-  if (/游戏/i.test(topic) && has("game-dev") && has("product-ops")) {
-    return { agentA: "game-dev", agentB: "product-ops" };
-  }
-  if (/(?:技术选型|架构|框架|语言.*选择|React.*Vue|前后端)/i.test(topic) && has("coding") && has("research")) {
-    return { agentA: "coding", agentB: "research" };
-  }
-  if (/(?:产品|运营|用户|市场|PRD)/i.test(topic) && has("product-ops") && has("research")) {
-    return { agentA: "product-ops", agentB: "research" };
-  }
-  if (/数据|分析|统计|报表/i.test(topic) && has("data-analysis") && has("research")) {
-    return { agentA: "data-analysis", agentB: "research" };
-  }
-
-  return defaultPair;
-}
 
 function displayWidth(s: string): number {
   let w = 0;

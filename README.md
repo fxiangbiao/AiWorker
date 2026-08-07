@@ -2,7 +2,7 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP 协议、技能库自动匹配、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种交互界面，135 项测试全绿。
+一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP 协议、技能库自动匹配、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种交互界面。
 
 ## 特性
 
@@ -28,8 +28,8 @@
 
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏
-- **Web UI**：Svelte 5 + Vite，SSE 流式，15 组件 + 3 store + DOMPurify XSS 防护
-- **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI
+- **Web UI**：Svelte 5 + Vite，SSE 流式，15 组件 + 3 store + DOMPurify XSS 防护，支持 `/plan` `/debate` 协作与系统管理面板
+- **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
 
 ---
 
@@ -117,16 +117,25 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 
 生产部署：`npm run build && npm run start -- --server --port 3000`，浏览器打开 `http://localhost:3000`。
 
+输入区上方提供三种输入模式：**对话** / **智能体协作**（`/plan` 多专家 DAG，展示步骤进度）/ **双专家辩论**（`/debate` 自动匹配专家对，展示阶段提示）。协作过程实时渲染工具调用卡片与状态指示。
+
 ### HTTP API（`--server` 模式）
+
+所有端点统一 `/api/v1` 前缀（静态资源托管自动排除该前缀）。
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/chat` | POST | SSE 流式对话（JSON：`message` / `agentId`） |
-| `/agents` | GET | 专家列表 |
-| `/status` | GET | 运行状态 + token 用量 |
-| `/tools` | GET | 已注册工具列表 |
-| `/sessions` | GET | 最近 50 个历史会话 |
-| `/sessions/:id` | GET | 会话消息明细 |
+| `/api/v1/chat` | POST | SSE 流式对话（JSON：`message` / `agentId` / `sessionId`） |
+| `/api/v1/plan` | POST | SSE 流式多专家协作（`instruction` → plan/step_start/step_end/done 事件） |
+| `/api/v1/debate` | POST | SSE 流式双专家辩论（`topic` → debate_start/done 事件，自动匹配专家对） |
+| `/api/v1/agents` | GET | 专家列表 |
+| `/api/v1/status` | GET | 运行状态 + token 用量 |
+| `/api/v1/tools` | GET | 已注册工具列表 |
+| `/api/v1/sessions` | GET | 最近 50 个历史会话 |
+| `/api/v1/sessions/:id` | GET | 会话消息明细 |
+| `/api/v1/context` | GET | 上下文分层 token 占比 |
+| `/api/v1/logs` | GET | 最近 50 条轮次日志 |
+| `/api/v1/skills` | GET | 已加载技能列表（含描述与分组） |
 
 ---
 
@@ -153,10 +162,10 @@ aiworker/
 │   ├── terminal/         # TUI 引擎（screen 帧缓冲 / term 键解析 /
 │   │                     # components 组件 / tui 控制器 / markdown / highlight）
 │   ├── tools/            # 内置工具
-│   ├── server.ts         # HTTP Server + SSE
+│   ├── server.ts         # HTTP Server + SSE（/chat /plan /debate + 管理端点）
 │   ├── index.ts          # CLI 入口
 │   └── types.ts          # 核心类型定义
-├── test/                 # 135 项测试（9 文件 + helpers，独立 data 目录防并行冲突）
+├── test/                 # 测试（模块化，独立 data 目录防并行冲突）
 ├── web/                  # Web UI（Svelte 5 + Vite，独立 package.json）
 ├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照
 ├── ai_default_project/   # Agent 默认输出目录（gitignored）
@@ -182,7 +191,7 @@ aiworker/
 ## 测试与开发
 
 ```bash
-npm test            # vitest run（135 项测试，test/ 目录按模块拆分）
+npm test            # vitest run（test/ 目录按模块拆分）
 npm run build       # tsc 编译 + 类型检查
 npm run lint        # ESLint 检查
 npm run web:build   # Web UI 构建
