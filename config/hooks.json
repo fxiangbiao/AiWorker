@@ -1,7 +1,8 @@
 {
   "onMessage": [
     { "handler": "autoLoadProjectMemory" },
-    { "handler": "sensitiveDataFilter" }
+    { "handler": "sensitiveDataFilter" },
+    { "handler": "turnLogger" }
   ],
   "onToolCallPre": [
     { "handler": "dangerousCommandBlock", "tools": ["terminal_exec", "fs_write"] },

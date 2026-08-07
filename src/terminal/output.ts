@@ -6,13 +6,15 @@
  * - fence 状态机跟踪代码块开合，代码块即时画边框
  * - 工具调用紧凑行渲染（id 关联 + 耗时）
  *
- * 所有方法只输出到 stdout，不维护终端光标状态（状态栏由 renderer 管理）
+ * TUI 激活时所有输出写入 MessageList（tui.appendMessage），由 Screen 差分渲染；
+ * 非 TUI 时直接写 stdout。
  */
 
 import { stdout } from "node:process";
 import chalk from "chalk";
 import { renderLine, defaultTableState, type TableState } from "./markdown.js";
 import { highlightLine } from "./highlight.js";
+import { tui } from "./tui.js";
 
 interface ToolRow {
   id: string;
@@ -28,6 +30,15 @@ export class StreamOutputRenderer {
   private tools = new Map<string, ToolRow>();
   private tableState: TableState = defaultTableState();
 
+  /** 输出一行到消息区（TUI）或 stdout（普通） */
+  private emitLineRaw(line: string): void {
+    if (tui.isActive()) {
+      tui.appendMessage(line);
+    } else {
+      stdout.write(line + "\n");
+    }
+  }
+
   /**
    * 写入流式文本 chunk（onTextDelta 调用）
    */
@@ -41,6 +52,10 @@ export class StreamOutputRenderer {
       this.buf = this.buf.slice(nl + 1);
       this.emitLine(line);
     }
+    // TUI 流式：将残余半行实时追加，保证实时显示
+    if (tui.isActive() && this.buf) {
+      this.emitPartial(this.buf);
+    }
   }
 
   /** 冲刷剩余缓冲（回答结束时调用） */
@@ -51,7 +66,7 @@ export class StreamOutputRenderer {
     }
     // 未闭合代码块补底框
     if (this.inFence) {
-      stdout.write(chalk.gray("─".repeat(44)) + "\n");
+      this.emitLineRaw(chalk.gray("─".repeat(44)));
       this.inFence = false;
     }
   }
@@ -63,24 +78,30 @@ export class StreamOutputRenderer {
       this.inFence = true;
       this.fenceLang = result.lang ?? "";
       const header = this.fenceLang ? `${chalk.dim(this.fenceLang)} ` : "";
-      stdout.write(`${header}${chalk.gray("─".repeat(40))}\n`);
+      this.emitLineRaw(`${header}${chalk.gray("─".repeat(40))}`);
       return;
     }
     if (result.fenceEnd) {
       this.inFence = false;
-      stdout.write(chalk.gray("─".repeat(44)) + "\n");
+      this.emitLineRaw(chalk.gray("─".repeat(44)));
       return;
     }
     if (this.inFence) {
-      stdout.write(`${chalk.cyan("▍")} ${highlightLine(line, this.fenceLang)}\n`);
+      this.emitLineRaw(`${chalk.cyan("▍")} ${highlightLine(line, this.fenceLang)}`);
       return;
     }
     if (result.tableState) this.tableState = result.tableState;
     if (result.rendered !== null) {
-      stdout.write(result.rendered + "\n");
+      this.emitLineRaw(result.rendered);
     } else {
-      stdout.write(line + "\n");
+      this.emitLineRaw(line);
     }
+  }
+
+  /** TUI 模式下实时追加半行（无换行） */
+  private emitPartial(text: string): void {
+    if (!tui.isActive()) return;
+    tui.setPartial(text);
   }
 
   /** 工具调用开始（onToolCall） */
@@ -88,7 +109,7 @@ export class StreamOutputRenderer {
     const preview = this.sanitizePreview(args, 40);
     const marker = `${chalk.blue(`🔧 ${name}`)}${preview ? chalk.dim(` ${preview}`) : ""}`;
     this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: preview });
-    stdout.write(`  ${marker}\n`);
+    this.emitLineRaw(`  ${marker}`);
   }
 
   /** 工具调用结束（onToolResult） */
@@ -97,7 +118,7 @@ export class StreamOutputRenderer {
     if (!row) {
       // 无关联 onToolCall（如外部调用）— 单行输出
       const icon = success ? chalk.green("✓") : chalk.red("✗");
-      stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
+      this.emitLineRaw(`  ${icon} ${summary.slice(0, 80)}`);
       return;
     }
 
@@ -107,30 +128,35 @@ export class StreamOutputRenderer {
     const summaryStr = summary ? ` ${summary.slice(0, 80)}` : "";
     const line = `${chalk.blue(`🔧 ${row.name}`)}${row.argsPreview ? chalk.dim(` ${row.argsPreview}`) : ""} ${chalk.gray(`⌁ ${durStr}`)} ${icon}${summaryStr}`;
 
-    // 原地更新：回退一行，清行，重写
-    stdout.write(`\r\x1b[1A\x1b[2K  ${line}\n`);
+    if (tui.isActive()) {
+      // TUI 全帧渲染模式下不支持回退行，直接写新行
+      this.emitLineRaw(`  ${line}`);
+    } else {
+      // 原地更新：回退一行，清行，重写
+      stdout.write(`\r\x1b[1A\x1b[2K  ${line}\n`);
+    }
     this.tools.delete(id);
   }
 
   /** 文件 diff 计数行（onFileDiff） */
   fileDiff(filePath: string, added: number, removed: number): void {
-    stdout.write(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}\n`);
+    this.emitLineRaw(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`);
   }
 
   /** 打印单行普通文本（保留换行语义） */
   writeLine(text: string): void {
-    stdout.write(text + "\n");
+    this.emitLineRaw(text);
   }
 
   /** 工具名带符号（计划 DAG 用） */
   stepStart(stepId: string, expertId: string, desc: string): void {
-    stdout.write(`  ${chalk.cyan("🔵")} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${desc} ${chalk.dim("(进行中...)")}\n`);
+    this.emitLineRaw(`  ${chalk.cyan("🔵")} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${desc} ${chalk.dim("(进行中...)")}`);
   }
 
   stepEnd(stepId: string, expertId: string, desc: string, success: boolean): void {
     const icon = success ? chalk.green("✅") : chalk.red("❌");
     const status = success ? "" : chalk.gray(" (已跳过)");
-    stdout.write(`  ${icon} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${desc}${status}\n`);
+    this.emitLineRaw(`  ${icon} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${desc}${status}`);
   }
 
   private sanitizePreview(s: string, max: number): string {

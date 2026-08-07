@@ -315,6 +315,7 @@ export interface McpServerStatus {
 export interface SkillDef {
   name: string;
   version: string;
+  description: string;
   triggers: string[];
   expert: string;
   toolsRequired: string[];

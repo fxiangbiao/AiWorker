@@ -1,6 +1,7 @@
 ---
 name: code-review
 version: "1.0"
+description: "审查代码逻辑/性能/可读性/安全性，按严重程度分级输出"
 triggers:
   - 审查|review|检查.*代码|代码.*检查|审核|code review
 expert: coding

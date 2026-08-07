@@ -1,6 +1,7 @@
 ---
 name: citation-tracking
 version: "1.0"
+description: "引用来源追踪与可信度评估"
 triggers:
   - 引用|来源|参考文献|参考|citation|reference
 expert: research

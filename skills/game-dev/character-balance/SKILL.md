@@ -1,6 +1,7 @@
 ---
 name: character-balance
 version: "1.0"
+description: "游戏角色与数值平衡设计"
 triggers:
   - 角色.*平衡|数值.*平衡|属性|技能.*设计|职业.*设计
 expert: game-dev

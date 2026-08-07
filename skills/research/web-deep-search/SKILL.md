@@ -1,6 +1,7 @@
 ---
 name: web-deep-search
 version: "1.0"
+description: "多轮 Web 深度搜索与信息汇总"
 triggers:
   - 搜索|查找|检索|查询|资料|查一下|了解一下
   - search|lookup|find.*info

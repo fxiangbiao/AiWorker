@@ -1,6 +1,7 @@
 ---
 name: content-creation
 version: "1.0"
+description: "营销文案/推文/内容创作"
 triggers:
   - 文案|内容.*创作|内容.*营销|写作|软文|推文
 expert: product-ops

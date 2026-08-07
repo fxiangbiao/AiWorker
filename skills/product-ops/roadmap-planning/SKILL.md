@@ -1,6 +1,7 @@
 ---
 name: roadmap-planning
 version: "1.0"
+description: "产品路线图与迭代规划"
 triggers:
   - 路标|roadmap|排期|迭代.*计划|规划|里程碑
 expert: product-ops

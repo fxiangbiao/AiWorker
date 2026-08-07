@@ -1,6 +1,7 @@
 ---
 name: playtest-analysis
 version: "1.0"
+description: "玩家测试反馈分析与平衡调整"
 triggers:
   - 测试.*反馈|playtest|平衡.*测试|难度|玩家.*反馈
 expert: game-dev

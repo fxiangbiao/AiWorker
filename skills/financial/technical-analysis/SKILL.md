@@ -1,6 +1,7 @@
 ---
 name: technical-analysis
 version: "1.0"
+description: "技术分析：K线/均线/MACD/指标信号"
 triggers:
   - 技术.*分析|K线|MACD|KDJ|RSI|布林|均线|指标
 expert: financial

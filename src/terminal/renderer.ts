@@ -1,110 +1,126 @@
 /**
- * TerminalRenderer — 终端输出 + 状态栏
+ * renderer.ts — TerminalRenderer（Tui 薄封装）
  *
- * 设计原则：
- * - 状态栏仅在"空闲"和"思考"阶段出现在当前行，用 \r 原地刷新
- * - 流式文本输出期间不显示状态栏（避免滚动混乱）
- * - 工具调用/结果以独立行展示，完成后可打印状态
+ * 保留对外兼容 API（printStatus/updateLiveStatus/write/prompt 等），
+ * 内部委托给 Tui 组件：消息写入 MessageList，状态写入 StatusBar。
+ * 提供非 TUI 环境的降级：直接写 stdout + readline。
  */
 
-import { enableVT } from "./ansi.js";
 import chalk from "chalk";
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { tui } from "./tui.js";
+import { enableVT } from "./ansi.js";
+import type { StatusData } from "./components.js";
 
-export interface StatusLine {
-  mode: string;
-  model: string;
-  /** 累计消耗 token（会话级） */
-  tokensUsed: number;
-  /** 当前上下文窗口占用百分比 (0-100)，可选；传了才显示 */
-  windowPct?: number;
-  queueSize: number;
+export interface StatusLine extends StatusData {
+  /** 右侧提示文本（可选） */
   extra?: string;
-  toolName?: string;
-  iteration?: number;
-  maxIter?: number;
 }
 
 export class TerminalRenderer {
   private active = false;
-
-  init(): void {
-    this.active = true;
-    enableVT();
-  }
-
-  /**
-   * 内联刷新状态栏 — 仅用于光标在同一行时（思考/spinner 阶段）
-   * 使用 \r 回到行首 + 清行 + 重写
-   */
-  updateLiveStatus(status: StatusLine): void {
-    if (!this.active) return;
-    const text = this.buildStatusText(status);
-    stdout.write(`\r\x1b[2K${text}`);
-  }
-
-  /**
-   * 结束内联状态栏 — 换行离开状态行，之后可正常输出内容
-   */
-  endLiveStatus(): void {
-    if (!this.active) return;
-    stdout.write(`\r\x1b[2K`);
-  }
-
-  /**
-   * 打印单行状态（带换行）
-   */
-  printStatus(status: StatusLine): void {
-    if (!this.active) return;
-    stdout.write(this.buildStatusText(status) + "\n");
-  }
-
-  // ── 普通内容输出 ──
-
-  write(text: string): void {
-    stdout.write(text);
-  }
-
-  writeLine(text: string): void {
-    stdout.write(text + "\n");
-  }
-
-  writeError(text: string): void {
-    stdout.write(chalk.red(text) + "\n");
-  }
-
-  writeSuccess(text: string): void {
-    stdout.write(chalk.green(text) + "\n");
-  }
-
-  writeInfo(text: string): void {
-    stdout.write(chalk.gray(text) + "\n");
-  }
-
-  // ── 输入 / 生命周期 ──
-
-  /** 最近一次 prompt 的 readline 实例（供 history 追加） */
+  private fallbackMode = false; // 非 TUI 环境（无法进 raw mode 等）
   private lastRl: import("node:readline").Interface | null = null;
-
   private historyFile = "";
   private historyLines: string[] = [];
   private completer: ((line: string) => [string[], string]) | null = null;
 
-  /** 设置历史持久化文件 + 补全器 */
+  init(): void {
+    this.active = true;
+    enableVT();
+    try {
+      tui.init();
+    } catch {
+      this.fallbackMode = true;
+    }
+  }
+
+  /** 状态栏更新 — 委托 Tui StatusBar */
+  updateLiveStatus(status: StatusLine): void {
+    if (!this.active) return;
+    if (tui.isActive()) {
+      tui.setStatus(status);
+    } else if (this.fallbackMode) {
+      stdout.write(this.buildStatusText(status) + "\r");
+    }
+  }
+
+  endLiveStatus(): void {
+    if (!this.active) return;
+    if (this.fallbackMode) {
+      stdout.write("\r\x1b[2K");
+    }
+  }
+
+  /** 打印单行状态 — TUI 激活时更新状态栏，否则打印新行 */
+  printStatus(status: StatusLine): void {
+    if (!this.active) return;
+    if (tui.isActive()) {
+      tui.setStatus(status);
+    } else {
+      stdout.write(this.buildStatusText(status) + "\n");
+    }
+  }
+
+  /** 返回状态栏文本（供 Tui 初始化等） */
+  formatStatus(status: StatusLine): string {
+    return this.buildStatusText(status);
+  }
+
+  // ── 内容输出 ──
+
+  write(text: string): void {
+    if (!this.active) return;
+    if (tui.isActive()) {
+      // 内联追加（思考流式等增量），避免拆行
+      tui.appendInline(text);
+    } else {
+      stdout.write(text);
+    }
+  }
+
+  writeLine(text: string): void {
+    if (!this.active) return;
+    if (tui.isActive()) {
+      tui.appendMessage(text);
+    } else {
+      stdout.write(text + "\n");
+    }
+  }
+
+  writeError(text: string): void {
+    this.writeLine(chalk.red(text));
+  }
+
+  writeSuccess(text: string): void {
+    this.writeLine(chalk.green(text));
+  }
+
+  writeInfo(text: string): void {
+    this.writeLine(chalk.gray(text));
+  }
+
+  // ── 输入 ──
+
   configureInput(historyFile: string, completer?: (line: string) => [string[], string]): void {
     this.historyFile = historyFile;
     this.completer = completer ?? null;
     this.historyLines = this.loadHistory();
+    if (tui.isActive()) {
+      tui.input.setHistory(this.historyLines);
+      tui.input.setCompleter((line) => {
+        const res = this.completer?.(line);
+        return res ? res[0] : [];
+      });
+    }
   }
 
-  /** 记录一条命令到历史（由主循环调用） */
   recordHistory(line: string): void {
     if (!this.historyFile || !line.trim()) return;
     this.historyLines.push(line.trim());
-    // 去重相邻
     if (this.historyLines.length > 1 && this.historyLines[this.historyLines.length - 2] === line.trim()) {
       this.historyLines.pop();
     }
@@ -132,45 +148,25 @@ export class TerminalRenderer {
 
   async prompt(): Promise<string> {
     if (!this.active) return this.fallbackPrompt();
+    if (tui.isActive()) {
+      return tui.prompt();
+    }
     if (stdin.isPaused()) stdin.resume();
     if (typeof stdin.setRawMode === "function") {
       stdin.setRawMode(false);
     }
-
-    // On Windows, the previous readline's close() cleanup is async (multiple
-    // event-loop ticks). Without this delay, the next createInterface inherits
-    // stale listeners and freezes stdin. 50ms is the minimum observed to work
-    // reliably after raw-mode cycles with inputCollector.
     await new Promise<void>((r) => setTimeout(r, 50));
-
-    const rl = createInterface({
-      input: process.stdin,
-      output: stdout,
-      terminal: true,
-      prompt: "",
-      completer: this.completer ?? undefined,
-      historySize: 200,
-    });
-    // 注入持久化历史（readline 内部 _history 数组）
-    const internal = rl as unknown as { history: string[] };
-    if (Array.isArray(internal.history)) {
-      internal.history.length = 0;
-      for (const h of this.historyLines) {
-        internal.history.push(h);
-      }
-    }
-    this.lastRl = rl;
-    return new Promise<string>((resolve) => {
-      rl.question(chalk.cyan("你> "), (answer) => {
-        rl.close();
-        this.lastRl = null;
-        resolve(answer);
-      });
-    });
+    return this.fallbackPrompt();
   }
 
   async promptWithText(prefill: string): Promise<string> {
     if (!this.active) return prefill;
+    if (tui.isActive()) {
+      const p = tui.prompt();
+      for (const ch of prefill) tui.input.type(ch);
+      tui.requestRender();
+      return p;
+    }
     return new Promise<string>((resolve) => {
       const rl = createInterface({ input: process.stdin, output: stdout, terminal: true });
       rl.question(chalk.cyan("你> "), (answer) => {
@@ -183,23 +179,25 @@ export class TerminalRenderer {
 
   destroy(): void {
     this.active = false;
-    stdout.write("\n");
+    if (tui.isActive()) {
+      tui.destroy();
+    } else {
+      stdout.write("\n");
+    }
   }
 
   // ── 内部 ──
 
   private buildStatusText(status: StatusLine): string {
-    // 累计消耗 token（会话级），无窗口分母；窗口占用用真实 windowPct 单独显示
     const tokenStr = status.tokensUsed > 0 ? `token ${this.fmt(status.tokensUsed)}` : "";
     const iterStr =
       status.iteration != null ? `iter ${status.iteration}${status.maxIter ? `/${status.maxIter}` : ""}` : "";
     const queueStr = status.queueSize > 0 ? `排队:${status.queueSize}` : "";
     const toolStr = status.toolName ? `🛠 ${status.toolName}` : "";
+    const statusStr = status.status ? chalk.yellow(status.status) : "";
 
     const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", craft: "执行" };
     const modeLabel = modeLabels[status.mode] ?? status.mode;
-
-    // 上下文窗口占用进度条（10 格）
     const barStr = status.windowPct != null ? this.renderWindowBar(status.windowPct) : "";
 
     const parts = [
@@ -210,11 +208,11 @@ export class TerminalRenderer {
       iterStr ? chalk.white(iterStr) : "",
       toolStr ? chalk.blue(toolStr) : "",
       queueStr ? chalk.yellow(queueStr) : "",
+      statusStr ? statusStr : "",
     ].filter(Boolean);
 
     const sep = chalk.gray(" │ ");
-    let line = parts.join(sep);
-
+    const line = parts.join(sep);
     const right = chalk.gray(status.extra ?? "/help /thinking /exit");
     const { columns } = stdout;
     const maxWidth = Math.max(40, columns - 4);
@@ -223,28 +221,12 @@ export class TerminalRenderer {
     const stripAnsi = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
     const leftLen = stripAnsi(line).length;
     const rightLen = stripAnsi(right).length;
-
-    if (leftLen + rightLen + 4 > maxWidth) {
-      const compact = [
-        chalk.bold.cyan(`[${status.mode.toUpperCase()}]`),
-        status.model ? chalk.white(status.model) : "",
-        tokenStr ? chalk.white(tokenStr) : "",
-        barStr ? barStr : "",
-        toolStr ? chalk.blue(toolStr) : "",
-        queueStr ? chalk.yellow(queueStr) : "",
-      ]
-        .filter(Boolean)
-        .join(sep);
-      line = compact;
-    }
-
-    const finalLeftLen = stripAnsi(line).length;
+    const finalLeftLen = leftLen;
     const pad = Math.max(2, maxWidth - finalLeftLen - rightLen);
 
     return `${chalk.gray("─")} ${line}${" ".repeat(pad)}${right} ${chalk.gray("─")}`;
   }
 
-  /** 上下文窗口占用进度条（10 格）+ 百分比，>80% 红 / >60% 黄 / 其余绿 */
   private renderWindowBar(pct: number): string {
     const total = 10;
     const filled = Math.round((Math.min(pct, 100) / 100) * total);

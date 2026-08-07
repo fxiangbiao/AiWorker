@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { SkillEvolution } from "../core/skill-evolution.js";
-import { skillRegistry } from "../core/skill-registry.js";
+import { SkillEvolution } from "../src/core/skill-evolution.js";
+import { skillRegistry } from "../src/core/skill-registry.js";
 
 const skillEvo = new SkillEvolution();
 

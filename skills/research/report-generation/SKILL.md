@@ -1,6 +1,7 @@
 ---
 name: report-generation
 version: "1.0"
+description: "结构化研究报告生成"
 triggers:
   - 报告|report|总结|summary|整理|汇总|输出
 expert: research

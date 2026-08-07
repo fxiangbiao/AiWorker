@@ -2,9 +2,9 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
-## 当前状态: Sprint 15
+## 当前状态: Sprint 17
 
-> 92 项测试全绿 | 最近更新: 2026-08-02 (Markdown 视觉优化: 代码语法高亮 + 表格美化 + OSC 8 超链接 + 窗口进度条 + 标题行对齐)
+> 135 项测试全绿 | 最近更新: 2026-08-07 (TUI 修复 + CLI 增强: /skills 描述 /log 指标 /config 模型配置 + 测试模块化 + DeepSeek 思考模式)
 
 ### 已实现
 
@@ -30,8 +30,8 @@
 - **TUI 交互**: 运行中断 (Ctrl+C 连按 + AbortSignal) + 命令历史持久化 (`data/.aiworker_history`) + Tab 补全 (`/命令` + 技能名) + 多会话浏览/切换 (`/sessions` + `/switch`) + CJK 对齐 (`/sessions`/`/help`/`/context`)
 - **原始 Markdown 复制**: Web UI 回答卡片「⧉ 复制」按钮 + TUI `/copy` 命令 (clip.exe/pbcopy/xclip)
 - **语法高亮**: 自研 tokenizer (`src/terminal/highlight.ts`)，按 fence lang 分发 (ts/js/python/sql/json/html/css/bash + generic)，无 highlight.js 依赖
-- **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents
-- **Web UI**: 单文件 `web/index.html`，Claude 风格浅色系 + SSE 流式 + Agent 卡片时间线布局 + 思考/工具可折叠 + 文件变更面板
+- **HTTP Server**: `--server` 模式，POST /chat (SSE 流式) / GET /status / GET /tools / GET /agents / GET /sessions
+- **Web UI**: Svelte 5 + Vite 组件化架构 (`web/src/`)，15 个组件 + 4 个 store + DOMPurify XSS 防护 + 蓝紫科技风主题
 - **安全加固**: 并发写互斥锁、连续截断断路器 (3次)、FTS5 注入防护、`new Function()` 沙箱白名单
 
 ---
@@ -71,13 +71,15 @@ export OPENAI_API_KEY=sk-...         # lite 本地模型 (可选, localhost:8000
 | `/mode <ask\|plan\|craft>` | 切换权限模式 |
 | `/plan <任务描述>` | 多专家 DAG 协作 |
 | `/debate <话题>` | 双专家辩论 |
-| `/skill <名称>` | 手动激活技能 |
+| `/skill <名称>` | 手动激活技能（也可直接输入 `/技能名`） |
+| `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话 (清空上下文) |
 | `/thinking` | 切换思考展示 (折叠/展开) |
-| `/log` | 查看当前会话监控日志 |
+| `/log` | 查看监控日志（轮次/迭代/工具/耗时/输入输出 token） |
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/skill-evo` | 技能自动沉淀开关 |
 | `/status` | 显示运行状态 (模式/模型/token/成本) |
+| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/reset，持久化） |
 | `/sessions` | 浏览历史会话列表 |
 | `/switch <序号>` | 切换到指定会话 |
 | `/copy` | 复制最后一次回答 (原始 Markdown) |
@@ -148,8 +150,10 @@ aiworker/
 │   ├── tools/            # 内置工具 (1 文件)
 │   │   └── builtin.ts
 │   ├── types.ts          # 核心类型定义 (362 LOC)
-│   ├── index.ts          # CLI 入口
-│   └── smoke-test.ts     # 冒烟测试 (92 tests)
+│   └── index.ts          # CLI 入口
+├── test/                # 模块化测试 (9 文件, 135+ tests)
+│   └── helpers.ts        # 共享 setup（独立 data 目录防并行冲突）
+├── web/                 # Web UI Svelte 5 + Vite (15 组件)
 ├── data/                 # 运行时数据 (gitignored)
 ├── ai_default_project/   # Agent 默认输出目录 (gitignored)
 ├── AGENTS.md             # AI 辅助开发指南
@@ -160,10 +164,10 @@ aiworker/
 
 ---
 
-## 冒烟测试
+## 测试
 
 ```bash
-npm test      # vitest run, 92 tests
+npm test      # vitest run, 135+ tests（test/ 目录，按模块拆分）
 npm run build # tsc 编译 (含类型检查)
 ```
 
@@ -195,3 +199,5 @@ npm run build # tsc 编译 (含类型检查)
 | 13 | Web UI (Claude 风格浅色系 + SSE 流式 + 时间线卡片布局) + 多项 UI/UX 修复 | 完成 |
 | 14 | TUI 终端升级 (Markdown 流式渲染 + 中断控制 + 历史/补全 + 会话切换 + 复制 + 状态栏) | 完成 |
 | 15 | Markdown 视觉优化 (代码语法高亮 + 表格美化 + OSC 8 超链接 + 状态栏进度条 + 标题行对齐) | 完成 |
+| 16 | Web UI 增强 (highlight.js 语法高亮 + 流式性能 + 体验优化) | 完成 |
+| 17 | Web UI Svelte + Vite 重构 (组件化 + $state rune + 蓝紫主题 + code review) | 完成 |

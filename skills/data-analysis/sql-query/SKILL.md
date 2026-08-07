@@ -1,6 +1,7 @@
 ---
 name: sql-query
 version: "1.0"
+description: "SQL 查询编写与执行，连接数据库取数"
 triggers:
   - SQL
   - sql

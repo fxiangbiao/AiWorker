@@ -24,6 +24,8 @@ interface ModelProfile {
   apiKey: string;
   temperature: number;
   maxTokens: number;
+  /** DeepSeek 思考模式：true=开启（temperature 无效），false=关闭（temperature 生效），缺省=供应商默认 */
+  thinking?: boolean;
 }
 
 interface ModelsConfig {
@@ -45,6 +47,11 @@ export class ModelRouter {
   private totalPromptTokens = 0;
   private totalCompletionTokens = 0;
   private currentProfile = "";
+  /** 运行时覆盖（/config 命令设置，持久化到文件） */
+  private runtimeProfileKey = "";
+  private runtimeModel = "";
+  private runtimeTemperature: number | null = null;
+  private runtimeMaxTokens: number | null = null;
 
   constructor(configPath?: string) {
     const path = configPath ?? resolve(__dirname, "../../config/models.json");
@@ -69,12 +76,39 @@ export class ModelRouter {
   }
 
   private getProfile(preference?: string): ModelProfile {
-    if (!preference || preference === "default") {
-      return this.config.default;
+    let profile: ModelProfile;
+    // 运行时 profile 覆盖：优先于配置文件的 default（含 provider/baseURL/apiKey）
+    if (this.runtimeProfileKey) {
+      const rp = this.config.profiles[this.runtimeProfileKey];
+      profile = rp ? this.mergeProfile(this.config.default, rp) : this.config.default;
+      // 若请求的是默认路由，直接使用运行时 profile；否则仍可叠加偏好 profile
+      if (preference && preference !== "default") {
+        const p = this.config.profiles[preference];
+        profile = p ? this.mergeProfile(profile, p) : profile;
+      }
+    } else if (!preference || preference === "default") {
+      profile = this.config.default;
+    } else {
+      const p = this.config.profiles[preference];
+      profile = p ? this.mergeProfile(this.config.default, p) : this.config.default;
     }
-    const profile = this.config.profiles[preference];
-    if (!profile) return this.config.default;
-    return { ...this.config.default, ...profile };
+    // 应用运行时覆盖
+    if (this.runtimeModel) profile = { ...profile, model: this.runtimeModel };
+    if (this.runtimeTemperature !== null) profile = { ...profile, temperature: this.runtimeTemperature };
+    if (this.runtimeMaxTokens !== null) profile = { ...profile, maxTokens: this.runtimeMaxTokens };
+    return profile;
+  }
+
+  /**
+   * 合并 profile。thinking 是供应商专属参数（DeepSeek），
+   * 仅在子 profile 显式声明时生效，不随 default 继承（避免 lite 等本地模型误传）。
+   */
+  private mergeProfile(base: ModelProfile, override: Partial<ModelProfile>): ModelProfile {
+    const merged = { ...base, ...override };
+    if (!("thinking" in override)) {
+      delete merged.thinking;
+    }
+    return merged;
   }
 
   private getClient(profile: ModelProfile): OpenAI {
@@ -106,8 +140,15 @@ export class ModelRouter {
       requestParams.tools = options.tools as unknown as OpenAI.Chat.ChatCompletionTool[];
     }
 
+    // DeepSeek 思考模式需经 extra_body 传递（OpenAI SDK 兼容）
+    const extraBody: Record<string, unknown> = {};
+    if (profile.thinking !== undefined) {
+      extraBody.thinking = { type: profile.thinking ? "enabled" : "disabled" };
+    }
+
     const response = await client.chat.completions.create(requestParams, {
       signal: options.signal,
+      ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
     });
 
     const choice = response.choices[0];
@@ -188,7 +229,65 @@ export class ModelRouter {
   }
 
   getCurrentModel(): string {
-    return this.currentProfile || this.config.default.model;
+    if (this.runtimeProfileKey) {
+      const rp = this.config.profiles[this.runtimeProfileKey];
+      return this.runtimeModel || rp?.model || this.config.default.model;
+    }
+    return this.runtimeModel || this.currentProfile || this.config.default.model;
+  }
+
+  // ── 运行时配置（/config 命令支持）──
+
+  /** 可用的默认模型选项：default + profiles */
+  getAvailableModels(): Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number }> {
+    const out: Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number }> = [];
+    out.push({ key: "default", model: this.config.default.model, provider: this.config.default.provider, baseURL: this.config.default.baseURL, temperature: this.config.default.temperature, maxTokens: this.config.default.maxTokens });
+    for (const [key, p] of Object.entries(this.config.profiles)) {
+      out.push({ key, model: p.model ?? this.config.default.model, provider: p.provider ?? this.config.default.provider, baseURL: p.baseURL ?? this.config.default.baseURL, temperature: p.temperature ?? this.config.default.temperature, maxTokens: p.maxTokens ?? this.config.default.maxTokens });
+    }
+    return out;
+  }
+
+  /** 查看运行时覆盖状态 */
+  getRuntimeConfig(): { profileKey: string; model: string; temperature: number | null; maxTokens: number | null } {
+    return {
+      profileKey: this.runtimeProfileKey,
+      model: this.runtimeModel,
+      temperature: this.runtimeTemperature,
+      maxTokens: this.runtimeMaxTokens,
+    };
+  }
+
+  /** 设置运行时默认 profile（空字符串恢复配置文件默认） */
+  setDefaultModel(profileKey: string): void {
+    this.runtimeProfileKey = profileKey.trim().toLowerCase();
+  }
+
+  /** 设置运行时默认温度（null 恢复配置文件） */
+  setTemperature(t: number | null): void {
+    this.runtimeTemperature = t;
+  }
+
+  /** 设置运行时 maxTokens（null 恢复配置文件） */
+  setMaxTokens(n: number | null): void {
+    this.runtimeMaxTokens = n;
+  }
+
+  /** 导出全部覆盖，供持久化 */
+  getOverrides(): { profile?: string; temperature?: number; maxTokens?: number } {
+    const out: { profile?: string; temperature?: number; maxTokens?: number } = {};
+    if (this.runtimeProfileKey) out.profile = this.runtimeProfileKey;
+    if (this.runtimeTemperature !== null) out.temperature = this.runtimeTemperature;
+    if (this.runtimeMaxTokens !== null) out.maxTokens = this.runtimeMaxTokens;
+    return out;
+  }
+
+  /** 从持久化文件恢复覆盖 */
+  applyOverrides(overrides: { profile?: string; model?: string; temperature?: number; maxTokens?: number }): void {
+    if (overrides.profile) this.runtimeProfileKey = overrides.profile;
+    if (overrides.model) this.runtimeModel = overrides.model;
+    if (typeof overrides.temperature === "number") this.runtimeTemperature = overrides.temperature;
+    if (typeof overrides.maxTokens === "number") this.runtimeMaxTokens = overrides.maxTokens;
   }
 
   async *completeStream(
@@ -214,8 +313,15 @@ export class ModelRouter {
       requestParams.tools = tools as unknown as OpenAI.Chat.ChatCompletionTool[];
     }
 
+    // DeepSeek 思考模式需经 extra_body 传递（OpenAI SDK 兼容）
+    const extraBody: Record<string, unknown> = {};
+    if (profile.thinking !== undefined) {
+      extraBody.thinking = { type: profile.thinking ? "enabled" : "disabled" };
+    }
+
     const stream = await client.chat.completions.create(requestParams, {
       signal: options?.signal,
+      ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
     });
 
     const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();

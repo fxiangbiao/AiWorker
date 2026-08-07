@@ -6,7 +6,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { stdout } from "node:process";
 import { spawn } from "node:child_process";
 
@@ -34,7 +34,8 @@ import { skillRegistry } from "./core/skill-registry.js";
 import { TeamCoordinator } from "./core/team-coordinator.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
-import { inputCollector } from "./terminal/input.js";
+import { tui } from "./terminal/tui.js";
+import { renderMarkdown } from "./terminal/markdown.js";
 import { StreamOutputRenderer } from "./terminal/output.js";
 import { startServer } from "./server.js";
 import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
@@ -61,15 +62,20 @@ program
     mkdirSync(resolve(dataDir, "audit"), { recursive: true });
     mkdirSync(projectDir, { recursive: true });
 
-    renderer.init();
+    // 非 server 模式初始化 TUI（交互模式）；server 模式走普通 stdout
+    const isServer = !!options.server;
+    if (!isServer) {
+      renderer.init();
+    }
 
     const outputRenderer = new StreamOutputRenderer();
 
     // TUI 输入配置：历史持久化 + Tab 补全
-    const commands = ["/plan", "/debate", "/mode", "/new", "/log", "/context", "/skill", "/skill-evo", "/status", "/thinking", "/copy", "/help", "/exit", "/sessions", "/switch"];
+    const commands = ["/plan", "/debate", "/mode", "/new", "/log", "/context", "/skill", "/skills", "/skill-evo", "/status", "/config", "/thinking", "/copy", "/help", "/exit", "/sessions", "/switch"];
     const completer = (line: string): [string[], string] => {
       if (!line.startsWith("/")) return [[], line];
-      const skillNames = skillRegistry.getAll().map((s) => `/skill ${s.name}`);
+      // 技能可直接用 /技能名 激活（无需 /skill 前缀）
+      const skillNames = skillRegistry.getAll().map((s) => `/${s.name}`);
       const all = [...commands, ...skillNames];
       const hits = all.filter((c) => c.toLowerCase().startsWith(line.toLowerCase()));
       return [hits.length ? hits.slice(0, 10) : [], line];
@@ -100,6 +106,15 @@ program
     }
 
     const modelRouter = new ModelRouter();
+    // 恢复运行时覆盖（/config 持久化）
+    const runtimeConfigPath = resolve(dataDir, "runtime-config.json");
+    if (existsSync(runtimeConfigPath)) {
+      try {
+        modelRouter.applyOverrides(JSON.parse(readFileSync(runtimeConfigPath, "utf-8")) as Record<string, unknown>);
+      } catch {
+        /* 损坏则忽略 */
+      }
+    }
     const sessionStore = new SessionStore(resolve(dataDir, "aiworker.db"));
     const modelProvider: ModelProvider = (opts) => modelRouter.complete(opts);
     const compressor = new ContextCompressor(modelProvider);
@@ -183,6 +198,7 @@ program
           getAgentList: () =>
             Object.entries(agents).map(([id, a]) => ({ id, name: a.getName() })),
           skillNames: skillRegistry.getAll().map((s) => s.name),
+          sessionStore,
         },
         port,
       );
@@ -222,12 +238,14 @@ program
     stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助, /plan <描述> 使用多专家协作\n\n"));
 
     // 初始状态栏
-    renderer.printStatus({
-      mode: currentMode,
-      model: modelRouter.getCurrentModel(),
-      tokensUsed: 0,
-      queueSize: 0,
-    });
+    if (!isServer) {
+      renderer.printStatus({
+        mode: currentMode,
+        model: modelRouter.getCurrentModel(),
+        tokensUsed: 0,
+        queueSize: 0,
+      });
+    }
 
     // ─── 交互循环 ───
     const prefillQueue: string[] = [];
@@ -298,28 +316,60 @@ program
       }
 
       if (trimmed === "/log") {
-        const turns = sessionStore.getTurnLogs(currentSessionId ?? "");
+        const sessionId = currentSessionId;
+        const turns = sessionId
+          ? sessionStore.getTurnLogs(sessionId)
+          : sessionStore.getRecentTurnLogs(20);
         if (turns.length === 0) {
           stdout.write(chalk.gray("暂无监控日志\n"));
         } else {
           let totalDur = 0;
           let totalTools = 0;
-          stdout.write("\n┌──────┬──────────┬──────────┬────────────┬────────┐\n");
-          stdout.write("│ 轮次 │ 迭代次数 │ 工具调用  │ 耗时(ms)   │ 状态   │\n");
-          stdout.write("├──────┼──────────┼──────────┼────────────┼────────┤\n");
+          let totalPrompt = 0;
+          let totalCompletion = 0;
+          const rows: string[][] = [];
           for (const t of turns) {
             const dur = t.finishedAt - t.startedAt;
             totalDur += dur;
             totalTools += t.toolCallsTotal;
+            totalPrompt += t.tokensPrompt;
+            totalCompletion += t.tokensCompletion;
             const status = t.finishReason === "stop" ? "✅" : "⚠️";
-            stdout.write(
-              `│ ${String(t.seq).padEnd(4)} │ ${String(t.iterations).padEnd(8)} │ ${String(t.toolCallsTotal).padEnd(8)} │ ${String(dur).padEnd(10)} │ ${status.padEnd(4)}  │\n`,
-            );
+            rows.push([
+              String(t.seq),
+              String(t.iterations),
+              String(t.toolCallsTotal),
+              formatDuration(dur),
+              fmtK(t.tokensPrompt),
+              fmtK(t.tokensCompletion),
+              status,
+            ]);
           }
-          stdout.write(`└──────┴──────────┴──────────┴────────────┴────────┘\n`);
+          const headers = ["轮次", "迭代", "工具", "耗时", "输入tok", "输出tok", "状态"];
+          const widths = headers.map((h, i) => Math.max(displayWidth(h), ...rows.map((r) => displayWidth(r[i]!))));
+          const border = `┌${widths.map((w) => "─".repeat(w + 2)).join("┬")}┐`;
+          const sep = `├${widths.map((w) => "─".repeat(w + 2)).join("┼")}┤`;
+          const bottom = `└${widths.map((w) => "─".repeat(w + 2)).join("┴")}┘`;
+          stdout.write(`\n${border}\n`);
           stdout.write(
-            chalk.gray(`累计: ${turns.length} 轮, ${(totalDur / 1000).toFixed(1)}s, ${totalTools} 次工具调用\n`),
+            `│ ${headers.map((h, i) => padToWidth(h, widths[i]!)).join(" │ ")} │\n`,
           );
+          stdout.write(`${sep}\n`);
+          for (const r of rows) {
+            stdout.write(`│ ${r.map((c, i) => padToWidth(c, widths[i]!)).join(" │ ")} │\n`);
+          }
+          stdout.write(`${bottom}\n`);
+          stdout.write(
+            chalk.gray(
+              `累计: ${turns.length} 轮, ${(totalDur / 1000).toFixed(1)}s, ${totalTools} 次工具调用, ` +
+                `输入 ${fmtK(totalPrompt)} tok, 输出 ${fmtK(totalCompletion)} tok`,
+            ),
+          );
+          if (!sessionId) {
+            stdout.write(chalk.gray(`（最近会话，/sessions 或 /switch 切换）\n`));
+          } else {
+            stdout.write("\n");
+          }
         }
         continue;
       }
@@ -473,7 +523,8 @@ program
       }
 
       if (trimmed === "/help") {
-        const table: [string, string, string][] = [
+        // 用 Markdown 表格渲染（块级对齐 + 窄终端自动换行）
+        const rows: [string, string, string][] = [
           ["/plan <描述>", "多专家 DAG 协作", "自动分解任务，拓扑序执行"],
           ["/debate <话题>", "双专家辩论", "两专家独立分析+互审+综合报告"],
           ["/mode <模式>", "切换权限模式", "ask(只读) / plan(确认后执行) / craft(自动执行)"],
@@ -483,34 +534,63 @@ program
           ["/skill-evo", "技能沉淀开关", "开启/关闭 LLM 自动提取技能"],
           ["/skill <名称>", "手动激活技能", "如 /code-review, /debug, /data-cleaning"],
           ["/status", "显示运行状态", "模式/模型/token/排队"],
+          ["/config", "查看/配置模型与系统参数", "model/temperature/max-tokens/reset"],
           ["/sessions", "浏览历史会话", "列出最近会话，/switch <序号> 切换"],
           ["/switch <序号>", "切换会话", "恢复指定会话上下文继续对话"],
           ["/copy", "复制回答", "复制上次回答的原始 Markdown 到剪贴板"],
           ["/help", "帮助信息", "显示此表"],
           ["/exit", "退出", ""],
         ];
-        const colW = [20, 22, 50] as const;
+        const mdRows = [
+          "| 命令 | 功能 | 说明 |",
+          "|---|---|---|",
+          ...rows.map(([a, b, c]) => `| ${a} | ${b} | ${c} |`),
+        ];
+        const rendered = renderMarkdown(mdRows.join("\n"));
+        renderer.writeLine("");
+        for (const line of rendered) renderer.writeLine(line);
+        renderer.writeLine("");
+        renderer.writeLine(chalk.dim(`💡 已加载 ${skillCount} 个技能，可直接输入 /技能名 激活（如 /code-review）`));
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          windowPct: statusWindowPct(),
+          queueSize: prefillQueue.length,
+        });
+        continue;
+      }
 
-        const hline = (left: string, mid: string, right: string) =>
-          left + "─".repeat(colW[0]) + mid + "─".repeat(colW[1]) + mid + "─".repeat(colW[2]) + right;
-
-        stdout.write(chalk.cyan(`\n${hline("┌─", "─┬─", "─┐")}\n`));
-        stdout.write(
-          `│ ${chalk.bold(padToWidth("命令", colW[0]))} │ ${chalk.bold(padToWidth("功能", colW[1]))} │ ${chalk.bold(padToWidth("说明", colW[2]))} │\n`,
-        );
-        stdout.write(`${hline("├─", "─┼─", "─┤")}\n`);
-        for (const [cmd, func, desc] of table) {
-          const c = padToWidth(cmd, colW[0]);
-          const f = padToWidth(func, colW[1]);
-          const d = padToWidth(desc, colW[2]);
-          stdout.write(`│ ${c} │ ${f} │ ${d} │\n`);
+      if (trimmed === "/skills") {
+        const all = skillRegistry.getAll();
+        if (all.length === 0) {
+          stdout.write(chalk.gray("暂无技能\n"));
+        } else {
+          // 按专家分组，名称对齐 + 描述
+          const byExpert = new Map<string, typeof all>();
+          for (const s of all) {
+            const list = byExpert.get(s.expert) ?? [];
+            list.push(s);
+            byExpert.set(s.expert, list);
+          }
+          const nameWidth = Math.min(
+            24,
+            Math.max(8, ...all.map((s) => displayWidth(s.name))) + 2,
+          );
+          renderer.writeLine("");
+          for (const [expert, skills] of byExpert) {
+            renderer.writeLine(`  ${chalk.cyan(expert)}`);
+            for (const s of skills) {
+              const namePad = padToWidth(chalk.white(s.name), nameWidth);
+              const desc = s.description ? chalk.dim(s.description) : "";
+              renderer.writeLine(`    ${namePad}${desc}`);
+            }
+          }
+          renderer.writeLine("");
+          renderer.writeLine(
+            chalk.dim(`💡 共 ${all.length} 个技能，直接输入 /技能名 激活（如 /code-review），/help 查看命令`),
+          );
         }
-        // 补充技能数量提示行
-        const skillHint = `共 ${skillCount} 个，输入 /<技能名> 激活`;
-        stdout.write(
-          `│ ${padToWidth(chalk.dim("技能数量"), colW[0])} │ ${padToWidth(chalk.dim("快捷用法"), colW[1])} │ ${chalk.dim(skillHint)}${" ".repeat(Math.max(0, colW[2] - displayWidth(skillHint)))} │\n`,
-        );
-        stdout.write(`${hline("└─", "─┴─", "─┘")}\n\n`);
         renderer.printStatus({
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
@@ -551,6 +631,94 @@ program
           windowPct: statusWindowPct(),
           queueSize: prefillQueue.length,
         });
+        continue;
+      }
+
+      if (trimmed === "/config" || trimmed.startsWith("/config ")) {
+        const parts = trimmed.split(/\s+/).slice(1);
+        const sub = parts[0] ?? "";
+        const arg = parts[1] ?? "";
+        const persist = () => {
+          try {
+            writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
+          } catch {
+            /* 持久化失败静默 */
+          }
+        };
+
+        if (sub === "model") {
+          if (!arg) {
+            stdout.write(chalk.gray(`用法: /config model <名称>  可选: ${modelRouter.getAvailableModels().map((m) => m.key).join(", ")}\n`));
+          } else {
+            const valid = modelRouter.getAvailableModels().find((m) => m.key === arg.toLowerCase());
+            if (!valid) {
+              stdout.write(chalk.red(`✗ 未知模型: ${arg}，可用: ${modelRouter.getAvailableModels().map((m) => m.key).join(", ")}\n`));
+            } else {
+              modelRouter.setDefaultModel(valid.key);
+              persist();
+              stdout.write(chalk.green(`✓ 默认模型 → ${valid.model} (${valid.provider})`));
+              if (valid.key !== "default") stdout.write(chalk.dim(` via ${valid.key} profile`));
+              stdout.write("\n");
+              stdout.write(chalk.gray(`  该设置持久化到 ${runtimeConfigPath}，重启后仍生效。\n`));
+            }
+          }
+        } else if (sub === "temperature" || sub === "temp") {
+          if (!arg) {
+            stdout.write(chalk.gray(`用法: /config temperature <0-2>  当前: ${modelRouter.getRuntimeConfig().temperature ?? "默认"}\n`));
+          } else {
+            const t = parseFloat(arg);
+            if (isNaN(t) || t < 0 || t > 2) {
+              stdout.write(chalk.red("✗ 温度需在 0-2 之间\n"));
+            } else {
+              modelRouter.setTemperature(t);
+              persist();
+              stdout.write(chalk.green(`✓ 温度 → ${t}\n`));
+            }
+          }
+        } else if (sub === "max-tokens" || sub === "tokens") {
+          if (!arg) {
+            stdout.write(chalk.gray(`用法: /config max-tokens <数量>  当前: ${modelRouter.getRuntimeConfig().maxTokens ?? "默认"}\n`));
+          } else {
+            const n = parseInt(arg, 10);
+            if (isNaN(n) || n < 100) {
+              stdout.write(chalk.red("✗ max-tokens 需 ≥ 100\n"));
+            } else {
+              modelRouter.setMaxTokens(n);
+              persist();
+              stdout.write(chalk.green(`✓ max-tokens → ${n}\n`));
+            }
+          }
+        } else if (sub === "reset") {
+          modelRouter.setDefaultModel("");
+          modelRouter.setTemperature(null);
+          modelRouter.setMaxTokens(null);
+          persist();
+          stdout.write(chalk.green("✓ 已恢复配置文件默认（models.json）\n"));
+        } else {
+          // 默认：显示当前配置
+          const rt = modelRouter.getRuntimeConfig();
+          const cost = modelRouter.getCost();
+          stdout.write(chalk.bold("\n── 模型配置 ──\n"));
+          stdout.write(chalk.gray(`当前模型: ${modelRouter.getCurrentModel()}`));
+          if (rt.profileKey) stdout.write(chalk.yellow(` (profile: ${rt.profileKey})`));
+          stdout.write("\n");
+          stdout.write(chalk.gray(`温度: ${rt.temperature ?? "默认"} | max-tokens: ${rt.maxTokens ?? "默认"}\n`));
+          stdout.write(chalk.gray(`成本: ¥${cost.toFixed(4)}\n`));
+          stdout.write(chalk.bold("\n── 可用模型 ──\n"));
+          for (const m of modelRouter.getAvailableModels()) {
+            const active = m.key === (rt.profileKey || "default") ? chalk.green(" ●") : "";
+            stdout.write(chalk.gray(`  ${padToWidth(m.key, 10)} ${m.model} (${m.provider})${active}\n`));
+          }
+          stdout.write(chalk.bold("\n── 系统参数 ──\n"));
+          stdout.write(chalk.gray(`  权限模式: ${currentMode} (用 /mode 切换)\n`));
+          stdout.write(chalk.gray(`  思考展示: ${showThinking ? "展开" : "折叠"} (用 /thinking 切换)\n`));
+          stdout.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /skill-evo 切换)\n\n`));
+          stdout.write(
+            chalk.dim(
+              `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config reset\n`,
+            ),
+          );
+        }
         continue;
       }
 
@@ -737,52 +905,24 @@ program
       // ─── 路由 & 执行 ───
       const expertId = routeToExpert(trimmed);
       const agent = agents[expertId];
-      const agentName = agent.getName();
 
-      const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-      let spinIdx = 0;
-      let spinnerTimer: ReturnType<typeof setInterval> | null = null;
-      let spinnerDisabled = false;
+      // 进入 Agent 会话：禁用输入行，状态栏显示"思考中"
+      tui.startAgentSession();
 
-      const startSpinner = () => {
-        if (spinnerDisabled || spinnerTimer) return;
-        spinIdx = 0;
-        stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[0])} ${chalk.dim("思考中...")}`);
-        spinnerTimer = setInterval(() => {
-          stdout.write(
-            `\r${chalk.yellow(`AiWorker[${agentName}]> `)}${chalk.cyan(frames[spinIdx % frames.length])} ${chalk.dim("思考中...")}`,
-          );
-          spinIdx++;
-        }, 120);
-      };
-
-      const stopSpinner = (permanent = false) => {
-        if (permanent) {
-          spinnerDisabled = true;
-          needReprefix = true;
-        }
-        if (!spinnerTimer) return;
-        clearInterval(spinnerTimer);
-        spinnerTimer = null;
-        stdout.write(
-          `\r${chalk.yellow(`AiWorker[${agentName}]> `)}${" ".repeat(30)}\r${chalk.yellow(`AiWorker[${agentName}]> `)}`,
-        );
-      };
-
-      // 思考阶段：在 spinner 行用内联状态覆盖
+      // 思考阶段：状态栏实时刷新
       let thinkingTimer: ReturnType<typeof setInterval> | null = null;
       let liveStatusActive = false;
       const startLiveStatus = () => {
         liveStatusActive = true;
         thinkingTimer = setInterval(() => {
-          if (spinnerTimer) return;
           renderer.updateLiveStatus({
             mode: currentMode,
             model: modelRouter.getCurrentModel(),
             tokensUsed: modelRouter.getTokenUsage(),
-            queueSize: prefillQueue.length + inputCollector.getQueueSize(),
+            queueSize: prefillQueue.length,
             iteration: undefined,
             maxIter: agents[expertId]?.getConfig().maxIterations,
+            status: "思考中",
           });
         }, 500);
       };
@@ -793,28 +933,19 @@ program
           clearInterval(thinkingTimer);
           thinkingTimer = null;
         }
-        renderer.endLiveStatus();
       };
 
-      startSpinner();
       startLiveStatus();
 
       const abortController = new AbortController();
-      inputCollector.startListening(
-        () => stopSpinner(true),
-        () => {
-          // Ctrl+C 连按中断当前 Agent
-          if (!abortController.signal.aborted) {
-            abortController.abort();
-            stopSpinner();
-            stopLiveStatus();
-            stdout.write(chalk.yellow(`\n⏹ 已中断 Agent（Ctrl+C 再按一次退出）\n`));
-          }
-        },
-      );
-
-      // 标记：spinner 被用户打断后，首个 token 到达时重新建立输出行
-      let needReprefix = false;
+      tui.setOnInterrupt(() => {
+        // Ctrl+C 中断当前 Agent
+        if (!abortController.signal.aborted) {
+          abortController.abort();
+          stopLiveStatus();
+          renderer.writeLine(chalk.yellow("⏹ 已中断 Agent（Ctrl+C 再按一次退出）"));
+        }
+      });
 
       // 思考内容跟踪
       let thinkingStarted = false;
@@ -824,17 +955,8 @@ program
 
       try {
         const streamCallbacks: StreamCallbacks = {
-          onIterationStart: (iteration) => {
-            if (liveStatusActive) {
-              renderer.updateLiveStatus({
-                mode: currentMode,
-                model: modelRouter.getCurrentModel(),
-                tokensUsed: modelRouter.getTokenUsage(),
-                queueSize: prefillQueue.length + inputCollector.getQueueSize(),
-                iteration,
-                maxIter: agents[expertId]?.getConfig().maxIterations,
-              });
-            }
+          onIterationStart: () => {
+            // 迭代分隔线不再展示（用户要求精简）
           },
           onThinkingStart: () => {
             if (!showThinking) return;
@@ -842,14 +964,13 @@ program
             thinkingFirstLine = "";
             thinkingLineCaptured = false;
             needThinkingBreak = true;
-            if (spinnerTimer) stopSpinner();
             stopLiveStatus();
-            stdout.write(`\n${chalk.dim("🧠 思考: ")}`);
+            renderer.writeLine(chalk.dim("🧠 思考: "));
           },
           onThinkingDelta: (text) => {
             if (showThinking) {
               if (!thinkingStarted) thinkingStarted = true;
-              stdout.write(chalk.dim(text));
+              renderer.write(text);
             } else if (!thinkingLineCaptured) {
               const firstBreak = text.indexOf("\n");
               if (firstBreak !== -1) {
@@ -861,28 +982,19 @@ program
             }
           },
           onTextDelta: (text) => {
-            if (spinnerTimer) stopSpinner();
             stopLiveStatus();
-            if (needReprefix || spinnerDisabled) {
-              stdout.write(`\n${chalk.yellow(`AiWorker[${agentName}]> `)}`);
-              needReprefix = false;
-              spinnerDisabled = false;
-              needThinkingBreak = false;
-            }
             if (!showThinking && thinkingFirstLine) {
-              stdout.write(
-                `\n${chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`)}\n`,
+              renderer.writeLine(
+                chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`),
               );
               thinkingFirstLine = "";
               thinkingLineCaptured = false;
             } else if (needThinkingBreak) {
-              stdout.write("\n");
               needThinkingBreak = false;
             }
             outputRenderer.writeChunk(text);
           },
           onToolCall: (name, args, id) => {
-            stopSpinner();
             stopLiveStatus();
             outputRenderer.toolStart(name, args, id);
           },
@@ -901,37 +1013,33 @@ program
         currentSessionId = result.sessionId;
         if (result.text) lastAnswerRaw = result.text;
 
-        stopSpinner();
         stopLiveStatus();
         outputRenderer.flush();
 
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
-          stdout.write(`\n${chalk.yellow(short)}`);
+          renderer.writeLine(chalk.yellow(short));
         } else if (result.text && result.text.startsWith("Agent")) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
-          stdout.write(`\n${chalk.red(short)}`);
+          renderer.writeLine(chalk.red(short));
         }
 
         const cost = modelRouter.getCost();
         const costStr = cost > 0 ? `, ¥${cost.toFixed(4)}` : "";
-        stdout.write(
+        renderer.writeLine(
           chalk.gray(
-            `\n[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}${costStr}]\n`,
+            `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}${costStr}]`,
           ),
         );
       } catch (err) {
-        stopSpinner();
         stopLiveStatus();
-        stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
+        renderer.writeLine(chalk.red(`✗ 执行失败: ${(err as Error).message}`));
       }
 
-      const queue = inputCollector.stopListening();
-      // 将排队消息加入 prefill 队列
-      prefillQueue.push(...queue);
+      tui.endAgentSession();
+      tui.setOnInterrupt(null);
 
       // 状态栏
-      stdout.write("\n");
       renderer.printStatus({
         mode: currentMode,
         model: modelRouter.getCurrentModel(),
@@ -987,6 +1095,20 @@ function padToWidth(s: string, targetWidth: number): string {
   const w = displayWidth(s);
   if (w >= targetWidth) return s;
   return s + " ".repeat(targetWidth - w);
+}
+
+/** 毫秒 → 人类可读（<1s 显示 ms，否则 s） */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`;
+}
+
+/** token 数 → 千分位缩写（≥1000 显示 k，≥1e6 显示 m） */
+function fmtK(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}m`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
 
 /** 复制文本到系统剪贴板（Windows: clip.exe, macOS: pbcopy, Linux: xclip） */

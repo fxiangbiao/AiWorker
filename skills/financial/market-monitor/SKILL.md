@@ -1,6 +1,7 @@
 ---
 name: market-monitor
 version: "1.0"
+description: "市场行情监控：指数/板块/涨跌"
 triggers:
   - 行情|大盘|指数|涨跌|市场.*监控|板块.*轮动
 expert: financial

@@ -1,6 +1,7 @@
 ---
 name: gdscript-coding
 version: "1.0"
+description: "Godot GDScript 脚本编写与调试"
 triggers:
   - GDScript|gdscript|脚本|signal|协程|godot.*代码
 expert: game-dev

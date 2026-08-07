@@ -1,6 +1,7 @@
 ---
 name: etf-analysis
 version: "1.0"
+description: "ETF 分析：规模/费率/跟踪误差/持仓"
 triggers:
   - ETF|指数.*基金|LOF|基金.*分析|基金.*推荐
 expert: financial

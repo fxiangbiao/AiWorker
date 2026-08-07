@@ -1,6 +1,7 @@
 ---
 name: correlation-analysis
 version: "1.0"
+description: "数值相关性分析，含相关系数矩阵与可视化"
 triggers:
   - 相关性
   - correlation

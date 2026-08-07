@@ -1,0 +1,10 @@
+import { writable } from "svelte/store";
+
+export const serverOnline = writable(false);
+export const currentModel = writable("--");
+export const totalTokens = writable(0);
+export const workingDir = writable("");
+export const projectDir = writable("");
+export const skills = writable<string[]>([]);
+
+export const PRICING = { prompt: 1, completion: 2 };

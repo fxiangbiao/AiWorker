@@ -4,13 +4,14 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import type { StreamCallbacks, Task, AgentRunResult } from "./types.js";
+import type { SessionStore } from "./memory/session-store.js";
 
 interface DelegateAgent {
   runStream(
@@ -29,14 +30,17 @@ interface ServerDeps {
   createAgent: (agentId: string) => DelegateAgent | undefined;
   getAgentList: () => { id: string; name: string }[];
   skillNames: string[];
+  sessionStore?: SessionStore;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const webDir = resolve(__dirname, "..", "web");
+const distDir = resolve(__dirname, "..", "web", "dist");
+const oldWebDir = resolve(__dirname, "..", "web");
 
 interface ChatRequest {
   message: string;
   agentId?: string;
+  mode?: string;
 }
 
 function parseBody(req: IncomingMessage): Promise<string> {
@@ -89,14 +93,31 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === "/" && req.method === "GET") {
       try {
-        const html = readFileSync(resolve(webDir, "index.html"), "utf-8");
+        const html = readFileSync(resolve(distDir, "index.html"), "utf-8");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" });
         res.end(html);
       } catch {
-        res.writeHead(404);
-        res.end("index.html not found");
+        try {
+          const html = readFileSync(resolve(oldWebDir, "index.html"), "utf-8");
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+          res.end(html);
+        } catch {
+          res.writeHead(404);
+          res.end("index.html not found");
+        }
       }
       return;
+    }
+
+    if (req.method === "GET" && !url.startsWith("/chat") && !url.startsWith("/agents") && !url.startsWith("/status") && !url.startsWith("/sessions") && !url.startsWith("/tools")) {
+      const distPath = resolve(distDir, url.slice(1));
+      if (existsSync(distPath)) {
+        const ext = url.split(".").pop() || "";
+        const mime: Record<string, string> = { js: "application/javascript", css: "text/css", svg: "image/svg+xml", png: "image/png", ico: "image/x-icon", woff2: "font/woff2" };
+        res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream", "Access-Control-Allow-Origin": "*" });
+        res.end(readFileSync(distPath));
+        return;
+      }
     }
 
     if (url === "/agents" && req.method === "GET") {
@@ -125,6 +146,21 @@ export function startServer(deps: ServerDeps, port: number) {
       const all = toolRegistry.getAll();
       const tools = all.map((t) => ({ name: t.definition.function.name, description: t.definition.function.description }));
       sendJSON(res, 200, { tools });
+      return;
+    }
+
+    if (url === "/sessions" && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessions = deps.sessionStore.listSessions(50);
+      sendJSON(res, 200, { sessions });
+      return;
+    }
+
+    if (url.startsWith("/sessions/") && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice("/sessions/".length);
+      const messages = deps.sessionStore.getMessages(sessionId);
+      sendJSON(res, 200, { sessionId, messages });
       return;
     }
 
@@ -177,6 +213,8 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
           onThinkingDelta: (text) => write({ type: "thinking", content: text }),
           onThinkingStart: () => write({ type: "thinking_start" }),
+          onIterationStart: () => {},
+          onFileDiff: (filePath, diffText) => write({ type: "diff", filePath, diffText }),
         };
 
         const task: Task = {
@@ -188,6 +226,7 @@ export function startServer(deps: ServerDeps, port: number) {
 
         write({
           type: "done",
+          model: deps.modelRouter.getCurrentModel(),
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),

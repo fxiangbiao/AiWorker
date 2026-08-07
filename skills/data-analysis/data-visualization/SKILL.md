@@ -1,6 +1,7 @@
 ---
 name: data-visualization
 version: "1.0"
+description: "数据可视化：图表选型与生成"
 triggers:
   - 可视化
   - visualization

@@ -3,7 +3,10 @@
     "provider": "deepseek",
     "model": "deepseek-v4-flash",
     "baseURL": "https://api.deepseek.com",
-    "apiKey": "${DEEPSEEK_API_KEY}"
+    "apiKey": "${DEEPSEEK_API_KEY}",
+    "temperature": 0.5,
+    "maxTokens": 16384,
+    "thinking": true
   },
   "pricing": {
     "deepseek": { "prompt": 1, "completion": 2 }

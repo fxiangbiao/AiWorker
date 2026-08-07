@@ -1,6 +1,7 @@
 ---
 name: time-series
 version: "1.0"
+description: "时间序列分析：趋势/季节性/预测"
 triggers:
   - 时间序列
   - time series

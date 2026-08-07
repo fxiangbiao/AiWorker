@@ -1,6 +1,7 @@
 ---
 name: competitive-analysis
 version: "1.0"
+description: "竞品对比分析（多维度矩阵）"
 triggers:
   - 对比|比较|vs|对决|竞品|benchmark|compare
   - 哪个好|选哪个|优劣|差异|区别

@@ -1,6 +1,7 @@
 ---
 name: test-generation
 version: "1.0"
+description: "生成单元/集成测试用例，覆盖正常与异常路径"
 triggers:
   - 测试|test|用例|单元测试|集成测试|测试用例|覆盖率|coverage
   - spec|assert|expect|mock|stub

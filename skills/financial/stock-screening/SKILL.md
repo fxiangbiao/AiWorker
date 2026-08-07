@@ -1,6 +1,7 @@
 ---
 name: stock-screening
 version: "1.0"
+description: "按风格/指标筛选股票标的"
 triggers:
   - 选股|筛选|股票.*推荐|白马|成长|价值
 expert: financial
