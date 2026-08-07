@@ -1,6 +1,7 @@
 ---
 name: portfolio-management
 version: "1.0"
+description: "持仓组合管理与资产配置建议"
 triggers:
   - 持仓|仓位|组合|资产.*配置|portfolio|分散|对冲
 expert: financial

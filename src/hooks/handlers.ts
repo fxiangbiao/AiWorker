@@ -420,6 +420,8 @@ export function createEvaluateSkillCreation(deps: HandlerDependencies): HookHand
 
 /** per-session turn counter */
 const turnSeq = new Map<string, number>();
+/** per-session turn start time + token baseline（onMessage 记录，onTaskComplete 结算） */
+const turnStart = new Map<string, { at: number; prompt: number; completion: number }>();
 
 export function createTurnLogger(deps: HandlerDependencies): HookHandler {
   const store = deps.sessionStore;
@@ -429,7 +431,31 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     };
 
   return async (ctx) => {
+    // 任务开始：记录开始时间与 token 基线
+    if (ctx.event === "onMessage") {
+      turnStart.set(ctx.sessionId, {
+        at: Date.now(),
+        prompt: deps.modelRouter?.getPromptTokens() ?? 0,
+        completion: deps.modelRouter?.getCompletionTokens() ?? 0,
+      });
+      return;
+    }
+    // 出错时清理未结算的轮次起点，防泄漏
+    if (ctx.event === "onError") {
+      turnStart.delete(ctx.sessionId);
+      return;
+    }
     if (ctx.event !== "onTaskComplete") return;
+
+    const start = turnStart.get(ctx.sessionId);
+    const startedAt = start?.at ?? Date.now();
+    const finishedAt = Date.now();
+    const tokensPromptNow = deps.modelRouter?.getPromptTokens() ?? 0;
+    const tokensCompletionNow = deps.modelRouter?.getCompletionTokens() ?? 0;
+    // 当轮 token = 本次完成时刻 − 轮开始时刻基线（避免累计值直接入库）
+    const tokensPrompt = Math.max(0, tokensPromptNow - (start?.prompt ?? 0));
+    const tokensCompletion = Math.max(0, tokensCompletionNow - (start?.completion ?? 0));
+    turnStart.delete(ctx.sessionId);
 
     const seq = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
     turnSeq.set(ctx.sessionId, seq);
@@ -463,14 +489,14 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
         agentId: ctx.agentId,
         seq,
         userInput,
-        startedAt: Date.now(),
-        finishedAt: Date.now(),
+        startedAt,
+        finishedAt,
         iterations: (ctx.data.iterations as number) ?? 0,
         toolCallsTotal,
         toolCallsSuccess,
         toolCallsFailed,
-        tokensPrompt: deps.modelRouter?.getPromptTokens() ?? 0,
-        tokensCompletion: deps.modelRouter?.getCompletionTokens() ?? 0,
+        tokensPrompt,
+        tokensCompletion,
         finishReason: ctx.data.truncated ? "length" : "stop",
       });
     } catch {

@@ -1,6 +1,7 @@
 ---
 name: fundamental-analysis
 version: "1.0"
+description: "基本面分析：估值/盈利/成长性"
 triggers:
   - 基本面|PE|PB|ROE|市盈率|市净率|估值|财务.*分析
 expert: financial

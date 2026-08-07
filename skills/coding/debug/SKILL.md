@@ -1,6 +1,7 @@
 ---
 name: debug
 version: "1.0"
+description: "复现并定位 bug，分析根因后修复"
 triggers:
   - 调试|debug|报错|bug|错误|异常|修复|fix|解决.*问题|问题.*解决
   - troubleshoot|crash|fail|error|broken

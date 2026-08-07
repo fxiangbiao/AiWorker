@@ -57,9 +57,11 @@ class SkillRegistry {
     const body = frontmatterMatch[2].trim();
     const meta = parseYaml(yamlStr) as Record<string, unknown>;
 
+    const fallbackDesc = body.match(/^#\s+([^\n]+)/)?.[1]?.trim() ?? "";
     return {
       name: (meta.name as string) ?? basename(resolve(filePath, "..")),
       version: (meta.version as string) ?? "1.0",
+      description: (meta.description as string)?.trim() || fallbackDesc,
       triggers: (meta.triggers as string[]) ?? [],
       expert: (meta.expert as string) ?? "general",
       toolsRequired: (meta.tools_required as string[]) ?? [],

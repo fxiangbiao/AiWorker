@@ -1,6 +1,7 @@
 ---
 name: data-cleaning
 version: "1.0"
+description: "数据清洗：缺失值/异常值/格式修复"
 triggers:
   - 清洗
   - 清理

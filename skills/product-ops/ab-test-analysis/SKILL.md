@@ -1,6 +1,7 @@
 ---
 name: ab-test-analysis
 version: "1.0"
+description: "A/B 测试实验设计与结果分析"
 triggers:
   - A/B|AB测试|ab test|实验|转化.*分析|留存
 expert: product-ops

@@ -1,6 +1,7 @@
 ---
 name: trend-forecasting
 version: "1.0"
+description: "行业趋势分析与未来预测"
 triggers:
   - 趋势|预测|forecast|前景|走向|发展方向|未来
 expert: research

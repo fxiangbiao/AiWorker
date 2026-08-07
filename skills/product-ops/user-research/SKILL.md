@@ -1,6 +1,7 @@
 ---
 name: user-research
 version: "1.0"
+description: "用户调研：访谈/画像/洞察"
 triggers:
   - 用户调研|用户访谈|用户画像|用户.*研究|persona
 expert: product-ops

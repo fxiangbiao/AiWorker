@@ -17,12 +17,31 @@ function stripAnsiSequences(s: string): string {
     .replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "");
 }
 
-/** 计算展示宽度（CJK 占 2 列） */
+/** 判断字符是否为宽字符（CJK 全角，占 2 列）。制表线 ─│ 等 Ambiguous 按 1 列。 */
+export function charWidth(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0;
+  // 常见 CJK 全角范围（东亚宽字符）
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0xa4cf) || // CJK radicals, 部首, 假名, 谚文
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK 兼容表意
+    (cp >= 0xfe30 && cp <= 0xfe6f) || // CJK 兼容形式
+    (cp >= 0xff00 && cp <= 0xff60) || // 全角形式
+    (cp >= 0xffe0 && cp <= 0xffe6) || // 全角符号
+    (cp >= 0x20000 && cp <= 0x2fffd) // CJK 扩展 B
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+/** 计算展示宽度（CJK 全角占 2 列，制表线等按 1 列） */
 export function displayWidth(s: string): number {
   const clean = stripAnsiSequences(s);
   let w = 0;
   for (const ch of clean) {
-    w += (ch.codePointAt(0) ?? 0) > 0x7f ? 2 : 1;
+    w += charWidth(ch);
   }
   return w;
 }
@@ -41,7 +60,7 @@ export function truncateToWidth(s: string, maxWidth: number): string {
   let out = "";
   let w = 0;
   for (const ch of clean) {
-    const cw = (ch.codePointAt(0) ?? 0) > 0x7f ? 2 : 1;
+    const cw = charWidth(ch);
     if (w + cw > maxWidth - 1) break;
     out += ch;
     w += cw;
@@ -221,7 +240,8 @@ export function renderLine(line: string, inFence: boolean, tableState?: TableSta
 
 /**
  * 渲染整块 Markdown（非流式，用于完整回答 result.text）
- * 代码块用左侧色条（▍）风格，宽度自适应，无固定边框
+ * 代码块用左侧色条（▍）风格，宽度自适应，无固定边框。
+ * 表格块跨行对齐列宽（超宽由上层按终端宽度换行）。
  */
 export function renderMarkdown(text: string): string[] {
   const lines = text.split("\n");
@@ -229,10 +249,20 @@ export function renderMarkdown(text: string): string[] {
   let inFence = false;
   let fenceLang = "";
   let tableState = defaultTableState();
+  let tableBuf: string[] = [];
+
+  const flushTable = () => {
+    if (tableBuf.length > 0) {
+      out.push(...renderTableBlock(tableBuf));
+      tableBuf = [];
+    }
+  };
 
   for (const line of lines) {
     const result = renderLine(line, inFence, tableState);
+
     if (result.fenceStart) {
+      flushTable();
       inFence = true;
       fenceLang = result.lang ?? "";
       const header = fenceLang ? `${chalk.dim(fenceLang)} ` : "";
@@ -248,6 +278,15 @@ export function renderMarkdown(text: string): string[] {
       out.push(`${chalk.cyan("▍")} ${highlightLine(line, fenceLang)}`);
       continue;
     }
+
+    // 表格块：累积连续表格行，块结束时对齐渲染
+    if (isTableLine(line)) {
+      tableBuf.push(line);
+      tableState = { inTable: true, tableFirstRow: false };
+      continue;
+    }
+    flushTable();
+
     if (result.tableState) tableState = result.tableState;
     if (result.rendered !== null) {
       out.push(result.rendered);
@@ -256,10 +295,112 @@ export function renderMarkdown(text: string): string[] {
     }
   }
 
+  flushTable();
+
   // 未闭合代码块：补底框
   if (inFence) {
     out.push(chalk.gray("─".repeat(44)));
   }
 
   return out;
+}
+
+/**
+ * 表格块跨行对齐：两遍扫描。
+ * 第一遍解析所有行得到列数、每列最大宽度、对齐方向；
+ * 第二遍按统一列宽渲染。
+ */
+function renderTableBlock(lines: string[]): string[] {
+  // 分隔符行（|--|）用于判定对齐方向
+  const alignRow = lines.find((l) => {
+    const cellSep = l.includes("|") ? "|" : "│";
+    const cells = l.split(cellSep).map((c) => c.trim()).filter((c, i, a) => !(i === 0 && c === "") && !(i === a.length - 1 && c === ""));
+    return cells.length >= 2 && cells.every((c) => c === "" || /^:?-+:?$/.test(c));
+  });
+
+  let alignments: ("left" | "center" | "right")[] = [];
+  if (alignRow) {
+    const cellSep = alignRow.includes("|") ? "|" : "│";
+    const cells = splitCells(alignRow, cellSep);
+    alignments = cells.map((c) => {
+      if (c.startsWith(":") && c.endsWith(":")) return "center";
+      if (c.endsWith(":")) return "right";
+      return "left";
+    });
+  }
+
+  // 解析所有行（跳过分隔线行）
+  const dataRows: { cells: string[]; sep: string }[] = [];
+  let maxCols = 0;
+  for (const line of lines) {
+    const cellSep = line.includes("|") ? "|" : "│";
+    const cells = splitCells(line, cellSep);
+    const isSep = cells.length >= 2 && cells.every((c) => c === "" || /^:?-+:?$/.test(c));
+    if (isSep) continue;
+    dataRows.push({ cells, sep: cellSep });
+    maxCols = Math.max(maxCols, cells.length);
+  }
+
+  if (dataRows.length === 0) return lines.map((l) => chalk.gray(l));
+
+  // 每列最大显示宽度
+  const colWidths = new Array<number>(maxCols).fill(0);
+  for (const { cells } of dataRows) {
+    cells.forEach((c, i) => {
+      colWidths[i] = Math.max(colWidths[i] ?? 0, displayWidth(c));
+    });
+  }
+
+  // 对齐每行（首行为表头，加粗）。不做截断：超宽行由 MessageList 换行处理，
+  // 保证所有行 │ 列位置严格一致。
+  const rendered = dataRows.map(({ cells, sep }, rowIdx) => {
+    const padded = cells.map((c, i) => {
+      const w = colWidths[i] ?? 0;
+      let body = renderInline(c);
+      if (rowIdx === 0) body = chalk.bold(body);
+      const align = alignments[i] ?? "left";
+      if (align === "right") return padLeft(body, w);
+      if (align === "center") return padCenter(body, w);
+      return padToWidth(body, w);
+    });
+    void sep;
+    return `${chalk.gray("│")} ${padded.join(` ${chalk.gray("│")} `)} ${chalk.gray("│")}`;
+  });
+
+  // 表头分隔线：与数据行完全相同的结构（│ 单元格 │），单元格用 ─ 铺满列宽
+  const hasAlignRow =
+    alignRow && lines.some((l) => /^:?-+:?$/.test(l.trim().replace(/\|/g, "")));
+  if (dataRows.length > 0 && hasAlignRow) {
+    const sepCells = colWidths.map((w) => {
+      // ─ 占 1 列，w 个恰好铺满 w 列宽
+      return chalk.gray("─".repeat(w));
+    });
+    const sepRow = `${chalk.gray("│")} ${sepCells.join(` ${chalk.gray("│")} `)} ${chalk.gray("│")}`;
+    rendered.splice(1, 0, sepRow);
+  }
+  return rendered;
+}
+
+/** 拆分表格行为单元格（去首尾空） */
+function splitCells(line: string, cellSep: string): string[] {
+  const raw = line.split(cellSep).map((c) => c.trim());
+  if (raw[0] === "") raw.shift();
+  if (raw[raw.length - 1] === "") raw.pop();
+  return raw;
+}
+
+/** 左填充到显示宽度 */
+function padLeft(s: string, width: number): string {
+  const w = displayWidth(s);
+  if (w >= width) return s;
+  return " ".repeat(width - w) + s;
+}
+
+/** 居中填充到显示宽度 */
+function padCenter(s: string, width: number): string {
+  const w = displayWidth(s);
+  if (w >= width) return s;
+  const left = Math.floor((width - w) / 2);
+  const right = width - w - left;
+  return " ".repeat(left) + s + " ".repeat(right);
 }

@@ -1,6 +1,7 @@
 ---
 name: risk-assessment
 version: "1.0"
+description: "投资风险评估：波动率/回撤/止损"
 triggers:
   - 风险|评估|止损|回撤|波动|最大.*亏损
 expert: financial

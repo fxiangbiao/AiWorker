@@ -1,6 +1,7 @@
 ---
 name: level-design
 version: "1.0"
+description: "游戏关卡设计与动线规划"
 triggers:
   - 关卡.*设计|level|地图.*设计|迷宫|地形
 expert: game-dev

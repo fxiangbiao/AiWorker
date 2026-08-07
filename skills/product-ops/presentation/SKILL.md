@@ -1,6 +1,7 @@
 ---
 name: presentation
 version: "1.0"
+description: "演示文稿与汇报材料准备"
 triggers:
   - 演示|PPT|presentation|演讲|展示|汇报
 expert: product-ops

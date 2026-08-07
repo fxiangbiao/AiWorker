@@ -1,6 +1,7 @@
 ---
 name: financial-report
 version: "1.0"
+description: "三大报表关键指标解读与财务健康度评估"
 triggers:
   - 财报|年报|季报|营收|利润|现金流|负债|毛利率
 expert: financial

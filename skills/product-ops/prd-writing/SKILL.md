@@ -1,6 +1,7 @@
 ---
 name: prd-writing
 version: "1.0"
+description: "撰写 PRD 产品需求文档"
 triggers:
   - PRD|产品需求|需求文档|产品.*文档|需求.*分析
 expert: product-ops

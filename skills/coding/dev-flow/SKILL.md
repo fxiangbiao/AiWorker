@@ -1,6 +1,7 @@
 ---
 name: dev-flow
 version: "1.1"
+description: "五阶段开发方法论（需求→设计→实现→评审→测试），阶段门控"
 triggers:
   - 开发|实现|新增.*功能|添加.*功能|feature|新需求|重构|refactor
   - Sprint|迭代|计划|下一步|下个.*版本|规划

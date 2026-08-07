@@ -1,6 +1,7 @@
 ---
 name: sprite-animation
 version: "1.0"
+description: "精灵动画状态机与帧动画设计"
 triggers:
   - 动画|sprite|精灵|帧|Animated|动画.*设计
 expert: game-dev

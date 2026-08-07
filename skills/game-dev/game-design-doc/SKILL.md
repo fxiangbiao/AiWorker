@@ -1,6 +1,7 @@
 ---
 name: game-design-doc
 version: "1.0"
+description: "撰写游戏设计文档 GDD"
 triggers:
   - 游戏.*设计|GDD|设计.*文档|游戏.*方案|核心.*机制
 expert: game-dev

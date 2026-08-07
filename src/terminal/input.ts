@@ -1,116 +1,30 @@
 /**
- * InputCollector — 输入收集器
- * Agent 运行期间用 raw 模式捕获 stdin，不冲突 readline。
+ * input.ts — InputCollector 兼容转发
+ *
+ * 历史遗留：Sprint 14 的 raw-mode 输入收集器已被 term.ts (Terminal) 取代。
+ * 保留本模块导出以兼容 smoke-test 与外部调用方，内部转发到 terminal。
  */
 
-import { stdin, stdout } from "node:process";
-import chalk from "chalk";
+import { terminal } from "./term.js";
 
 export class InputCollector {
-  private listening = false;
-  private buf = "";
-  private queue: string[] = [];
-  private handler: ((data: Buffer) => void) | null = null;
-  private onInterrupt: (() => void) | null = null;
-  private interruptFirstAt = 0;
-
-  /** onFirstKey: 首个可打印字符键入时调用（用于停止 spinner）
-   *  onInterrupt: Ctrl+C 连按（2s 内第二次）时调用（用于中断 Agent）
-   */
-  startListening(onFirstKey?: () => void, onInterrupt?: () => void): void {
-    if (this.listening) return;
-    this.listening = true;
-    this.queue = [];
-    this.buf = "";
-    this.onInterrupt = onInterrupt ?? null;
-    this.interruptFirstAt = 0;
-
-    if (typeof stdin.setRawMode === "function") {
-      stdin.setRawMode(true);
-    }
-    stdin.resume();
-
-    let firstChar = true;
-
-    this.handler = (data: Buffer) => {
-      const s = data.toString("utf-8");
-      for (const ch of s) {
-        if (ch === "\r" || ch === "\n") {
-          const line = this.buf.trim();
-          if (line) {
-            this.queue.push(line);
-            stdout.write(` ${chalk.gray("→ 已排队")}\n`);
-          }
-          this.buf = "";
-          firstChar = true;
-        } else if (ch === "\x7f" || ch === "\b") {
-          if (this.buf.length > 0) {
-            this.buf = this.buf.slice(0, -1);
-            stdout.write("\b \b");
-          }
-        } else if (ch === "\x03") {
-          // Ctrl+C: 空闲时退出进程由 SIGINT 处理；raw mode 下此处拦截。
-          // 连按（2s 内第二次）触发中断回调。
-          const now = Date.now();
-          if (this.onInterrupt) {
-            if (this.interruptFirstAt === 0) {
-              this.interruptFirstAt = now;
-            } else if (now - this.interruptFirstAt <= 2000) {
-              this.onInterrupt();
-              this.interruptFirstAt = 0;
-            } else {
-              this.interruptFirstAt = now;
-            }
-          }
-        } else if (ch >= " ") {
-          if (firstChar) {
-            firstChar = false;
-            onFirstKey?.();
-            stdout.write(`\n${chalk.dim("▸ ")}`);
-          }
-          this.buf += ch;
-          stdout.write(ch);
-        }
-      }
-    };
-
-    stdin.on("data", this.handler);
+  startListening(_onFirstKey?: () => void, _onInterrupt?: () => void): void {
+    terminal.start(() => {
+      // 事件由 Tui 处理；此处仅保持兼容语义
+    });
   }
 
   stopListening(): string[] {
-    if (!this.listening) return [];
-    this.listening = false;
-    this.onInterrupt = null;
-    this.interruptFirstAt = 0;
-
-    if (this.handler) {
-      stdin.removeListener("data", this.handler);
-      this.handler = null;
-    }
-
-    if (this.buf.trim()) {
-      this.queue.push(this.buf.trim());
-      this.buf = "";
-    }
-
-    if (typeof stdin.setRawMode === "function") {
-      stdin.setRawMode(false);
-    }
-
-    // Don't pause — let readline manage stdin flow
-    // stdin.pause();
-
-    const q = [...this.queue];
-    this.queue = [];
-    return q;
+    terminal.stop();
+    return [];
   }
 
   getQueueSize(): number {
-    return this.queue.length;
+    return 0;
   }
 
   destroy(): void {
-    if (this.listening) this.stopListening();
+    terminal.stop();
   }
 }
 

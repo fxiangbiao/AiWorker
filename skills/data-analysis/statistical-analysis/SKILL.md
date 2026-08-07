@@ -1,6 +1,7 @@
 ---
 name: statistical-analysis
 version: "1.0"
+description: "描述性与推断性统计分析"
 triggers:
   - 统计
   - statistics

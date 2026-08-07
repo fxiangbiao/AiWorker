@@ -1,6 +1,7 @@
 ---
 name: file-organization
 version: "1.0"
+description: "整理文件目录结构，按类型归类和输出"
 triggers:
   - 创建文件|写文件|保存|输出到|整理.*文件|组织.*目录
   - write.*file|save|output.*file|organize

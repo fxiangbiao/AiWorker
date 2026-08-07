@@ -26,6 +26,26 @@ function getDecayFactor(timestamp: number): number {
   return Math.max(0.1, 1 - daysAgo * 0.15);
 }
 
+function mapTurnLogRow(r: Record<string, unknown>): TurnLog {
+  return {
+    id: r.id as string,
+    sessionId: r.session_id as string,
+    agentId: r.agent_id as string,
+    seq: r.seq as number,
+    userInput: (r.user_input as string) ?? "",
+    startedAt: r.started_at as number,
+    finishedAt: r.finished_at as number,
+    iterations: r.iterations as number,
+    toolCallsTotal: r.tool_calls_total as number,
+    toolCallsSuccess: r.tool_calls_success as number,
+    toolCallsFailed: r.tool_calls_failed as number,
+    tokensPrompt: r.tokens_prompt as number,
+    tokensCompletion: r.tokens_completion as number,
+    finishReason: r.finish_reason as string,
+    error: r.error as string | undefined,
+  };
+}
+
 export class SessionStore {
   private db: DBType;
 
@@ -380,23 +400,24 @@ export class SessionStore {
        FROM turn_logs WHERE session_id = ? ORDER BY seq`,
       )
       .all(sessionId) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: r.id as string,
-      sessionId: r.session_id as string,
-      agentId: r.agent_id as string,
-      seq: r.seq as number,
-      userInput: (r.user_input as string) ?? "",
-      startedAt: r.started_at as number,
-      finishedAt: r.finished_at as number,
-      iterations: r.iterations as number,
-      toolCallsTotal: r.tool_calls_total as number,
-      toolCallsSuccess: r.tool_calls_success as number,
-      toolCallsFailed: r.tool_calls_failed as number,
-      tokensPrompt: r.tokens_prompt as number,
-      tokensCompletion: r.tokens_completion as number,
-      finishReason: r.finish_reason as string,
-      error: r.error as string | undefined,
-    }));
+    return rows.map(mapTurnLogRow);
+  }
+
+  /** 获取最近有日志的会话的全部轮次日志（currentSessionId 为空时回退用） */
+  getRecentTurnLogs(limit = 20): TurnLog[] {
+    const latestSession = this.db
+      .prepare(`SELECT session_id FROM turn_logs ORDER BY started_at DESC LIMIT 1`)
+      .get() as { session_id: string } | undefined;
+    if (!latestSession) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT id, session_id, agent_id, seq, user_input, started_at, finished_at,
+       iterations, tool_calls_total, tool_calls_success, tool_calls_failed,
+       tokens_prompt, tokens_completion, finish_reason, error
+       FROM turn_logs WHERE session_id = ? ORDER BY seq ASC LIMIT ?`,
+      )
+      .all(latestSession.session_id, limit) as Record<string, unknown>[];
+    return rows.map(mapTurnLogRow);
   }
 
   getToolCallLogs(turnId: string): ToolCallLog[] {

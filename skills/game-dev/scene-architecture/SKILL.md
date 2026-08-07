@@ -1,6 +1,7 @@
 ---
 name: scene-architecture
 version: "1.0"
+description: "Godot 场景结构与节点树架构"
 triggers:
   - 场景.*结构|scene|node.*树|嵌套|PackedScene|实例化
 expert: game-dev

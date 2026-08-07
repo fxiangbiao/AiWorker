@@ -1,6 +1,7 @@
 ---
 name: economy-design
 version: "1.0"
+description: "游戏经济系统：货币/产出/消耗设计"
 triggers:
   - 经济.*设计|货币|金币|交易|商店|掉落|economy
 expert: game-dev
