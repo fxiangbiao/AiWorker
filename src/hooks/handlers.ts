@@ -3,8 +3,8 @@
  * 设计依据：Section 3.5 — 11 个 lifecycle handler
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import { resolve, isAbsolute } from "node:path";
 import { stdout } from "node:process";
 import { randomUUID } from "node:crypto";
 import chalk from "chalk";
@@ -24,6 +24,9 @@ export interface HandlerDependencies {
   permissionModel?: PermissionModel;
   sessionStore?: SessionStore;
   modelRouter?: ModelRouter;
+  workingDir?: string;
+  projectDir?: string;
+  dataDir?: string;
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
 }
 
@@ -261,8 +264,14 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
 
     // plan 模式：所有工具调用都需确认
     if (permissions === "plan") {
+      // fs_write 展示目标路径，帮助用户判断
+      let detail = "";
+      if (toolName === "fs_write") {
+        const p = extractFilePath(ctx.data.args, deps.projectDir ? resolve(deps.projectDir) : process.cwd());
+        if (p) detail = `：${p}`;
+      }
       const result = await requestConfirm(
-        `执行工具 ${toolName}？`,
+        `执行工具 ${toolName}${detail}？`,
         [
           { value: "allow", label: "允许" },
           { value: "deny", label: "拒绝" },
@@ -280,7 +289,14 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
     if (toolName !== "terminal_exec" && toolName !== "fs_write") return;
 
     const detector = deps.dangerDetector ?? new DangerDetector();
-    const input = typeof ctx.data.args === "string" ? ctx.data.args : JSON.stringify(ctx.data.args ?? {});
+    // fs_write 只检测目标路径（正则匹配的是命令文本，不能套用在 content 上）
+    const projectBase = deps.projectDir ? resolve(deps.projectDir) : process.cwd();
+    const input =
+      toolName === "fs_write"
+        ? extractFilePath(ctx.data.args, projectBase) ?? ""
+        : typeof ctx.data.args === "string"
+          ? ctx.data.args
+          : JSON.stringify(ctx.data.args ?? {});
     const check = detector.check(input);
 
     // 仅高危或警告级别需要确认
@@ -310,10 +326,18 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
 export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
   // session -> (filePath -> oldContent)
   const snapshots = new Map<string, Map<string, string>>();
+  // session -> (filePath -> {mtimeMs, size}) 输出目录指纹（覆盖 terminal_exec/MCP 等任意写入）
+  const dirSnapshots = new Map<string, Map<string, { mtimeMs: number; size: number }>>();
+  // session -> Set<filePath> 已由 fs_write 精确逻辑处理的路径（目录指纹对比时跳过，防重复）
+  const fsWritePaths = new Map<string, Set<string>>();
+  const projectBase = deps.projectDir ? resolve(deps.projectDir) : process.cwd();
+  const dataBase = deps.dataDir ? resolve(deps.dataDir) : resolve(process.cwd(), "data");
 
   return async (ctx) => {
     if (ctx.event === "onTaskComplete") {
       snapshots.delete(ctx.sessionId);
+      dirSnapshots.delete(ctx.sessionId);
+      fsWritePaths.delete(ctx.sessionId);
       // TTL 清理: 超过 30 分钟未使用的快照
       return;
     }
@@ -322,7 +346,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
       const toolName = ctx.data.toolName as string;
       if (toolName !== "fs_write") return;
 
-      const filePath = extractFilePath(ctx.data.args);
+      const filePath = extractFilePath(ctx.data.args, projectBase);
       if (!filePath) return;
 
       let sessionSnap = snapshots.get(ctx.sessionId);
@@ -330,6 +354,13 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         sessionSnap = new Map();
         snapshots.set(ctx.sessionId, sessionSnap);
       }
+
+      let written = fsWritePaths.get(ctx.sessionId);
+      if (!written) {
+        written = new Set();
+        fsWritePaths.set(ctx.sessionId, written);
+      }
+      written.add(filePath);
 
       try {
         if (existsSync(filePath)) {
@@ -342,12 +373,37 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
 
     if (ctx.event === "onToolCallPost") {
       const toolName = ctx.data.toolName as string;
+
+      // ── 输出目录指纹监控：捕获任意工具（terminal_exec/MCP 等）对 projectDir 的写入 ──
+      if (projectBase !== process.cwd()) {
+        const current = scanDirFingerprint(projectBase);
+        const prev = dirSnapshots.get(ctx.sessionId);
+        if (prev) {
+          for (const [absPath, info] of current) {
+            const old = prev.get(absPath);
+            const existedBefore = old !== undefined;
+            const changed = !existedBefore || old.mtimeMs !== info.mtimeMs || old.size !== info.size;
+            if (!changed) continue;
+            // 已由 fs_write 精确逻辑处理的路径跳过，避免重复记录
+            if (fsWritePaths.get(ctx.sessionId)?.has(absPath)) continue;
+            const added = existedBefore ? 0 : newFileLineCount(absPath);
+            const removed = 0;
+            const diffText = existedBefore
+              ? `内容已变化（旧内容不可恢复）：${absPath}`
+              : `新增文件（${added} 行）：${absPath}`;
+            recordDirDiff(ctx, deps, dataBase, absPath, added, removed, diffText);
+          }
+        }
+        dirSnapshots.set(ctx.sessionId, current);
+      }
+
+      // ── fs_write 精确快照逻辑 ──
       if (toolName !== "fs_write") return;
 
       const result = ctx.data.result as { success: boolean; content: string } | undefined;
       if (!result?.success) return;
 
-      const filePath = extractFilePath(ctx.data.args);
+      const filePath = extractFilePath(ctx.data.args, projectBase);
       if (!filePath) return;
 
       const sessionSnap = snapshots.get(ctx.sessionId);
@@ -396,21 +452,106 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
 
       deps.onFileDiff?.(filePath, added, removed, diffText);
 
-      // 也保存快照到磁盘
+      writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, oldContent, newContent);
+    }
+  };
+}
+
+/**
+ * recordDirDiff — 输出目录指纹监控发现的变更，写审计 + 磁盘快照 + onFileDiff 回调
+ */
+function recordDirDiff(
+  ctx: import("../types.js").HookContext,
+  deps: HandlerDependencies,
+  dataBase: string,
+  filePath: string,
+  added: number,
+  removed: number,
+  diffText: string,
+): void {
+  try {
+    auditLogger.log({
+      timestamp: Date.now(),
+      agentId: ctx.agentId,
+      sessionId: ctx.sessionId,
+      action: `file_diff:${filePath}`,
+      target: filePath.slice(0, 200),
+      result: "success",
+      detail: `+${added} -${removed} 行`,
+    });
+  } catch {
+    /* ignore */
+  }
+
+  deps.onFileDiff?.(filePath, added, removed, diffText);
+
+  writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, undefined, undefined);
+}
+
+/** 将 diff 快照写入磁盘 */
+function writeDiffSnapshot(
+  dataBase: string,
+  sessionId: string,
+  filePath: string,
+  diffText: string,
+  oldContent: string | undefined,
+  newContent: string | undefined,
+): void {
+  try {
+    const snapDir = resolve(dataBase, "snapshots", sessionId);
+    mkdirSync(snapDir, { recursive: true });
+    const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
+    writeFileSync(
+      resolve(snapDir, `${safeName}.diff`),
+      `# path: ${filePath}\n${diffText}\n---\nold: ${oldContent?.length ?? 0} chars\nnew: ${newContent?.length ?? 0} chars`,
+      "utf-8",
+    );
+  } catch {
+    // 静默失败
+  }
+}
+
+/**
+ * scanDirFingerprint — 递归扫描目录，返回 绝对路径 → {mtimeMs, size}
+ * 跳过 node_modules/.git/dist/web/dist 等噪音目录，仅覆盖输出目录内文件
+ */
+function scanDirFingerprint(root: string): Map<string, { mtimeMs: number; size: number }> {
+  const result = new Map<string, { mtimeMs: number; size: number }>();
+  const skipDirs = new Set(["node_modules", ".git", "dist", "web", ".svelte-kit", ".aiworker_history"]);
+  const walk = (dir: string): void => {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = resolve(dir, e.name);
       try {
-        const snapDir = resolve(process.cwd(), "data", "snapshots", ctx.sessionId);
-        mkdirSync(snapDir, { recursive: true });
-        const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
-        writeFileSync(
-          resolve(snapDir, `${safeName}.diff`),
-          `# path: ${filePath}\n${diffText}\n---\nold: ${oldContent?.length ?? 0} chars\nnew: ${newContent.length} chars`,
-          "utf-8",
-        );
+        if (e.isDirectory()) {
+          if (skipDirs.has(e.name)) continue;
+          walk(full);
+        } else if (e.isFile()) {
+          const st = statSync(full);
+          result.set(full, { mtimeMs: st.mtimeMs, size: st.size });
+        }
       } catch {
-        // 静默失败
+        /* ignore */
       }
     }
   };
+  walk(root);
+  return result;
+}
+
+/** 新增文件行数（非空行） */
+function newFileLineCount(filePath: string): number {
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    return content.split("\n").filter((l) => l.trim().length > 0).length;
+  } catch {
+    return 0;
+  }
 }
 
 // ── Phase 4 Handler ──
@@ -599,10 +740,11 @@ export function createToolCallLogger(deps: HandlerDependencies): HookHandler {
 
 // ── 工具函数 ──
 
-function extractFilePath(args: unknown): string | null {
+function extractFilePath(args: unknown, baseDir?: string): string | null {
   const parsed = typeof args === "string" ? tryParseJson(args) : args;
   if (parsed && typeof parsed === "object" && "path" in parsed) {
-    return resolve(String((parsed as Record<string, unknown>).path));
+    const raw = String((parsed as Record<string, unknown>).path);
+    return isAbsolute(raw) ? resolve(raw) : resolve(baseDir ?? process.cwd(), raw);
   }
   return null;
 }

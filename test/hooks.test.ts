@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
-import { resolve } from "node:path";
-import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync } from "node:fs";
 import { hookManager } from "../src/hooks/hook-manager.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { DangerDetector } from "../src/security/danger-detector.js";
@@ -225,6 +225,132 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(content).toContain("+ line1");
   });
 
+  it("captureDiff 相对路径以 projectDir 为基准解析（与 fs_write 一致）", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const proj = resolve(testDir, "proj-diff");
+    const handler = createCaptureDiff({ projectDir: proj, dataDir: resolve(testDir, "snap") });
+
+    const relFile = resolve(proj, "sub", "rel-file.txt");
+    mkdirSync(dirname(relFile), { recursive: true });
+    writeFileSync(relFile, "old\n", "utf-8");
+
+    // Pre: 保存旧内容（相对路径应解析到 projectDir 下）
+    const preCtx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: "sub/rel-file.txt", content: "new\n" }) },
+    });
+    await handler(preCtx);
+
+    // 写入新内容
+    writeFileSync(relFile, "new\n", "utf-8");
+
+    const postCtx = makeCtx({
+      event: "onToolCallPost",
+      data: {
+        toolName: "fs_write",
+        args: JSON.stringify({ path: "sub/rel-file.txt" }),
+        result: { success: true, content: "ok" },
+      },
+    });
+    await handler(postCtx);
+
+    // 快照应写入 dataDir/snapshots/<sessionId>，且 diff 包含 - old / + new
+    const snapDir = resolve(testDir, "snap", "snapshots", "test-session");
+    expect(existsSync(snapDir)).toBe(true);
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    expect(content).toContain("# path: " + relFile);
+    expect(content).toContain("- old");
+    expect(content).toContain("+ new");
+  });
+
+  it("captureDiff 输出目录指纹监控捕获 terminal_exec 写入的新文件", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const proj = resolve(testDir, "proj-monitor");
+    const snap = resolve(testDir, "snap-monitor");
+    const tracked = new Set<string>();
+    const handler = createCaptureDiff({ projectDir: proj, dataDir: snap, onFileDiff: (p) => tracked.add(p) });
+
+    const outFile = resolve(proj, "terminal-out.txt");
+    rmSync(outFile, { force: true });
+    mkdirSync(proj, { recursive: true });
+
+    // 首次 onToolCallPost（任何工具）建立指纹基线
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
+
+    // terminal_exec 写入新文件
+    writeFileSync(outFile, "hello\nworld\n", "utf-8");
+
+    // 第二次 onToolCallPost 触发指纹对比（同一实例共享 dirSnapshots）
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
+
+    // 检测到新增文件并写快照
+    expect(tracked.size).toBe(1);
+    const snapDir = resolve(snap, "snapshots", "test-session");
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    expect(content).toContain("# path: " + outFile);
+    expect(content).toContain("新增文件");
+    expect(content).toContain("2 行");
+  });
+
+  it("captureDiff 输出目录指纹监控捕获 terminal_exec 对已存在文件的修改", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const proj = resolve(testDir, "proj-monitor-mod");
+    const snap = resolve(testDir, "snap-monitor-mod");
+    const handler = createCaptureDiff({ projectDir: proj, dataDir: snap });
+
+    const modFile = resolve(proj, "mod-file.txt");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(modFile, "old\n", "utf-8");
+
+    // 首次 onToolCallPost 建立基线（此时文件已存在）
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
+
+    // terminal_exec 修改该文件
+    writeFileSync(modFile, "old\nnew\n", "utf-8");
+
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
+
+    const snapDir = resolve(snap, "snapshots", "test-session");
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    expect(content).toContain("# path: " + modFile);
+    expect(content).toContain("内容已变化");
+  });
+
+  it("captureDiff fs_write 写入不触发目录指纹重复记录", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const proj = resolve(testDir, "proj-dedup");
+    const snap = resolve(testDir, "snap-dedup");
+    const handler = createCaptureDiff({ projectDir: proj, dataDir: snap });
+
+    const newFile = resolve(proj, "fs-new.txt");
+    rmSync(newFile, { force: true });
+    mkdirSync(proj, { recursive: true });
+
+    // 首次 onToolCallPost 建立目录指纹基线
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "fs_list", args: "{}", result: { success: true, content: "ok" } } }));
+
+    // fs_write pre：记录路径到 fsWritePaths（不保存旧内容，因为文件不存在）
+    await handler(makeCtx({ event: "onToolCallPre", data: { toolName: "fs_write", args: JSON.stringify({ path: newFile, content: "a\nb\n" }) } }));
+
+    // 写入新文件
+    writeFileSync(newFile, "a\nb\n", "utf-8");
+
+    // fs_write post：应只由 fs_write 精确逻辑记录一次（目录指纹跳过 fsWritePaths）
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "fs_write", args: JSON.stringify({ path: newFile }), result: { success: true, content: "ok" } } }));
+
+    const snapDir = resolve(snap, "snapshots", "test-session");
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    expect(content).toContain("# path: " + newFile);
+  });
+
   // 13d. EvaluateSkillCreation
   it("evaluateSkillCreation 低于阈值不创建", async () => {
     const { createEvaluateSkillCreation } = await import("../src/hooks/handlers.js");
@@ -275,6 +401,24 @@ describe("13. Phase 3 Hook Handlers", () => {
     // ask 模式应该跳过（只处理 Auto）
     const timeoutPromise = new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 200));
     const result = await Promise.race([handler(ctx), timeoutPromise]);
+    expect(result).toBeUndefined();
+  });
+
+  it("confirmHighRisk 在 auto 模式 fs_write 内容含 rm/del 等词不误报", async () => {
+    const { createConfirmHighRisk } = await import("../src/hooks/handlers.js");
+    const detector = new DangerDetector();
+    const handler = createConfirmHighRisk({ dangerDetector: detector });
+
+    // content 含 "rm xxx"（普通文本，非命令），路径安全 → 不应触发确认
+    const ctx = makeCtx({
+      event: "onToolCallPre",
+      data: {
+        toolName: "fs_write",
+        args: JSON.stringify({ path: "src/notes.md", content: "删除文件用 rm 命令即可\n" }),
+        permissions: "auto",
+      },
+    });
+    const result = await handler(ctx);
     expect(result).toBeUndefined();
   });
 

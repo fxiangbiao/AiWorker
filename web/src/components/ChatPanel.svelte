@@ -287,6 +287,7 @@
         agent._thinkingActive = false;
         agent._activeStep = undefined;
         if (data.content) agent.content = (data.content as string) || "";
+        store.diffVersion++;
         break;
       }
       case "error":
@@ -353,6 +354,7 @@
           m._activeStep = undefined;
         }
         store.confirms = [];
+        store.diffVersion++;
         break;
       case "confirm_request": {
         const confirm: ConfirmItem = {
@@ -369,8 +371,21 @@
         break;
       }
       case "tool_blocked": {
-        const msg = (data.message as string) || `${data.name} 被拦截`;
-        errors = [...errors, msg];
+        // 拦截提示已由 tool_result 写入工具卡片 error，此处仅标记卡片为错误样式，不再显示独立横幅
+        const name = data.name as string;
+        const msg = (data.message as string) || `${name} 被拦截`;
+        for (const m of store.messages) {
+          const tl = m.timeline || [];
+          for (let i = tl.length - 1; i >= 0; i--) {
+            const t = tl[i];
+            if (t.type === "tool" && t.name === name && !t.error) {
+              t.error = msg;
+              t.result = true;
+              t.pending = false;
+              break;
+            }
+          }
+        }
         break;
       }
       case "error":

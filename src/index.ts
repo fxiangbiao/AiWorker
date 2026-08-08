@@ -152,19 +152,12 @@ program
       permissionModel,
       sessionStore,
       modelRouter,
-      onFileDiff: (filePath, added, removed, diffText) => {
+      workingDir,
+      projectDir,
+      dataDir,
+      onFileDiff: (filePath, added, removed, _diffText) => {
+        // 终端只展示单行摘要，完整 diff 由 Web /diffs 查看
         outputRenderer.fileDiff(filePath, added, removed);
-        if (diffText && diffText.trim()) {
-          for (const line of diffText.split("\n")) {
-            if (line.startsWith("+ ")) {
-              stdout.write(`    ${chalk.green(line)}\n`);
-            } else if (line.startsWith("- ")) {
-              stdout.write(`    ${chalk.red(line)}\n`);
-            } else {
-              stdout.write(`    ${chalk.gray(line)}\n`);
-            }
-          }
-        }
       },
     });
     if (hooksCount > 0) {

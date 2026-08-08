@@ -119,6 +119,8 @@ interface DiffFile {
 interface DiffSession {
   sessionId: string;
   files: DiffFile[];
+  createdAt: number;
+  updatedAt: number;
 }
 
 /** 解析快照 .diff 文件为结构化行 */
@@ -174,10 +176,12 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
     for (const sessionId of sessionDirs) {
       const dir = resolve(snapshotsDir, sessionId);
       const files: DiffFile[] = [];
+      let updatedAt = 0;
       for (const entry of readdirSync(dir)) {
         if (!entry.endsWith(".diff")) continue;
         const stat = statSync(resolve(dir, entry));
         if (!stat.isFile()) continue;
+        updatedAt = Math.max(updatedAt, stat.mtimeMs);
         const content = readFileSync(resolve(dir, entry), "utf-8");
         const parsed = parseDiffFile(content);
         files.push({
@@ -188,7 +192,7 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
         });
       }
       if (files.length > 0) {
-        sessions.push({ sessionId, files });
+        sessions.push({ sessionId, files, createdAt: updatedAt, updatedAt });
       }
     }
     return sessions;

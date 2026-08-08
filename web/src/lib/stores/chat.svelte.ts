@@ -59,6 +59,7 @@ export const store = $state({
   activeChatId: null as string | null,
   messages: [] as UIMessage[],
   confirms: [] as ConfirmItem[],
+  diffVersion: 0,
 });
 
 function load<T>(key: string, fallback: T): T {
