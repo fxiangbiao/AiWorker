@@ -2,9 +2,10 @@
   import { store } from "$lib/stores/chat.svelte";
   import { stream } from "$lib/stores/stream.svelte";
 
-  let { onNewChat, onSwitch } = $props<{
+  let { onNewChat, onSwitch, onHide } = $props<{
     onNewChat: () => void;
     onSwitch: (id: string) => void;
+    onHide: () => void;
   }>();
 
   function handleClick(id: string) {
@@ -16,6 +17,7 @@
 <div class="sidebar">
   <div class="s-top">
     <button class="new-btn" onclick={onNewChat}>+ 新对话</button>
+    <button class="hide-btn" title="隐藏左侧栏" onclick={onHide}>&#8810;</button>
   </div>
   <div class="s-list">
     {#each store.chats as c}
@@ -43,9 +45,9 @@
     flex-direction: column;
     flex-shrink: 0;
   }
-  .s-top { padding: 12px; }
+  .s-top { padding: 12px; display: flex; gap: 8px; align-items: center; }
   .new-btn {
-    width: 100%;
+    flex: 1;
     padding: 9px;
     background: var(--text);
     color: #fff;
@@ -56,6 +58,21 @@
     font-weight: 600;
     cursor: pointer;
   }
+  .hide-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--dim);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .hide-btn:hover { background: var(--hover-bg); color: var(--primary); }
   .s-list { flex: 1; overflow-y: auto; padding: 0 8px; }
   .s-item {
     padding: 10px 12px;

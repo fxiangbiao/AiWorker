@@ -1,4 +1,4 @@
-/**
+﻿/**
  * renderer.ts — TerminalRenderer（Tui 薄封装）
  *
  * 保留对外兼容 API（printStatus/updateLiveStatus/write/prompt 等），
@@ -196,7 +196,7 @@ export class TerminalRenderer {
     const toolStr = status.toolName ? `🛠 ${status.toolName}` : "";
     const statusStr = status.status ? chalk.yellow(status.status) : "";
 
-    const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", craft: "执行" };
+    const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", auto: "自动" };
     const modeLabel = modeLabels[status.mode] ?? status.mode;
     const barStr = status.windowPct != null ? this.renderWindowBar(status.windowPct) : "";
 

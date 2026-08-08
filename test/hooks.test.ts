@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Hooks 系统测试：生命周期事件 + Phase 3 Hook Handlers
  */
 
@@ -272,10 +272,57 @@ describe("13. Phase 3 Hook Handlers", () => {
       data: { toolName: "terminal_exec", args: "echo hello", permissions: "ask" },
     });
 
-    // ask 模式应该跳过（只处理 craft）
+    // ask 模式应该跳过（只处理 Auto）
     const timeoutPromise = new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 200));
     const result = await Promise.race([handler(ctx), timeoutPromise]);
     expect(result).toBeUndefined();
+  });
+
+  it("permissionCheck 在 ask 模式放行只读工具", async () => {
+    const { createPermissionCheck } = await import("../src/hooks/handlers.js");
+    const { PermissionModel } = await import("../src/security/permission-model.js");
+    const model = new PermissionModel({
+      defaultMode: "ask",
+      modes: {
+        ask: { description: "只读", allow_tool_calls: true, readOnly: true },
+        plan: { description: "计划", allow_tool_calls: true, require_confirmation: true },
+        auto: { description: "自动", allow_tool_calls: true, high_risk_confirm: true },
+      },
+      allowedDirs: [],
+      deniedPatterns: [],
+    });
+    const handler = createPermissionCheck({ permissionModel: model });
+
+    const readCtx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_list", args: "{}", permissions: "ask" },
+    });
+    const readResult = await handler(readCtx);
+    expect(readResult).toBeUndefined();
+
+    const writeCtx = makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_write", args: "{}", permissions: "ask" },
+    });
+    const writeResult = await handler(writeCtx);
+    expect(writeResult?.proceed).toBe(false);
+    expect(writeResult?.message).toContain("只读");
+  });
+
+  it("confirm-channel 挂起等待响应并精确路由", async () => {
+    const { createHttpConfirmProvider, confirmResponse } = await import("../src/hooks/confirm-channel.js");
+    const sent: { id: string; message: string }[] = [];
+    const provider = createHttpConfirmProvider((req) => sent.push({ id: req.id, message: req.message }), 2000);
+
+    const p1 = provider({ id: "cf-1", title: "t", message: "允许执行?", options: [] });
+    const p2 = provider({ id: "cf-2", title: "t", message: "允许执行?", options: [] });
+    expect(sent).toHaveLength(2);
+
+    // 响应 cf-2（乱序），应只 resolve cf-2
+    confirmResponse("cf-2", "allow");
+    expect(await p2).toBe("allow");
+    // cf-1 未响应，等待超时返回 null
+    expect(await p1).toBeNull();
   });
 
   // 13f. TurnLogger token 增量

@@ -1,18 +1,19 @@
-/**
+﻿/**
  * Hooks 处理器实现
  * 设计依据：Section 3.5 — 11 个 lifecycle handler
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { stdin, stdout } from "node:process";
+import { stdout } from "node:process";
 import { randomUUID } from "node:crypto";
 import chalk from "chalk";
-import type { HookHandler } from "../types.js";
+import type { HookHandler, PermissionMode } from "../types.js";
 import type { Message } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
 import { auditLogger } from "../core/audit-logger.js";
+import { requestConfirm } from "./confirm-channel.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { ModelRouter } from "../core/model-router.js";
 import { skillEvolution } from "../core/skill-evolution.js";
@@ -28,6 +29,8 @@ export interface HandlerDependencies {
 
 /**
  * dangerousCommandBlock — 拦截 `rm -rf` 等危险命令
+ * - ask: 直接拦截（只警告，不放行）
+ * - plan/auto: 放行，由 confirmHighRisk 弹确认卡片让用户决定
  */
 export function createDangerousCommandBlock(deps: HandlerDependencies): HookHandler {
   const detector = deps.dangerDetector ?? new DangerDetector();
@@ -35,9 +38,14 @@ export function createDangerousCommandBlock(deps: HandlerDependencies): HookHand
     const { args } = ctx.data;
     const input = typeof args === "string" ? args : JSON.stringify(args);
     const check = detector.check(input);
-    if (check.isDangerous) {
-      return { proceed: false, message: check.message };
+    if (!check.isDangerous) return;
+
+    const mode = (ctx.data.permissions as PermissionMode) || deps.permissionModel?.getMode() || "auto";
+    // ask 模式：直接拦截；plan/auto：交给 confirmHighRisk 确认
+    if (mode === "ask") {
+      return { proceed: false, message: `高危操作被拦截（ask 模式不允许）：${check.message}` };
     }
+    return undefined;
   };
 }
 
@@ -47,9 +55,17 @@ export function createDangerousCommandBlock(deps: HandlerDependencies): HookHand
 export function createPermissionCheck(deps: HandlerDependencies): HookHandler {
   return async (ctx) => {
     if (ctx.event !== "onToolCallPre") return;
-    if (!deps.permissionModel) return;
-    if (!deps.permissionModel.allowsToolCalls()) {
-      return { proceed: false, message: "当前权限模式不允许工具调用" };
+
+    const mode = (ctx.data.permissions as PermissionMode) || deps.permissionModel?.getMode() || "auto";
+    const model = deps.permissionModel;
+    if (!model) return;
+
+    const toolName = ctx.data.toolName as string;
+    if (!model.allowsToolFor(mode, toolName)) {
+      const reason = model.isReadOnly(mode)
+        ? `当前权限模式(${mode})为只读，不允许执行工具 ${toolName}`
+        : `当前权限模式(${mode})不允许工具调用`;
+      return { proceed: false, message: reason };
     }
   };
 }
@@ -232,8 +248,8 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
 }
 
 /**
- * confirmHighRisk — Craft 模式高危操作弹确认
- * 执行高危工具前通过 stdin 交互确认
+ * confirmHighRisk — Auto 模式高危操作弹确认
+ * 执行高危工具前通过确认通道（CLI stdin / HTTP 前端确认卡片）交互确认
  * Hook 事件: onToolCallPre
  */
 export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
@@ -243,7 +259,24 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
     const toolName = ctx.data.toolName as string;
     const permissions = ctx.data.permissions as string;
 
-    if (permissions !== "craft") return;
+    // plan 模式：所有工具调用都需确认
+    if (permissions === "plan") {
+      const result = await requestConfirm(
+        `执行工具 ${toolName}？`,
+        [
+          { value: "allow", label: "允许" },
+          { value: "deny", label: "拒绝" },
+        ],
+        `${toolName} 调用确认`,
+      );
+      if (result !== "allow") {
+        return { proceed: false, message: "用户取消操作" };
+      }
+      return;
+    }
+
+    // auto 模式：仅高危工具需确认
+    if (permissions !== "auto") return;
     if (toolName !== "terminal_exec" && toolName !== "fs_write") return;
 
     const detector = deps.dangerDetector ?? new DangerDetector();
@@ -253,11 +286,16 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
     // 仅高危或警告级别需要确认
     if (check.level === "safe") return;
 
-    const confirmed = await interactiveConfirm(
+    const result = await requestConfirm(
       `${check.isDangerous ? "高危" : "注意"}: ${check.message ?? toolName}。是否继续？`,
+      [
+        { value: "allow", label: "允许" },
+        { value: "deny", label: "拒绝" },
+      ],
+      `${toolName} 操作确认`,
     );
 
-    if (!confirmed) {
+    if (result !== "allow") {
       return { proceed: false, message: "用户取消操作" };
     }
   };
@@ -365,7 +403,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
         writeFileSync(
           resolve(snapDir, `${safeName}.diff`),
-          `${diffText}\n---\nold: ${oldContent?.length ?? 0} chars\nnew: ${newContent.length} chars`,
+          `# path: ${filePath}\n${diffText}\n---\nold: ${oldContent?.length ?? 0} chars\nnew: ${newContent.length} chars`,
           "utf-8",
         );
       } catch {
@@ -560,35 +598,6 @@ export function createToolCallLogger(deps: HandlerDependencies): HookHandler {
 }
 
 // ── 工具函数 ──
-
-async function interactiveConfirm(message: string): Promise<boolean> {
-  // 临时退出 raw mode 进行交互确认
-  const rawMode = typeof stdin.setRawMode === "function";
-  if (rawMode) stdin.setRawMode(false);
-  stdin.resume();
-
-  return new Promise((resolve) => {
-    stdout.write(`\n⚠️  ${message} [y/N] `);
-
-    const handler = (data: Buffer) => {
-      const input = data.toString("utf-8").trim().toLowerCase();
-      stdin.removeListener("data", handler);
-      if (rawMode) stdin.setRawMode(true);
-      stdout.write("\n");
-      resolve(input === "y" || input === "yes");
-    };
-
-    stdin.once("data", handler);
-
-    // 超时安全阀（10 秒后自动拒绝）
-    setTimeout(() => {
-      stdin.removeListener("data", handler);
-      if (rawMode) stdin.setRawMode(true);
-      stdout.write("\n");
-      resolve(false);
-    }, 10000);
-  });
-}
 
 function extractFilePath(args: unknown): string | null {
   const parsed = typeof args === "string" ? tryParseJson(args) : args;

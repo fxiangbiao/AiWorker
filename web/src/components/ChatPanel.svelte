@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import UserMessage from "./UserMessage.svelte";
   import AgentCard from "./AgentCard.svelte";
+  import ConfirmCard from "./ConfirmCard.svelte";
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
   import {
@@ -12,12 +13,23 @@
     type ChatItem,
     type UIMessage,
     type PlanStep,
+    type ConfirmItem,
     API,
   } from "$lib/stores/chat.svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
   import { totalTokens, currentModel } from "$lib/stores/status";
 
   let errors: string[] = $state([]);
+
+  // 切换会话时清空错误提示与确认卡片（临时状态）
+  let _lastSession = $state(store.activeChatId);
+  $effect(() => {
+    if (store.activeChatId !== _lastSession) {
+      _lastSession = store.activeChatId;
+      errors = [];
+      store.confirms = [];
+    }
+  });
 
   let _lastMsgCount = $state(0);
   $effect(() => {
@@ -42,6 +54,15 @@
     saveChats(store.chats);
   }
 
+
+  function respondConfirm(id: string, value: string | null) {
+    store.confirms = store.confirms.filter((c) => c.id !== id);
+    fetch(`${API}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, value }),
+    }).catch(() => { /* 服务端超时后忽略 */ });
+  }
 
   function handleSend(text: string) {
     if (stream.sending) return;
@@ -326,9 +347,39 @@
           totalTokens.set((data.tokenUsage as { total: number }).total || 0);
           currentModel.set((data.model as string) || "");
         }
+        // 复位思考中状态
+        for (const m of store.messages) {
+          m._thinkingActive = false;
+          m._activeStep = undefined;
+        }
+        store.confirms = [];
         break;
+      case "confirm_request": {
+        const confirm: ConfirmItem = {
+          id: data.confirmId as string,
+          title: (data.title as string) || "操作确认",
+          message: (data.message as string) || "",
+          options: (data.options as { value: string; label: string }[]) || [
+            { value: "allow", label: "允许" },
+            { value: "deny", label: "拒绝" },
+          ],
+        };
+        const exist = store.confirms.find((c) => c.id === confirm.id);
+        if (!exist) store.confirms.push(confirm);
+        break;
+      }
+      case "tool_blocked": {
+        const msg = (data.message as string) || `${data.name} 被拦截`;
+        errors = [...errors, msg];
+        break;
+      }
       case "error":
         errors = [...errors, (data.message as string) || "unknown error"];
+        for (const m of store.messages) {
+          m._thinkingActive = false;
+          m._activeStep = undefined;
+        }
+        store.confirms = [];
         break;
     }
   }
@@ -351,6 +402,9 @@
           <AgentCard {msg} />
         {/if}
       {/each}
+      {#each store.confirms as c}
+        <ConfirmCard confirm={c} onRespond={(v) => respondConfirm(c.id, v)} />
+      {/each}
       {#each errors as err}
         <ErrorBanner message={err} />
       {/each}
@@ -372,8 +426,8 @@
     scroll-behavior: smooth;
   }
   .msg-inner {
-    width: 88%;
-    max-width: 1200px;
+    width: 96%;
+    max-width: 1400px;
     margin: 0 auto;
     padding: 24px 24px;
   }

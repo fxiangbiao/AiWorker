@@ -78,10 +78,11 @@ function mockAgent() {
       task: { mode?: string },
       _wd: string,
       _pd: string,
-      callbacks: { onTextDelta?: (t: string) => void },
+      callbacks: { onTextDelta?: (t: string) => void; onToolResult?: (n: string, s: boolean, m: string) => void },
     ) => {
       capturedTask = task;
       callbacks.onTextDelta?.("你好");
+      callbacks.onToolResult?.("terminal_exec", false, "操作被拦截: 当前权限模式(ask)为只读");
       return { success: true, text: "你好" } as never;
     },
   };
@@ -103,6 +104,7 @@ function mockDeps() {
       { id: "research", name: "研究分析师" },
     ],
     skillNames: ["skill-a", "skill-b"],
+    dataDir: testDir,
   };
 }
 
@@ -231,6 +233,31 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(404);
   });
 
+  it("GET /diffs 返回会话文件变更（空目录时为空数组）", async () => {
+    const resp = await fetch(`${base}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(Array.isArray(data.sessions)).toBe(true);
+  });
+
+  it("POST /confirm 未知 id 返回 404", async () => {
+    const resp = await fetch(`${base}${API}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "nonexistent", value: "allow" }),
+    });
+    expect(resp.status).toBe(404);
+  });
+
+  it("POST /confirm 缺失 id 返回 400", async () => {
+    const resp = await fetch(`${base}${API}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: "allow" }),
+    });
+    expect(resp.status).toBe(400);
+  });
+
   it("GET / 返回 404（未构建 web/dist 时）", async () => {
     const resp = await fetch(`${base}/`);
     expect([200, 404]).toContain(resp.status);
@@ -301,6 +328,23 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(200);
     await resp.text();
     expect(capturedTask?.mode).toBe("plan");
+  });
+
+  it("/chat 拦截失败时发出 tool_blocked 事件", async () => {
+    const resp = await fetch(`${base}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "删除文件", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const blocked = events.find((e) => (e as { type: string }).type === "tool_blocked") as {
+      message?: string;
+      name?: string;
+    };
+    expect(blocked).toBeTruthy();
+    expect(blocked.name).toBe("terminal_exec");
+    expect(blocked.message).toContain("拦截");
   });
 
   it("/plan SSE 流式返回 plan + step + done", async () => {

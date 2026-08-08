@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { stream } from "$lib/stores/stream.svelte";
+  import { stream, setSending } from "$lib/stores/stream.svelte";
 
   let text = $state("");
   let ta: HTMLTextAreaElement;
@@ -34,6 +34,11 @@
     ta.style.height = "auto";
     onSend(val);
   }
+
+  function stop() {
+    stream.abortController?.abort();
+    setSending(false, null);
+  }
 </script>
 
 <div class="input-area">
@@ -53,14 +58,18 @@
       onkeydown={handleKeydown}
       oninput={handleInput}
     ></textarea>
-    <button class="send-btn" disabled={stream.sending} onclick={submit}>&#8593;</button>
+    {#if stream.sending}
+      <button class="send-btn stop" onclick={stop} title="停止请求">&#9632;</button>
+    {:else}
+      <button class="send-btn" onclick={submit}>&#8593;</button>
+    {/if}
   </div>
   </div>
 </div>
 
 <style>
   .input-area { padding: 12px 0 20px; flex-shrink: 0; }
-  .input-inner { width: 88%; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  .input-inner { width: 96%; max-width: 1400px; margin: 0 auto; padding: 0 24px; }
   .mode-row { display: flex; gap: 6px; margin-bottom: 8px; }
   .mode-pill {
     padding: 4px 12px;
@@ -120,4 +129,6 @@
   }
   .send-btn:hover { background: var(--primary-hover); }
   .send-btn:disabled { opacity: .3; cursor: default; }
+  .send-btn.stop { background: var(--error); }
+  .send-btn.stop:hover { background: var(--error); }
 </style>

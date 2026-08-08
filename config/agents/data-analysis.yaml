@@ -1,4 +1,4 @@
-# Data Analysis Agent 配置文件
+﻿# Data Analysis Agent 配置文件
 id: data-analysis
 name: data-analysis
 displayName: 数据分析师
@@ -45,7 +45,7 @@ tools:
 mcpServers: []
 
 permissions:
-  defaultMode: craft
+  defaultMode: auto
   allowedTools:
     - fs_read
     - fs_write

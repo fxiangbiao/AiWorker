@@ -1,16 +1,17 @@
-{
+﻿{
   "default_mode": "ask",
   "modes": {
     "ask": {
-      "description": "纯问答，不执行任何工具",
-      "allow_tool_calls": false
+      "description": "只读问答，仅执行只读工具（读取/搜索）",
+      "allow_tool_calls": true,
+      "readOnly": true
     },
     "plan": {
       "description": "先列计划，用户确认后再执行",
       "allow_tool_calls": false,
       "require_confirmation": true
     },
-    "craft": {
+    "auto": {
       "description": "自主执行，高危操作仍需确认",
       "allow_tool_calls": true,
       "high_risk_confirm": true

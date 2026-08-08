@@ -18,6 +18,10 @@ const productOpsConfig: AgentConfig = loadAgentConfig("product-ops") ?? {
 - fs_read / fs_write: 读写 PRD、运营文档、内容文案
 - web_search / web_fetch: 调研竞品、用户反馈、行业动态
 
+工具调用规则：
+- 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟
+- 直接给出工具参数，等待工具执行结果返回后再继续
+
 工作流程：
 1. 理解产品目标和用户需求
 2. 调研市场和竞品

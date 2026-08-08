@@ -67,6 +67,7 @@ class SkillRegistry {
       toolsRequired: (meta.tools_required as string[]) ?? [],
       modelPreference: meta.model_preference as string | undefined,
       body,
+      raw,
       filePath,
     };
   }

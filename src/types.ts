@@ -120,7 +120,7 @@ export interface StreamCallbacks {
 
 // ===== 智能体 =====
 
-export type PermissionMode = "ask" | "plan" | "craft";
+export type PermissionMode = "ask" | "plan" | "auto";
 
 export interface PermissionConfig {
   defaultMode: PermissionMode;
@@ -131,6 +131,7 @@ export interface PermissionConfig {
       allow_tool_calls: boolean;
       require_confirmation?: boolean;
       high_risk_confirm?: boolean;
+      readOnly?: boolean;
     }
   >;
   allowedDirs: string[];
@@ -321,6 +322,7 @@ export interface SkillDef {
   toolsRequired: string[];
   modelPreference?: string;
   body: string;
+  raw?: string;
   filePath: string;
 }
 

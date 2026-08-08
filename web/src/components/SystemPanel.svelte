@@ -26,11 +26,22 @@
     tokensCompletion?: number;
     finishReason?: string;
   }[] = $state([]);
-  let skillList = $state<{ name: string; description: string; expert: string }[]>([]);
+
+  interface SkillCard {
+    name: string;
+    version: string;
+    description: string;
+    expert: string;
+    triggers: string[];
+    body: string;
+    raw: string;
+  }
+  let skillList = $state<SkillCard[]>([]);
+  let detail: SkillCard | null = $state(null);
   let loading = $state(false);
 
   let groups = $derived.by(() => {
-    const byExpert = new Map<string, { name: string; description: string; expert: string }[]>();
+    const byExpert = new Map<string, SkillCard[]>();
     for (const s of skillList) {
       const key = s.expert || "general";
       const list = byExpert.get(key) ?? [];
@@ -71,9 +82,17 @@
       .then((d) => {
         const raw = (d.skills || []) as unknown[];
         skillList = raw.map((s) => {
-          if (typeof s === "string") return { name: s, description: "", expert: "" };
-          const o = s as { name?: string; description?: string; expert?: string };
-          return { name: o.name ?? "", description: o.description ?? "", expert: o.expert ?? "" };
+          if (typeof s === "string") return { name: s, version: "1.0", description: "", expert: "", triggers: [], body: "", raw: "" };
+          const o = s as Record<string, unknown>;
+          return {
+            name: (o.name as string) ?? "",
+            version: (o.version as string) ?? "1.0",
+            description: (o.description as string) ?? "",
+            expert: (o.expert as string) ?? "",
+            triggers: ((o.triggers as string[]) ?? []) as string[],
+            body: (o.body as string) ?? "",
+            raw: (o.raw as string) ?? "",
+          };
         });
       })
       .catch(() => { skillList = []; })
@@ -82,6 +101,7 @@
 
   function switchTab(t: "context" | "logs" | "skills") {
     tab = t;
+    detail = null;
     if (t === "context") loadContext();
     else if (t === "logs") loadLogs();
     else loadSkills();
@@ -97,67 +117,101 @@
     <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
   </div>
 
-  {#if loading}
-    <div class="sp-empty">加载中...</div>
-  {:else if tab === "context"}
-    <div class="sp-section">
-      <div class="sp-row"><span>系统提示</span><b>{fmtTok(breakdown.systemPromptBase)}</b></div>
-      <div class="sp-row"><span>项目记忆</span><b>{fmtTok(breakdown.projectMemory)}</b></div>
-      <div class="sp-row"><span>用户画像</span><b>{fmtTok(breakdown.userProfile)}</b></div>
-      <div class="sp-row"><span>情景记忆</span><b>{fmtTok(breakdown.episodicMemory)}</b></div>
-      <div class="sp-row"><span>注入技能</span><b>{fmtTok(breakdown.injectedSkills)}</b></div>
-      <div class="sp-row"><span>会话历史</span><b>{fmtTok(breakdown.conversationHistory)}</b></div>
-      <div class="sp-row"><span>当前消息</span><b>{fmtTok(breakdown.currentTurn)}</b></div>
-      <div class="sp-row sp-total"><span>总计</span><b>{fmtTok(breakdown.total)}</b></div>
-      <div class="sp-note">技能 {breakdown.skillsMatched?.length ?? 0}/{breakdown.skillsTotal ?? 0} 匹配</div>
-    </div>
-  {:else if tab === "logs"}
-    {#if logs.length === 0}
-      <div class="sp-empty">暂无日志</div>
-    {:else}
-      <div class="sp-log-list">
-        {#each logs as l}
-          <div class="sp-log">
-            <div class="sp-log-title">{(l.userInput || "").slice(0, 32) || "—"}</div>
-            <div class="sp-log-meta">
-              {l.agentId || "-"} · 迭代 {l.iterations ?? 0} · 工具 {l.toolCallsTotal ?? 0}
-            </div>
-            <div class="sp-log-meta">
-              输入 {fmtTok(l.tokensPrompt)} · 输出 {fmtTok(l.tokensCompletion)}
-              · <span class:ok={!l.toolCallsFailed} class:bad={(l.toolCallsFailed ?? 0) > 0}>
-                  {(l.toolCallsFailed ?? 0) > 0 ? `失败 ${l.toolCallsFailed}` : "成功"}
-                </span>
-            </div>
-          </div>
-        {/each}
+  <div class="sp-body">
+    {#if loading}
+      <div class="sp-empty">加载中...</div>
+    {:else if tab === "context"}
+      <div class="sp-section">
+        <div class="sp-row"><span>系统提示</span><b>{fmtTok(breakdown.systemPromptBase)}</b></div>
+        <div class="sp-row"><span>项目记忆</span><b>{fmtTok(breakdown.projectMemory)}</b></div>
+        <div class="sp-row"><span>用户画像</span><b>{fmtTok(breakdown.userProfile)}</b></div>
+        <div class="sp-row"><span>情景记忆</span><b>{fmtTok(breakdown.episodicMemory)}</b></div>
+        <div class="sp-row"><span>注入技能</span><b>{fmtTok(breakdown.injectedSkills)}</b></div>
+        <div class="sp-row"><span>会话历史</span><b>{fmtTok(breakdown.conversationHistory)}</b></div>
+        <div class="sp-row"><span>当前消息</span><b>{fmtTok(breakdown.currentTurn)}</b></div>
+        <div class="sp-row sp-total"><span>总计</span><b>{fmtTok(breakdown.total)}</b></div>
+        <div class="sp-note">技能 {breakdown.skillsMatched?.length ?? 0}/{breakdown.skillsTotal ?? 0} 匹配</div>
       </div>
-    {/if}
-  {:else}
-    {#if skillList.length === 0}
-      <div class="sp-empty">暂无技能</div>
-    {:else}
-      <div class="sp-groups">
-        {#each groups as [expert, skills]}
-          <div class="sp-group">
-            <div class="sp-group-title">{expert || "general"}</div>
-            {#each skills as s}
-              <div class="sp-skill" title={s.description}>
-                <div class="sp-skill-name">&#9670; {s.name}</div>
-                {#if s.description}
-                  <div class="sp-skill-desc">{s.description}</div>
-                {/if}
+    {:else if tab === "logs"}
+      {#if logs.length === 0}
+        <div class="sp-empty">暂无日志</div>
+      {:else}
+        <div class="sp-log-list">
+          {#each logs as l}
+            <div class="sp-log">
+              <div class="sp-log-title">{(l.userInput || "").slice(0, 32) || "—"}</div>
+              <div class="sp-log-meta">
+                {l.agentId || "-"} · 迭代 {l.iterations ?? 0} · 工具 {l.toolCallsTotal ?? 0}
               </div>
-            {/each}
-          </div>
-        {/each}
-      </div>
+              <div class="sp-log-meta">
+                输入 {fmtTok(l.tokensPrompt)} · 输出 {fmtTok(l.tokensCompletion)}
+                · <span class:ok={!l.toolCallsFailed} class:bad={(l.toolCallsFailed ?? 0) > 0}>
+                    {(l.toolCallsFailed ?? 0) > 0 ? `失败 ${l.toolCallsFailed}` : "成功"}
+                  </span>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else}
+      {#if skillList.length === 0}
+        <div class="sp-empty">暂无技能</div>
+      {:else if detail}
+        <div class="sp-detail">
+          <div class="sp-detail-back" onclick={() => (detail = null)}>&#8592; 返回技能列表</div>
+          <div class="sp-detail-name">{detail.name} <span class="sp-detail-ver">v{detail.version}</span></div>
+          <div class="sp-detail-expert">{detail.expert}</div>
+          {#if detail.description}
+            <div class="sp-detail-desc">{detail.description}</div>
+          {/if}
+          {#if detail.triggers.length > 0}
+            <div class="sp-detail-sec">触发词</div>
+            <div class="sp-detail-tags">
+              {#each detail.triggers as t}
+                <span class="sp-tag">{t}</span>
+              {/each}
+            </div>
+          {/if}
+          {#if detail.raw || detail.body}
+            <div class="sp-detail-sec">内容</div>
+            <pre class="sp-detail-body">{detail.raw || detail.body}</pre>
+          {/if}
+        </div>
+      {:else}
+        <div class="sp-groups">
+          {#each groups as [expert, skills]}
+            <div class="sp-group">
+              <div class="sp-group-title">{expert || "general"}</div>
+              <div class="sp-cards">
+                {#each skills as s}
+                  <div
+                    class="sp-card"
+                    onclick={() => (detail = s)}
+                    onkeydown={(e) => e.key === "Enter" && (detail = s)}
+                    role="button"
+                    tabindex="0"
+                  >
+                    <div class="sp-card-head">
+                      <span class="sp-card-name">{s.name}</span>
+                      <span class="sp-card-ver">v{s.version}</span>
+                    </div>
+                    {#if s.description}
+                      <div class="sp-card-desc">{s.description}</div>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {/if}
-  {/if}
+  </div>
 </div>
 
 <style>
-  .sys-panel { display: flex; flex-direction: column; gap: 10px; }
-  .sp-tabs { display: flex; gap: 4px; }
+  .sys-panel { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+  .sp-tabs { display: flex; gap: 4px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
   .sp-tab {
     flex: 1;
     padding: 6px 4px;
@@ -171,6 +225,7 @@
     cursor: pointer;
   }
   .sp-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .sp-body { flex: 1; overflow-y: auto; min-height: 0; }
   .sp-section { display: flex; flex-direction: column; gap: 6px; }
   .sp-row {
     display: flex;
@@ -195,6 +250,55 @@
     padding: 2px 0;
     border-bottom: 1px solid var(--border);
   }
+  .sp-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .sp-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    background: var(--surface);
+    cursor: pointer;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .sp-card:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+  .sp-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .sp-card-name { font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sp-card-ver { font-size: 10px; color: var(--primary); flex-shrink: 0; }
+  .sp-card-desc {
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 4px;
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .sp-detail-back { font-size: 11px; color: var(--primary); cursor: pointer; margin-bottom: 8px; }
+  .sp-detail-name { font-size: 14px; font-weight: 600; color: var(--text); }
+  .sp-detail-ver { font-size: 11px; color: var(--primary); font-weight: 500; }
+  .sp-detail-expert { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  .sp-detail-desc { font-size: 12px; color: var(--text); margin: 8px 0; line-height: 1.6; }
+  .sp-detail-sec { font-size: 11px; font-weight: 600; color: var(--dim); margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .sp-detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sp-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    background: var(--primary-light);
+    color: var(--primary);
+    border-radius: 10px;
+    font-family: var(--font-mono);
+  }
+  .sp-detail-body {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
   .sp-log {
     padding: 8px;
     background: var(--bg);
@@ -205,16 +309,4 @@
   .sp-log-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .ok { color: var(--success); }
   .bad { color: var(--error); }
-  .sp-skill { font-size: 12px; padding: 2px 0; }
-  .sp-skill-name { font-weight: 500; color: var(--text); }
-  .sp-skill-desc {
-    font-size: 11px;
-    color: var(--dim);
-    margin-top: 2px;
-    line-height: 1.5;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
 </style>

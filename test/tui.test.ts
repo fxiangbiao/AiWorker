@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TUI 引擎测试 — 帧合成 / 流式半行 / 滚动 / 输入解析
  * 不依赖真实 TTY：直接测组件与键解析纯逻辑。
  */
@@ -142,23 +142,23 @@ describe("InputLine 输入编辑", () => {
 describe("StatusBar 渲染", () => {
   it("包含模式与模型信息", () => {
     const sb = new StatusBar();
-    sb.setData({ mode: "craft", model: "deepseek", tokensUsed: 1000, queueSize: 0 });
+    sb.setData({ mode: "auto", model: "deepseek", tokensUsed: 1000, queueSize: 0 });
     const out = sb.render(80);
-    expect(out[0]!).toContain("CRAFT");
+    expect(out[0]!).toContain("AUTO");
     expect(out[0]!).toContain("deepseek");
     expect(out[0]!).toContain("token");
   });
 
   it("windowPct 进度条", () => {
     const sb = new StatusBar();
-    sb.setData({ mode: "craft", model: "m", tokensUsed: 0, queueSize: 0, windowPct: 65 });
+    sb.setData({ mode: "auto", model: "m", tokensUsed: 0, queueSize: 0, windowPct: 65 });
     const out = sb.render(80);
     expect(out[0]!).toContain("%");
   });
 
   it("窄宽度下保留右侧帮助，压缩左侧", () => {
     const sb = new StatusBar();
-    sb.setData({ mode: "craft", model: "very-long-model-name-xyz", tokensUsed: 9999, queueSize: 2, windowPct: 65 });
+    sb.setData({ mode: "auto", model: "very-long-model-name-xyz", tokensUsed: 9999, queueSize: 2, windowPct: 65 });
     const out = sb.render(60);
     // 右侧 help 完整可见
     // eslint-disable-next-line no-control-regex
@@ -170,7 +170,7 @@ describe("StatusBar 渲染", () => {
 
   it("80 列下完整显示右侧 help（含全角边框）", () => {
     const sb = new StatusBar();
-    sb.setData({ mode: "craft", model: "deepseek-v4-flash", tokensUsed: 1700, queueSize: 0, windowPct: 3, status: "思考中" });
+    sb.setData({ mode: "auto", model: "deepseek-v4-flash", tokensUsed: 1700, queueSize: 0, windowPct: 3, status: "思考中" });
     const out = sb.render(80);
     // eslint-disable-next-line no-control-regex
     const clean = out[0]!.replace(/\x1b\[\d+(;\d+)*m/g, "");
@@ -181,7 +181,7 @@ describe("StatusBar 渲染", () => {
 
   it("clearTransient 清除思考中/工具名", () => {
     const sb = new StatusBar();
-    sb.setData({ mode: "craft", model: "m", tokensUsed: 0, queueSize: 0, status: "思考中", toolName: "fs_write" });
+    sb.setData({ mode: "auto", model: "m", tokensUsed: 0, queueSize: 0, status: "思考中", toolName: "fs_write" });
     const out1 = sb.render(80);
     expect(out1[0]!).toContain("思考中");
     sb.clearTransient();
@@ -248,7 +248,7 @@ describe("Markdown 块级渲染", () => {
 
   it("表格内容完整不截断（含长文本）", () => {
     const md =
-      "| 命令 | 说明 |\n|---|---|\n| /mode <模式> | ask(只读) / plan(确认后执行) / craft(自动执行) |";
+      "| 命令 | 说明 |\n|---|---|\n| /mode <模式> | ask(只读) / plan(确认后执行) / Auto(自动执行) |";
     const out = renderMarkdown(md);
     // eslint-disable-next-line no-control-regex
     const clean = out.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, ""));
@@ -310,7 +310,7 @@ describe("Tui 帧合成", () => {
     t.screen.setOut(() => {}); // 屏蔽真实输出
     t.messages.append("hello");
     t.input.type("hi");
-    t.status.setData({ mode: "craft", model: "m", tokensUsed: 0, queueSize: 0 });
+    t.status.setData({ mode: "auto", model: "m", tokensUsed: 0, queueSize: 0 });
     t.requestRender();
     await new Promise((r) => setTimeout(r, 40));
     expect(t.messages.getTotalLines()).toBe(1);

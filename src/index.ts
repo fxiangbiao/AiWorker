@@ -45,7 +45,7 @@ const program = new Command();
 program.name("aiworker").description("AiWorker — 个人 AI Agent 助手").version("0.1.0");
 
 program
-  .option("-m, --mode <mode>", "权限模式: ask | plan | craft", "craft")
+  .option("-m, --mode <mode>", "权限模式: ask | plan | auto", "auto")
   .option("-d, --dir <directory>", "工作目录", process.cwd())
   .option("--data-dir <directory>", "数据目录", resolve(process.cwd(), "data"))
   .option("-p, --project-dir <directory>", "项目输出目录", resolve(process.cwd(), "ai_default_project"))
@@ -138,9 +138,9 @@ program
     const permissionModel = new PermissionModel({
       defaultMode: options.mode as PermissionMode,
       modes: {
-        ask: { description: "只读模式", allow_tool_calls: false, require_confirmation: true },
-        plan: { description: "计划模式（列出后确认执行）", allow_tool_calls: true, require_confirmation: true },
-        craft: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
+        ask: { description: "只读问答（仅只读工具）", allow_tool_calls: true, readOnly: true },
+        plan: { description: "计划模式（每步确认后执行）", allow_tool_calls: true, require_confirmation: true },
+        auto: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
       },
       allowedDirs: [workingDir],
       deniedPatterns: [],
@@ -202,10 +202,15 @@ program
           getSkills: () =>
             skillRegistry.getAll().map((s) => ({
               name: s.name,
+              version: s.version ?? "1.0",
               description: s.description ?? "",
               expert: s.expert ?? "general",
+              triggers: s.triggers ?? [],
+              body: s.body ?? "",
+              raw: s.raw ?? "",
             })),
           sessionStore,
+          dataDir,
           getContextBreakdown: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) =>
             contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
@@ -515,12 +520,12 @@ program
 
       if (trimmed.startsWith("/mode ")) {
         const newMode = trimmed.slice(6).trim() as PermissionMode;
-        if (["ask", "plan", "craft"].includes(newMode)) {
+        if (["ask", "plan", "auto"].includes(newMode)) {
           currentMode = newMode;
           for (const a of Object.values(agents)) a.setMode(newMode);
           stdout.write(chalk.green(`✓ 已切换到 ${newMode} 模式\n`));
         } else {
-          stdout.write(chalk.red("无效模式，可选: ask, plan, craft\n"));
+          stdout.write(chalk.red("无效模式，可选: ask, plan, auto\n"));
         }
         renderer.printStatus({
           mode: currentMode,
@@ -537,7 +542,7 @@ program
         const rows: [string, string, string][] = [
           ["/plan <描述>", "多专家 DAG 协作", "自动分解任务，拓扑序执行"],
           ["/debate <话题>", "双专家辩论", "两专家独立分析+互审+综合报告"],
-          ["/mode <模式>", "切换权限模式", "ask(只读) / plan(确认后执行) / craft(自动执行)"],
+          ["/mode <模式>", "切换权限模式", "ask(只读) / plan(确认后执行) / auto(自动执行)"],
           ["/new", "开启新会话", "清空上下文和 token 计数，重新开始"],
           ["/log", "查看监控日志", "当前 session 的轮次摘要表"],
           ["/context", "上下文占用分析", "分层 token 占比 + MCP 工具列表"],

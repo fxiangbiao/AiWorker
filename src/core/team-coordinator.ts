@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Team 协调器 — 多智能体动态编排
  * 设计依据：Section 5.3 — 子 Agent 隔离原则 + DAG 编排
  *
@@ -144,7 +144,7 @@ export class TeamCoordinator {
             const agent = this.agents[step.expertId];
             if (!agent) throw new Error(`未知专家: ${step.expertId}`);
 
-            const result = await agent.run({ instruction, mode: "craft" }, workingDir, projectDir);
+            const result = await agent.run({ instruction, mode: "auto" }, workingDir, projectDir);
 
             const summary = result.text.length > 3000 ? result.text.slice(0, 3000) + "..." : result.text;
             stepResults.set(step.id, summary);
@@ -210,7 +210,7 @@ export class TeamCoordinator {
     }
 
     callbacks?.onToolCall?.(agentA, "第一轮分析", "debate-a1");
-    const r1 = await agent1.run({ instruction, mode: "craft" }, workingDir, projectDir);
+    const r1 = await agent1.run({ instruction, mode: "auto" }, workingDir, projectDir);
     if (signal?.aborted) {
       return {
         text: "辩论已中断",
@@ -222,7 +222,7 @@ export class TeamCoordinator {
     }
 
     callbacks?.onToolCall?.(agentB, "第一轮分析", "debate-b1");
-    const r2 = await agent2.run({ instruction, mode: "craft" }, workingDir, projectDir);
+    const r2 = await agent2.run({ instruction, mode: "auto" }, workingDir, projectDir);
     if (signal?.aborted) {
       return {
         text: "辩论已中断",
@@ -236,11 +236,11 @@ export class TeamCoordinator {
     // 互审: 每个 agent 审视对方结论
     const critiqueA = `请批判性地审视以下来自 ${agentA} 的分析，指出遗漏、矛盾或可改进之处:\n\n${r1.text.slice(0, 3000)}`;
     callbacks?.onToolCall?.(agentB, "审视对方结论", "debate-b2");
-    const cr2 = await agent2.run({ instruction: critiqueA, mode: "craft" }, workingDir, projectDir);
+    const cr2 = await agent2.run({ instruction: critiqueA, mode: "auto" }, workingDir, projectDir);
 
     const critiqueB = `请批判性地审视以下来自 ${agentB} 的分析，指出遗漏、矛盾或可改进之处:\n\n${r2.text.slice(0, 3000)}`;
     callbacks?.onToolCall?.(agentA, "审视对方结论", "debate-a2");
-    const cr1 = await agent1.run({ instruction: critiqueB, mode: "craft" }, workingDir, projectDir);
+    const cr1 = await agent1.run({ instruction: critiqueB, mode: "auto" }, workingDir, projectDir);
 
     // 综合报告
     const text = this.synthesizeDebate(instruction, agentA, agentB, r1.text, r2.text, cr1.text, cr2.text);

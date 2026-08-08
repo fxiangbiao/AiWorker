@@ -1,4 +1,4 @@
-export interface ChatItem {
+﻿export interface ChatItem {
   id: string;
   title: string;
   agentId: string;
@@ -14,7 +14,7 @@ export interface UIMessage {
   agentId?: string;
   timeline?: TimelineItem[];
   _thinkingActive?: boolean;
-  _kind?: "chat" | "plan" | "debate";
+  _kind?: "chat" | "plan" | "debate" | "error";
   _steps?: PlanStep[];
   _meta?: { agentA?: string; agentB?: string; failedSteps?: string[] };
   _activeStep?: string;
@@ -27,6 +27,13 @@ export interface PlanStep {
   dependsOn: string[];
   critical: boolean;
   status?: "pending" | "running" | "done" | "failed" | "skipped";
+}
+
+export interface ConfirmItem {
+  id: string;
+  title: string;
+  message: string;
+  options: { value: string; label: string }[];
 }
 
 export interface TimelineItem {
@@ -45,12 +52,13 @@ export interface TimelineItem {
 }
 
 export const store = $state({
-  mode: "craft" as string,
+  mode: "auto" as string,
   agentId: "default" as string,
   inputMode: "chat" as "chat" | "plan" | "debate",
   chats: [] as ChatItem[],
   activeChatId: null as string | null,
   messages: [] as UIMessage[],
+  confirms: [] as ConfirmItem[],
 });
 
 function load<T>(key: string, fallback: T): T {

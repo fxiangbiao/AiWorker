@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 工具执行测试
  */
 
@@ -24,7 +24,7 @@ describe("7. 工具执行", () => {
     sessionId: "test",
     workingDir: process.cwd(),
     projectDir: process.cwd(),
-    permissions: "craft",
+    permissions: "auto",
   };
 
   it("获取 fs_read handler", () => {
@@ -53,10 +53,17 @@ describe("7. 工具执行", () => {
     expect(result.content).toContain("AiWorker-Test");
   });
 
-  it("rm -rf / 被拦截", async () => {
+  it("rm -rf / 在 ask 模式被拦截", async () => {
     const handler = toolRegistry.getHandler("terminal_exec")!;
-    const result = await handler({ command: "rm -rf /" }, ctx);
+    const askCtx: ToolContext = { ...ctx, permissions: "ask" };
+    const result = await handler({ command: "rm -rf /" }, askCtx);
     expect(result.success).toBe(false);
     expect(result.error).toContain("高危");
+  });
+
+  it("rm -rf / 在 auto 模式不拦截（交由 hook 确认）", async () => {
+    const handler = toolRegistry.getHandler("terminal_exec")!;
+    const result = await handler({ command: "echo safe" }, ctx);
+    expect(result.success).toBe(true);
   });
 });

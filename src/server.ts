@@ -4,13 +4,14 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
+import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -33,9 +34,18 @@ interface ServerDeps {
   getAgentList: () => { id: string; name: string }[];
   skillNames: string[];
   sessionStore?: SessionStore;
-  getSkills?: () => { name: string; description: string; expert: string }[];
+  getSkills?: () => {
+    name: string;
+    version?: string;
+    description: string;
+    expert: string;
+    triggers?: string[];
+    body?: string;
+    raw?: string;
+  }[];
   getContextBreakdown?: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) => unknown;
   getSystemPrompt?: () => string;
+  dataDir?: string;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -92,6 +102,99 @@ function sendSSE(res: ServerResponse) {
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "*",
   });
+}
+
+interface DiffLine {
+  type: "add" | "del" | "ctx";
+  text: string;
+}
+
+interface DiffFile {
+  path: string;
+  added: number;
+  removed: number;
+  lines: DiffLine[];
+}
+
+interface DiffSession {
+  sessionId: string;
+  files: DiffFile[];
+}
+
+/** 解析快照 .diff 文件为结构化行 */
+function parseDiffFile(content: string): { lines: DiffLine[]; path?: string } {
+  const lines: DiffLine[] = [];
+  let path: string | undefined;
+  for (const rawLine of content.split("\n")) {
+    if (rawLine.startsWith("# path: ")) {
+      path = rawLine.slice(8).trim();
+      continue;
+    }
+    if (rawLine.startsWith("+ ") || rawLine === "+") {
+      lines.push({ type: "add", text: rawLine.slice(2) });
+    } else if (rawLine.startsWith("- ") || rawLine === "-") {
+      lines.push({ type: "del", text: rawLine.slice(2) });
+    } else if (rawLine.startsWith("---")) {
+      break; // diff 内容在 --- 分隔之前
+    } else if (rawLine.trim()) {
+      lines.push({ type: "ctx", text: rawLine });
+    }
+  }
+  return { lines, path };
+}
+
+/** 把安全化的文件名还原为可读路径（D_前缀 + 分隔符 _ → /） */
+function decodeDiffPath(fileName: string): string {
+  return fileName.replace(/\.diff$/, "").replace(/^D_/, "").replace(/_/g, "/");
+}
+
+/** 在确认通道上下文中执行异步操作（hook 内 requestConfirm 走 SSE 挂起） */
+async function runWithConfirm<T>(write: (data: object) => void, fn: () => Promise<T>): Promise<T> {
+  const previous = setConfirmProvider(
+    createHttpConfirmProvider((req) => {
+      write({ type: "confirm_request", confirmId: req.id, title: req.title, message: req.message, options: req.options });
+    }),
+  );
+  try {
+    return await fn();
+  } finally {
+    setConfirmProvider(previous);
+  }
+}
+
+/** 扫描 data/snapshots 目录，返回全部会话的文件变更 */
+function scanDiffs(snapshotsDir: string): DiffSession[] {
+  try {
+    if (!existsSync(snapshotsDir)) return [];
+    const sessions: DiffSession[] = [];
+    const sessionDirs = readdirSync(snapshotsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+
+    for (const sessionId of sessionDirs) {
+      const dir = resolve(snapshotsDir, sessionId);
+      const files: DiffFile[] = [];
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith(".diff")) continue;
+        const stat = statSync(resolve(dir, entry));
+        if (!stat.isFile()) continue;
+        const content = readFileSync(resolve(dir, entry), "utf-8");
+        const parsed = parseDiffFile(content);
+        files.push({
+          path: parsed.path ?? decodeDiffPath(entry),
+          added: parsed.lines.filter((l) => l.type === "add").length,
+          removed: parsed.lines.filter((l) => l.type === "del").length,
+          lines: parsed.lines,
+        });
+      }
+      if (files.length > 0) {
+        sessions.push({ sessionId, files });
+      }
+    }
+    return sessions;
+  } catch {
+    return [];
+  }
 }
 
 export function startServer(deps: ServerDeps, port: number) {
@@ -259,12 +362,14 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
         };
 
-        const result = await deps.coordinator.execute(
-          planResult.plan,
-          deps.workingDir,
-          deps.projectDir,
-          callbacks,
-          abort.signal,
+        const result = await runWithConfirm(write, () =>
+          deps.coordinator.execute(
+            planResult.plan,
+            deps.workingDir,
+            deps.projectDir,
+            callbacks,
+            abort.signal,
+          ),
         );
 
         write({
@@ -335,14 +440,16 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
         };
 
-        const result = await deps.coordinator.debate(
-          debateReq.topic,
-          agentA,
-          agentB,
-          deps.workingDir,
-          deps.projectDir,
-          callbacks,
-          abort.signal,
+        const result = await runWithConfirm(write, () =>
+          deps.coordinator.debate(
+            debateReq.topic,
+            agentA,
+            agentB,
+            deps.workingDir,
+            deps.projectDir,
+            callbacks,
+            abort.signal,
+          ),
         );
 
         write({
@@ -364,6 +471,39 @@ export function startServer(deps: ServerDeps, port: number) {
           res.end();
         }
       }
+      return;
+    }
+
+    if (url === apiUrl("/confirm") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+
+      let confirmReq: { id?: string; value?: string | null };
+      try {
+        confirmReq = JSON.parse(body) as { id?: string; value?: string | null };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+
+      if (!confirmReq.id || typeof confirmReq.id !== "string") {
+        sendJSON(res, 400, { error: "Missing 'id' field" });
+        return;
+      }
+
+      const ok = confirmResponse(confirmReq.id, confirmReq.value ?? null);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Unknown confirm id" });
+      return;
+    }
+
+    if (url === apiUrl("/diffs") && req.method === "GET") {
+      const snapshotsDir = deps.dataDir ? resolve(deps.dataDir, "snapshots") : resolve(process.cwd(), "data", "snapshots");
+      sendJSON(res, 200, { sessions: scanDiffs(snapshotsDir) });
       return;
     }
 
@@ -419,23 +559,30 @@ export function startServer(deps: ServerDeps, port: number) {
           deps.sessionStore.appendMessage(sessionId, { role: "user", content: chatReq.message });
         }
 
-        const callbacks: StreamCallbacks = {
-          onTextDelta: (text) => write({ type: "text", content: text }),
-          onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
-          onToolResult: (name, success, summary) =>
-            write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
-          onThinkingDelta: (text) => write({ type: "thinking", content: text }),
-          onThinkingStart: () => write({ type: "thinking_start" }),
-          onIterationStart: () => {},
-        };
+        // 确认通道：hook 内 requestConfirm 时发 SSE 事件并挂起等待前端响应
+        await runWithConfirm(write, async () => {
+          const callbacks: StreamCallbacks = {
+            onTextDelta: (text) => write({ type: "text", content: text }),
+            onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
+            onToolResult: (name, success, summary) => {
+              write({ type: "tool_result", name, success, summary: summary.slice(0, 500) });
+              if (!success && /拦截|禁止|不允许/.test(summary)) {
+                write({ type: "tool_blocked", name, message: summary.slice(0, 200) });
+              }
+            },
+            onThinkingDelta: (text) => write({ type: "thinking", content: text }),
+            onThinkingStart: () => write({ type: "thinking_start" }),
+            onIterationStart: () => {},
+          };
 
-        const task: Task = {
-          instruction: chatReq.message,
-          sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
-          mode: chatReq.mode as PermissionMode | undefined,
-        };
+          const task: Task = {
+            instruction: chatReq.message,
+            sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
+            mode: chatReq.mode as PermissionMode | undefined,
+          };
 
-        await agent.runStream(task, deps.workingDir, deps.projectDir, callbacks, abort.signal);
+          await agent.runStream(task, deps.workingDir, deps.projectDir, callbacks, abort.signal);
+        });
 
         if (deps.sessionStore && sessionId) {
           deps.sessionStore.appendMessage(sessionId, { role: "assistant", content: "" });
