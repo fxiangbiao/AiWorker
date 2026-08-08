@@ -31,7 +31,7 @@ import { FinancialAgent } from "./agents/financial-agent.js";
 import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
-import { TeamCoordinator } from "./core/team-coordinator.js";
+import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
@@ -45,7 +45,7 @@ const program = new Command();
 program.name("aiworker").description("AiWorker — 个人 AI Agent 助手").version("0.1.0");
 
 program
-  .option("-m, --mode <mode>", "权限模式: ask | plan | craft", "craft")
+  .option("-m, --mode <mode>", "权限模式: ask | plan | auto", "auto")
   .option("-d, --dir <directory>", "工作目录", process.cwd())
   .option("--data-dir <directory>", "数据目录", resolve(process.cwd(), "data"))
   .option("-p, --project-dir <directory>", "项目输出目录", resolve(process.cwd(), "ai_default_project"))
@@ -138,9 +138,9 @@ program
     const permissionModel = new PermissionModel({
       defaultMode: options.mode as PermissionMode,
       modes: {
-        ask: { description: "只读模式", allow_tool_calls: false, require_confirmation: true },
-        plan: { description: "计划模式（列出后确认执行）", allow_tool_calls: true, require_confirmation: true },
-        craft: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
+        ask: { description: "只读问答（仅只读工具）", allow_tool_calls: true, readOnly: true },
+        plan: { description: "计划模式（每步确认后执行）", allow_tool_calls: true, require_confirmation: true },
+        auto: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
       },
       allowedDirs: [workingDir],
       deniedPatterns: [],
@@ -152,19 +152,12 @@ program
       permissionModel,
       sessionStore,
       modelRouter,
-      onFileDiff: (filePath, added, removed, diffText) => {
+      workingDir,
+      projectDir,
+      dataDir,
+      onFileDiff: (filePath, added, removed, _diffText) => {
+        // 终端只展示单行摘要，完整 diff 由 Web /diffs 查看
         outputRenderer.fileDiff(filePath, added, removed);
-        if (diffText && diffText.trim()) {
-          for (const line of diffText.split("\n")) {
-            if (line.startsWith("+ ")) {
-              stdout.write(`    ${chalk.green(line)}\n`);
-            } else if (line.startsWith("- ")) {
-              stdout.write(`    ${chalk.red(line)}\n`);
-            } else {
-              stdout.write(`    ${chalk.gray(line)}\n`);
-            }
-          }
-        }
       },
     });
     if (hooksCount > 0) {
@@ -194,11 +187,26 @@ program
           modelRouter,
           workingDir,
           projectDir,
+          coordinator,
           createAgent: (agentId: string) => agents[agentId] ?? agents["default"],
           getAgentList: () =>
             Object.entries(agents).map(([id, a]) => ({ id, name: a.getName() })),
           skillNames: skillRegistry.getAll().map((s) => s.name),
+          getSkills: () =>
+            skillRegistry.getAll().map((s) => ({
+              name: s.name,
+              version: s.version ?? "1.0",
+              description: s.description ?? "",
+              expert: s.expert ?? "general",
+              triggers: s.triggers ?? [],
+              body: s.body ?? "",
+              raw: s.raw ?? "",
+            })),
           sessionStore,
+          dataDir,
+          getContextBreakdown: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) =>
+            contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
+          getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
         },
         port,
       );
@@ -505,12 +513,12 @@ program
 
       if (trimmed.startsWith("/mode ")) {
         const newMode = trimmed.slice(6).trim() as PermissionMode;
-        if (["ask", "plan", "craft"].includes(newMode)) {
+        if (["ask", "plan", "auto"].includes(newMode)) {
           currentMode = newMode;
           for (const a of Object.values(agents)) a.setMode(newMode);
           stdout.write(chalk.green(`✓ 已切换到 ${newMode} 模式\n`));
         } else {
-          stdout.write(chalk.red("无效模式，可选: ask, plan, craft\n"));
+          stdout.write(chalk.red("无效模式，可选: ask, plan, auto\n"));
         }
         renderer.printStatus({
           mode: currentMode,
@@ -527,7 +535,7 @@ program
         const rows: [string, string, string][] = [
           ["/plan <描述>", "多专家 DAG 协作", "自动分解任务，拓扑序执行"],
           ["/debate <话题>", "双专家辩论", "两专家独立分析+互审+综合报告"],
-          ["/mode <模式>", "切换权限模式", "ask(只读) / plan(确认后执行) / craft(自动执行)"],
+          ["/mode <模式>", "切换权限模式", "ask(只读) / plan(确认后执行) / auto(自动执行)"],
           ["/new", "开启新会话", "清空上下文和 token 计数，重新开始"],
           ["/log", "查看监控日志", "当前 session 的轮次摘要表"],
           ["/context", "上下文占用分析", "分层 token 占比 + MCP 工具列表"],
@@ -1053,32 +1061,6 @@ program
     renderer.destroy();
     sessionStore.close();
   });
-
-function pickDebateAgents(topic: string, available: string[]): { agentA: string; agentB: string } {
-  const defaultPair = { agentA: "research", agentB: "coding" };
-
-  if (available.length < 2) return defaultPair;
-
-  const has = (id: string) => available.includes(id);
-
-  if (/投资|股票|基金|理财|财务|资产/i.test(topic) && has("financial") && has("data-analysis")) {
-    return { agentA: "financial", agentB: "data-analysis" };
-  }
-  if (/游戏/i.test(topic) && has("game-dev") && has("product-ops")) {
-    return { agentA: "game-dev", agentB: "product-ops" };
-  }
-  if (/(?:技术选型|架构|框架|语言.*选择|React.*Vue|前后端)/i.test(topic) && has("coding") && has("research")) {
-    return { agentA: "coding", agentB: "research" };
-  }
-  if (/(?:产品|运营|用户|市场|PRD)/i.test(topic) && has("product-ops") && has("research")) {
-    return { agentA: "product-ops", agentB: "research" };
-  }
-  if (/数据|分析|统计|报表/i.test(topic) && has("data-analysis") && has("research")) {
-    return { agentA: "data-analysis", agentB: "research" };
-  }
-
-  return defaultPair;
-}
 
 function displayWidth(s: string): number {
   let w = 0;

@@ -66,7 +66,8 @@ export async function runAgentLoop(
       }
 
       const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
-      const tools = mode === "ask" ? undefined : availableTools;
+      // ask 模式传全部工具定义：模型可尝试调用，非只读工具由 permissionCheck 拦截（产生红色告警）
+      const tools = availableTools;
 
       const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools);
 
@@ -226,7 +227,8 @@ export async function runAgentLoopStream(
       }
 
       const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
-      const tools = mode === "ask" ? undefined : availableTools;
+      // ask 模式传全部工具定义：模型可尝试调用，非只读工具由 permissionCheck 拦截（产生红色告警）
+      const tools = availableTools;
 
       // 流式调用
       callbacks.onIterationStart?.(iterations);
@@ -441,7 +443,7 @@ async function executeTool(toolCall: ToolCall, ctx: ToolContext, config: AgentCo
       tool_call_id: toolCall.id,
       success: false,
       content: "",
-      error: `操作被拦截: ${preHookResult.message ?? "Hook 拦截"}`,
+      error: `操作被拦截: ${preHookResult.message ?? "Hook 拦截"}。请用一句话告知用户该操作被系统拦截及原因，不要展开长解释。`,
     };
   }
 

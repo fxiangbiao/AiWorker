@@ -19,6 +19,10 @@ const researchConfig: AgentConfig = loadAgentConfig("research") ?? {
 - fs_write: 输出研究报告到文件
 - fs_read: 读取已有资料
 
+工具调用规则：
+- 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟
+- 直接给出工具参数，等待工具执行结果返回后再继续
+
 工作流程：
 1. 深入理解研究问题，拆解为子问题
 2. 通过搜索获取多方信息来源

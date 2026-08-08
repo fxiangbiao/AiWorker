@@ -1,4 +1,4 @@
-/**
+﻿/**
  * components.ts — TUI 组件（参考 Pi TUI 组件协议）
  *
  * 每个组件实现 render(width): string[]，返回不超过宽度的行数组。
@@ -342,7 +342,7 @@ export interface StatusData {
 }
 
 export class StatusBar implements Component {
-  private data: StatusData = { mode: "craft", model: "", tokensUsed: 0, queueSize: 0 };
+  private data: StatusData = { mode: "auto", model: "", tokensUsed: 0, queueSize: 0 };
 
   setData(data: StatusData): void {
     this.data = { ...this.data, ...data };
@@ -368,7 +368,7 @@ export class StatusBar implements Component {
     const toolStr = d.toolName ? `🛠 ${d.toolName}` : "";
     const statusStr = d.status ? chalk.yellow(d.status) : "";
 
-    const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", craft: "执行" };
+    const modeLabels: Record<string, string> = { ask: "询问", plan: "规划", auto: "自动" };
     const modeLabel = modeLabels[d.mode] ?? d.mode;
     const barStr = d.windowPct != null ? this.renderWindowBar(d.windowPct) : "";
 

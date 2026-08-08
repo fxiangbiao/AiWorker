@@ -1,5 +1,5 @@
 /**
- * 权限模型 — Ask / Plan / Craft 三模式
+ * 权限模型 — Ask / Plan / Auto 三模式
  * 设计依据：调研报告——WorkBuddy 的三模式权限设计
  */
 
@@ -25,6 +25,27 @@ export class PermissionModel {
   /** 当前模式是否允许工具调用 */
   allowsToolCalls(): boolean {
     return this.config.modes[this.currentMode].allow_tool_calls;
+  }
+
+  /** 指定模式是否允许工具调用（请求级权限判断用） */
+  allowsToolCallsFor(mode: PermissionMode): boolean {
+    return this.config.modes[mode]?.allow_tool_calls ?? false;
+  }
+
+  /** 指定模式是否为只读（仅允许只读工具） */
+  isReadOnly(mode: PermissionMode): boolean {
+    return this.config.modes[mode]?.readOnly ?? false;
+  }
+
+  /** 只读工具白名单（ask 模式可执行） */
+  static READONLY_TOOLS: string[] = ["fs_read", "fs_list", "web_search", "web_fetch", "math_eval", "uuid_gen", "json_format", "timestamp_convert"];
+
+  /** 指定模式是否允许调用指定工具 */
+  allowsToolFor(mode: PermissionMode, toolName: string): boolean {
+    if (this.isReadOnly(mode)) {
+      return PermissionModel.READONLY_TOOLS.includes(toolName);
+    }
+    return this.allowsToolCallsFor(mode);
   }
 
   /** 是否需要用户确认 */

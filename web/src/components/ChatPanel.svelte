@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import UserMessage from "./UserMessage.svelte";
   import AgentCard from "./AgentCard.svelte";
+  import ConfirmCard from "./ConfirmCard.svelte";
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
   import {
@@ -11,11 +12,24 @@
     loadMessages,
     type ChatItem,
     type UIMessage,
+    type PlanStep,
+    type ConfirmItem,
+    API,
   } from "$lib/stores/chat.svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
   import { totalTokens, currentModel } from "$lib/stores/status";
 
   let errors: string[] = $state([]);
+
+  // 切换会话时清空错误提示与确认卡片（临时状态）
+  let _lastSession = $state(store.activeChatId);
+  $effect(() => {
+    if (store.activeChatId !== _lastSession) {
+      _lastSession = store.activeChatId;
+      errors = [];
+      store.confirms = [];
+    }
+  });
 
   let _lastMsgCount = $state(0);
   $effect(() => {
@@ -36,15 +50,41 @@
     store.chats.unshift(chat);
     store.activeChatId = id;
     store.messages.length = 0;
-    store.diffs.length = 0;
     errors = [];
     saveChats(store.chats);
   }
 
 
+  function respondConfirm(id: string, value: string | null) {
+    store.confirms = store.confirms.filter((c) => c.id !== id);
+    fetch(`${API}/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, value }),
+    }).catch(() => { /* 服务端超时后忽略 */ });
+  }
+
   function handleSend(text: string) {
     if (stream.sending) return;
     if (!store.activeChatId) newChat();
+
+    const kind = store.inputMode === "chat" && (text.startsWith("/plan ") || text.startsWith("/debate "))
+      ? (text.startsWith("/plan ") ? "plan" : "debate")
+      : store.inputMode === "chat"
+        ? "chat"
+        : store.inputMode;
+    const payload = kind === "plan" && text.startsWith("/plan ") ? text.slice(6).trim()
+      : kind === "debate" && text.startsWith("/debate ") ? text.slice(8).trim()
+      : text;
+
+    if (kind !== "chat") {
+      if (!payload) {
+        errors = [...errors, kind === "plan" ? "请输入任务描述" : "请输入辩论话题"];
+        return;
+      }
+      handleCollab(kind, payload, text);
+      return;
+    }
 
     store.messages.push({ role: "user", content: text });
 
@@ -64,10 +104,15 @@
     const agentMsg: UIMessage = { role: "assistant", agentId: store.agentId, content: "", timeline: [] };
     store.messages.push(agentMsg);
 
-    fetch("/chat", {
+    fetch(`${API}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, mode: store.mode, agentId: store.agentId }),
+      body: JSON.stringify({
+        message: text,
+        mode: store.mode,
+        agentId: store.agentId,
+        sessionId: store.activeChatId,
+      }),
       signal: ac.signal,
     })
       .then(async (resp) => {
@@ -100,6 +145,157 @@
         setSending(false, null);
         saveMessages(store.activeChatId!, store.messages);
       });
+  }
+
+  async function handleCollab(kind: "plan" | "debate", payload: string, raw: string) {
+    store.messages.push({ role: "user", content: raw });
+
+    const chat = store.chats.find((c) => c.id === store.activeChatId);
+    if (chat && (!chat.turns || chat.turns === 0)) {
+      chat.title = raw.slice(0, 50);
+      chat.turns = 1;
+    } else if (chat) {
+      chat.turns = (chat.turns || 0) + 1;
+    }
+    saveChats(store.chats);
+
+    const ac = new AbortController();
+    setSending(true, ac);
+    errors = [];
+
+    const agentMsg: UIMessage = {
+      role: "assistant",
+      agentId: kind === "plan" ? "team" : "debate",
+      content: "",
+      timeline: [],
+      _kind: kind,
+      _steps: [],
+    };
+    store.messages.push(agentMsg);
+
+    try {
+      const resp = await fetch(`${API}/${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(kind === "plan" ? { instruction: payload } : { topic: payload }),
+        signal: ac.signal,
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const reader = resp.body!.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            handleCollabSSE(kind, JSON.parse(line.slice(6)));
+          } catch {
+            /* skip malformed SSE */
+          }
+        }
+      }
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") {
+        errors = [...errors, (e as Error).message];
+      }
+    } finally {
+      setSending(false, null);
+      saveMessages(store.activeChatId!, store.messages);
+    }
+  }
+
+  function handleCollabSSE(kind: "plan" | "debate", data: Record<string, unknown>) {
+    const agent = store.messages.filter((x) => x.role === "assistant" || x.role === "agent").pop();
+    if (!agent) return;
+
+    switch (data.type) {
+      case "plan": {
+        const steps = (data.steps as PlanStep[]) || [];
+        agent._steps = steps.map((s) => ({ ...s, status: "pending" as const }));
+        agent._thinkingActive = true;
+        break;
+      }
+      case "step_start": {
+        const stepId = data.stepId as string;
+        agent._thinkingActive = true;
+        agent._activeStep = data.expertId as string;
+        if (!agent._steps) return;
+        for (const s of agent._steps) {
+          s.status = s.id === stepId ? "running" : s.status;
+        }
+        break;
+      }
+      case "step_end": {
+        const stepId = data.stepId as string;
+        if (!agent._steps) return;
+        for (const s of agent._steps) {
+          if (s.id === stepId) {
+            s.status = data.success ? "done" : "failed";
+          }
+        }
+        break;
+      }
+      case "tool_call":
+        if (kind === "debate") {
+          agent._thinkingActive = true;
+          agent._activeStep = `${data.name} · ${data.phase || data.args}`;
+          break;
+        }
+        agent.timeline = agent.timeline || [];
+        agent.timeline.push({
+          type: "tool",
+          name: data.name as string,
+          args: data.args as string,
+          id: data.id as string,
+          result: false,
+          pending: true,
+        });
+        agent._thinkingActive = true;
+        break;
+      case "tool_result": {
+        for (let i = (agent.timeline || []).length - 1; i >= 0; i--) {
+          const t = agent.timeline![i];
+          if (t.type === "tool" && !t.result) {
+            t.result = !!data.success;
+            t.pending = false;
+            t.resultPreview = data.summary as string;
+            if (!data.success) t.error = data.summary as string;
+            break;
+          }
+        }
+        break;
+      }
+      case "debate_start": {
+        agent._meta = { agentA: data.agentA as string, agentB: data.agentB as string };
+        agent._thinkingActive = true;
+        break;
+      }
+      case "done": {
+        if (data.tokenUsage) {
+          totalTokens.set((data.tokenUsage as { total: number }).total || 0);
+          currentModel.set((data.model as string) || "");
+        }
+        if (kind === "plan") {
+          agent._meta = agent._meta || {};
+          agent._meta.failedSteps = (data.failedSteps as string[]) || [];
+        }
+        agent._thinkingActive = false;
+        agent._activeStep = undefined;
+        if (data.content) agent.content = (data.content as string) || "";
+        store.diffVersion++;
+        break;
+      }
+      case "error":
+        agent._thinkingActive = false;
+        agent._activeStep = undefined;
+        errors = [...errors, (data.message as string) || "unknown error"];
+        break;
+    }
   }
 
   function handleSSE(data: Record<string, unknown>) {
@@ -142,31 +338,8 @@
             t.resultPreview = data.summary as string;
             t.pending = false;
             if (!data.success) t.error = data.summary as string;
-            if (data.name === "fs_write") {
-              try {
-                const a = JSON.parse((t.args as string) || "{}");
-                if (a.filePath) {
-                  const exist = store.diffs.find((d) => d.filePath === a.filePath);
-                  if (!exist) store.diffs.push({ filePath: a.filePath, added: 0, removed: 0 });
-                }
-              } catch { /* ignore */ }
-            }
             break;
           }
-        }
-        break;
-      }
-      case "diff": {
-        const fp = data.filePath as string;
-        const dt = (data.diffText as string) || "";
-        const added = (dt.match(/^\+(?!\+\+)/gm) || []).length;
-        const removed = (dt.match(/^-(?!--)/gm) || []).length;
-        const exist = store.diffs.find((d) => d.filePath === fp);
-        if (exist) {
-          exist.added += added;
-          exist.removed += removed;
-        } else {
-          store.diffs.push({ filePath: fp, added, removed });
         }
         break;
       }
@@ -175,9 +348,53 @@
           totalTokens.set((data.tokenUsage as { total: number }).total || 0);
           currentModel.set((data.model as string) || "");
         }
+        // 复位思考中状态
+        for (const m of store.messages) {
+          m._thinkingActive = false;
+          m._activeStep = undefined;
+        }
+        store.confirms = [];
+        store.diffVersion++;
         break;
+      case "confirm_request": {
+        const confirm: ConfirmItem = {
+          id: data.confirmId as string,
+          title: (data.title as string) || "操作确认",
+          message: (data.message as string) || "",
+          options: (data.options as { value: string; label: string }[]) || [
+            { value: "allow", label: "允许" },
+            { value: "deny", label: "拒绝" },
+          ],
+        };
+        const exist = store.confirms.find((c) => c.id === confirm.id);
+        if (!exist) store.confirms.push(confirm);
+        break;
+      }
+      case "tool_blocked": {
+        // 拦截提示已由 tool_result 写入工具卡片 error，此处仅标记卡片为错误样式，不再显示独立横幅
+        const name = data.name as string;
+        const msg = (data.message as string) || `${name} 被拦截`;
+        for (const m of store.messages) {
+          const tl = m.timeline || [];
+          for (let i = tl.length - 1; i >= 0; i--) {
+            const t = tl[i];
+            if (t.type === "tool" && t.name === name && !t.error) {
+              t.error = msg;
+              t.result = true;
+              t.pending = false;
+              break;
+            }
+          }
+        }
+        break;
+      }
       case "error":
         errors = [...errors, (data.message as string) || "unknown error"];
+        for (const m of store.messages) {
+          m._thinkingActive = false;
+          m._activeStep = undefined;
+        }
+        store.confirms = [];
         break;
     }
   }
@@ -200,13 +417,20 @@
           <AgentCard {msg} />
         {/if}
       {/each}
+      {#each store.confirms as c}
+        <ConfirmCard confirm={c} onRespond={(v) => respondConfirm(c.id, v)} />
+      {/each}
       {#each errors as err}
         <ErrorBanner message={err} />
       {/each}
       </div>
     {/if}
   </div>
-  <InputArea onSend={handleSend} />
+  <InputArea
+    onSend={handleSend}
+    inputMode={store.inputMode}
+    onSelectMode={(m) => (store.inputMode = m)}
+  />
 </div>
 
 <style>
@@ -217,8 +441,8 @@
     scroll-behavior: smooth;
   }
   .msg-inner {
-    width: 88%;
-    max-width: 1200px;
+    width: 96%;
+    max-width: 1400px;
     margin: 0 auto;
     padding: 24px 24px;
   }

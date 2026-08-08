@@ -2,10 +2,20 @@
   import ThinkBlock from "./ThinkBlock.svelte";
   import ToolsGroup from "./ToolsGroup.svelte";
   import AnswerBlock from "./AnswerBlock.svelte";
+  import PlanStepsBlock from "./PlanStepsBlock.svelte";
   import type { UIMessage, TimelineItem } from "$lib/stores/chat.svelte";
 
   let { msg }: { msg: UIMessage } = $props();
   let timeline = $derived(msg.timeline || []);
+  let liveLabel = $derived.by(() => {
+    if (msg._kind === "plan") {
+      return msg._activeStep ? `执行步骤 · ${msg._activeStep}` : "规划中...";
+    }
+    if (msg._kind === "debate") {
+      return msg._activeStep ? `辩论中 · ${msg._activeStep}` : "准备中...";
+    }
+    return "思考中...";
+  });
 
   function buildGroups(): Array<{ type: "thinking"; item: TimelineItem } | { type: "tool"; items: TimelineItem[] }> {
     const groups: Array<{ type: "thinking"; item: TimelineItem } | { type: "tool"; items: TimelineItem[] }> = [];
@@ -30,28 +40,49 @@
   let groups = $derived(buildGroups());
 </script>
 
-<div class="msg agent-card">
-  {#if groups.length > 0}
-    <div class="timeline">
-      {#each groups as g}
-        {#if g.type === "thinking"}
-          <ThinkBlock content={g.item.content || ""} />
-        {:else}
-          <ToolsGroup tools={g.items} />
-        {/if}
-      {/each}
+<div class="msg">
+  {#if msg._kind === "error"}
+    <div class="error-card">⚠ {msg.content}</div>
+  {:else}
+    <div class="agent-card">
+      {#if groups.length > 0}
+        <div class="timeline">
+          {#each groups as g}
+            {#if g.type === "thinking"}
+              <ThinkBlock content={g.item.content || ""} />
+            {:else}
+              <ToolsGroup tools={g.items} />
+            {/if}
+          {/each}
+        </div>
+      {/if}
+      {#if msg._thinkingActive}
+        <div class="live-label"><span class="spin"></span>{liveLabel}</div>
+      {/if}
+      {#if msg._steps && msg._steps.length > 0}
+        <PlanStepsBlock steps={msg._steps} meta={msg._meta} />
+      {/if}
+      {#if msg.content}
+        <AnswerBlock content={msg.content} />
+      {/if}
     </div>
-  {/if}
-  {#if msg._thinkingActive}
-    <div class="live-label"><span class="spin"></span>思考中...</div>
-  {/if}
-  {#if msg.content}
-    <AnswerBlock content={msg.content} />
   {/if}
 </div>
 
 <style>
   .msg { margin-bottom: 24px; }
+  .error-card {
+    border: 1px solid var(--error);
+    border-radius: var(--radius);
+    background: rgba(232, 84, 107, .06);
+    color: var(--error);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 12px 16px;
+    word-break: break-word;
+    white-space: pre-wrap;
+    margin-bottom: 12px;
+  }
   .agent-card {
     border: 1px solid var(--border);
     border-radius: var(--radius);

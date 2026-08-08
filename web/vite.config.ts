@@ -16,11 +16,7 @@ export default defineConfig({
   build: { outDir: "dist" },
   server: {
     proxy: {
-      "/chat": "http://localhost:3000",
-      "/agents": "http://localhost:3000",
-      "/status": "http://localhost:3000",
-      "/sessions": "http://localhost:3000",
-      "/tools": "http://localhost:3000",
+      "/api": "http://localhost:3000",
     },
   },
 });

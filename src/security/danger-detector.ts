@@ -1,19 +1,23 @@
-/**
+﻿/**
  * 危险操作检测器
  * 设计依据：调研报告 6.3 节——高危操作正则拦截
  */
 
 import type { PermissionMode } from "../types.js";
 
-// 默认拦截的高危操作 (Craft 模式下需二次确认)
+// 默认拦截的高危操作 (Auto 模式下需二次确认)
 const DANGEROUS_PATTERNS = [
   // 文件系统
   /rm\s+-rf\s+\//,
   /rm\s+-rf\s+~/,
   /rm\s+-rf\s+\$HOME/i,
+  /rm\s+(?!-)(?:"[^"]+"|\S+)/i, // 删除单个文件 rm <file>（含引号路径，不可逆）
   /del\s+\/s\s+\/q/i,
+  /del\s+(?!\/)(?:"[^"]+"|\S+)/i, // 删除单个文件 del <file>（Windows，含引号路径，不可逆）
   /rmdir\s+\/s/i,
   /Remove-Item.*-Recurse.*-Force/i,
+  /Remove-Item\s+/i, // Remove-Item 任意删除（PowerShell）
+  /rm\s+-r\s+[^\s"']+/i, // 递归删除单个目标
   // 数据库
   /DROP\s+(TABLE|DATABASE)/i,
   /DELETE\s+FROM\s+\w+\s*;?\s*$/i,
@@ -79,11 +83,11 @@ export class DangerDetector {
    * 根据权限模式决定是否需要确认
    * - ask: 不执行工具，无需确认
    * - plan: 需确认
-   * - craft: 仅高危需确认
+   * - auto: 仅高危需确认
    */
   needsConfirmation(input: string, mode: PermissionMode): boolean {
     if (mode === "plan") return true;
-    if (mode === "craft") {
+    if (mode === "auto") {
       const result = this.check(input);
       return result.isDangerous || result.level === "warning";
     }

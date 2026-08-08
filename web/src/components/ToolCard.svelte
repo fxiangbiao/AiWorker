@@ -20,7 +20,10 @@
   {#if tool.pending && !tool.result}
     <div class="tc-result pending"><span class="spin"></span>执行中...</div>
   {:else if tool.error}
-    <div class="tc-result err">{esc(tool.error)}</div>
+    <div class="tc-bubble">
+      <span class="tb-title">⚠ 操作被拦截</span>
+      <span class="tb-msg">{esc(tool.error)}</span>
+    </div>
   {:else if tool.result}
     <div class="tc-result">
       {tool.resultPreview ? esc(tool.resultPreview.slice(0, 200)) : ""}
@@ -57,6 +60,19 @@
   .tc-result { margin-top: 6px; font-size: 12px; color: var(--success); font-weight: 500; }
   .tc-result.pending { color: var(--dim); display: flex; align-items: center; gap: 6px; }
   .tc-result.err { color: var(--error); }
+  .tc-bubble {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    background: #FEF2F2;
+    border: 1px solid #FECACA;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tb-title { font-size: 12px; font-weight: 600; color: var(--error); }
+  .tb-msg { font-size: 11px; color: var(--error); font-family: var(--font-mono); word-break: break-word; white-space: pre-wrap; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .spin {
     display: inline-block;

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Coding 编码智能体
  * 擅长架构设计、代码重构、调试排错、测试生成
  */
@@ -19,6 +19,10 @@ const codingConfig: AgentConfig = loadAgentConfig("coding") ?? {
 - terminal_exec: 执行终端命令（编译、运行测试、包管理、Git 等）
 - web_search: 搜索技术文档和解决方案
 
+工具调用规则：
+- 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟
+- 直接给出工具参数，等待工具执行结果返回后再继续
+
 工作原则：
 1. 先阅读项目现有代码 — 用 fs_read 理解代码结构和风格后再动手
 2. 保持代码风格一致 — 遵循项目已有的命名、缩进、注释风格
@@ -37,7 +41,7 @@ const codingConfig: AgentConfig = loadAgentConfig("coding") ?? {
   tools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search"],
   mcpServers: [],
   permissions: {
-    defaultMode: "craft",
+    defaultMode: "auto",
     allowedTools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search"],
     deniedTools: [],
   },

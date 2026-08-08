@@ -27,6 +27,10 @@ const financialConfig: AgentConfig = loadAgentConfig("financial") ?? {
 - 资金面：主力净流入、北向资金、融资融券
 - 消息面：政策、财报、行业新闻
 
+工具调用规则：
+- 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟
+- 直接给出工具参数，等待工具执行结果返回后再继续
+
 工作流程：
 1. web_search 获取最新数据和新闻
 2. 多维度分析

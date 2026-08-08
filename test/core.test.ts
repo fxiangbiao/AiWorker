@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 核心模块测试：工具注册表 / 危险检测 / 权限模型 / 专家路由 / 技能注册表
  */
 
@@ -59,6 +59,19 @@ describe("2. 危险操作检测", () => {
   it("拦截 git reset --hard", () => {
     expect(detector.check("git reset --hard HEAD~3").isDangerous).toBe(true);
   });
+  it("拦截 del 删除单个文件 (Windows)", () => {
+    expect(detector.check('del "D:\\ALAN\\Docs\\file.md"').isDangerous).toBe(true);
+    expect(detector.check('del D:\\ALAN\\Docs\\file.md').isDangerous).toBe(true);
+  });
+  it("拦截 rm 删除单个文件", () => {
+    expect(detector.check("rm /tmp/a.txt").isDangerous).toBe(true);
+  });
+  it("拦截 Remove-Item 删除文件", () => {
+    expect(detector.check('Remove-Item "D:\\ALAN\\Docs\\file.md"').isDangerous).toBe(true);
+  });
+  it("del /s /q 递归删除拦截", () => {
+    expect(detector.check("del /s /q C:\\temp").isDangerous).toBe(true);
+  });
   it("ls -la 安全", () => {
     expect(detector.check("ls -la").isDangerous).toBe(false);
   });
@@ -70,13 +83,13 @@ describe("2. 危险操作检测", () => {
   });
 });
 
-describe("3. 权限模型 (Ask/Plan/Craft)", () => {
+describe("3. 权限模型 (Ask/Plan/Auto)", () => {
   const permConfig: PermissionConfig = {
     defaultMode: "ask",
     modes: {
-      ask: { description: "纯问答", allow_tool_calls: false },
-      plan: { description: "先计划", allow_tool_calls: false, require_confirmation: true },
-      craft: { description: "自主执行", allow_tool_calls: true, high_risk_confirm: true },
+      ask: { description: "只读问答", allow_tool_calls: true, readOnly: true },
+      plan: { description: "先计划", allow_tool_calls: true, require_confirmation: true },
+      auto: { description: "自主执行", allow_tool_calls: true, high_risk_confirm: true },
     },
     allowedDirs: [],
     deniedPatterns: [],
@@ -86,14 +99,23 @@ describe("3. 权限模型 (Ask/Plan/Craft)", () => {
   it("默认 Ask 模式", () => {
     expect(permModel.getMode()).toBe("ask");
   });
-  it("Ask 模式不允许工具调用", () => {
-    expect(permModel.allowsToolCalls()).toBe(false);
+  it("Ask 模式为只读", () => {
+    expect(permModel.isReadOnly("ask")).toBe(true);
   });
-  it("Craft 模式允许工具调用", () => {
-    permModel.setMode("craft");
+  it("Ask 模式允许只读工具", () => {
+    expect(permModel.allowsToolFor("ask", "fs_read")).toBe(true);
+    expect(permModel.allowsToolFor("ask", "fs_list")).toBe(true);
+  });
+  it("Ask 模式禁止写工具", () => {
+    expect(permModel.allowsToolFor("ask", "fs_write")).toBe(false);
+    expect(permModel.allowsToolFor("ask", "terminal_exec")).toBe(false);
+  });
+  it("Auto 模式允许全部工具", () => {
+    permModel.setMode("auto");
     expect(permModel.allowsToolCalls()).toBe(true);
+    expect(permModel.allowsToolFor("auto", "fs_write")).toBe(true);
   });
-  it("Craft 模式高危需确认", () => {
+  it("Auto 模式高危需确认", () => {
     expect(permModel.highRiskNeedsConfirm()).toBe(true);
   });
   it("Plan 模式需确认", () => {

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 内置工具实现
  * 文件系统读写 + 终端执行 + Web 搜索 + Web 抓取
  */
@@ -89,9 +89,9 @@ const writeFileHandler: ToolHandler = async (args, ctx) => {
     };
   }
 
-  // 权限检查：Craft 模式下高危需确认
+  // 权限检查：Auto 模式下高危需确认
   const dangerCheck = detector.check(`write ${filePath}`);
-  if (dangerCheck.isDangerous && ctx.permissions === "craft") {
+  if (dangerCheck.isDangerous && ctx.permissions === "auto") {
     return {
       tool_call_id: "",
       success: false,
@@ -168,25 +168,31 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const cwd = (args.cwd as string) ?? ctx.workingDir;
   const timeout = (args.timeout as number) ?? 30000;
 
-  // 危险操作检测
-  const dangerCheck = detector.check(command);
-  if (dangerCheck.isDangerous) {
-    return {
-      tool_call_id: "",
-      success: false,
-      content: "",
-      error: `⚠️ 高危操作被拦截: ${dangerCheck.message}\n命令: ${command}`,
-    };
+  // 危险操作检测：ask 模式直接拦截；plan/auto 由 hook（confirmHighRisk）确认放行
+  if (ctx.permissions === "ask") {
+    const dangerCheck = detector.check(command);
+    if (dangerCheck.isDangerous) {
+      return {
+        tool_call_id: "",
+        success: false,
+        content: "",
+        error: `⚠️ 高危操作被拦截（ask 模式不允许）: ${dangerCheck.message}\n命令: ${command}`,
+      };
+    }
   }
 
   const options: ExecOptions = {
     cwd,
     timeout,
     maxBuffer: 1024 * 1024 * 10, // 10MB
+    encoding: "buffer",
   };
 
+  // Windows cmd 输出默认 GBK，前缀 chcp 65001 强制 UTF-8 避免中文乱码
+  const finalCommand = process.platform === "win32" ? `chcp 65001 >nul & ${command}` : command;
+
   return new Promise((resolve) => {
-    exec(command, options, (error, stdout, stderr) => {
+    exec(finalCommand, options, (error, stdout, stderr) => {
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
       if (error) {

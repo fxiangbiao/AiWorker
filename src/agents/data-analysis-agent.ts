@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Data Analysis 数据分析智能体
  * 擅长数据清洗、统计建模和可视化
  */
@@ -18,6 +18,10 @@ const dataAnalysisConfig: AgentConfig = loadAgentConfig("data-analysis") ?? {
 - fs_read / fs_write: 读取和写入数据文件（CSV、JSON 等）
 - terminal_exec: 运行 Python 脚本（pandas/numpy/matplotlib）
 - web_search: 搜索数据分析方法和最佳实践
+
+工具调用规则：
+- 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟
+- 直接给出工具参数，等待工具执行结果返回后再继续
 
 工作流程：
 1. 理解数据源和业务问题
@@ -41,7 +45,7 @@ Python 分析环境使用 terminal_exec 执行脚本，可用库：pandas、nump
   tools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search"],
   mcpServers: [],
   permissions: {
-    defaultMode: "craft",
+    defaultMode: "auto",
     allowedTools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search"],
     deniedTools: [],
   },

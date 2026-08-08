@@ -1,12 +1,12 @@
-<script lang="ts">
+﻿<script lang="ts">
   const { mode: current, onSelect } = $props<{ mode: string; onSelect: (m: string) => void }>();
-  const modes = ["ask", "plan", "craft"] as const;
+  const modes = ["ask", "plan", "auto"] as const;
 </script>
 
 <div class="modes">
   {#each modes as m}
     <button class:active={current === m} onclick={() => onSelect(m)}>
-      {m === "ask" ? "Ask" : m === "plan" ? "Plan" : "Craft"}
+      {m === "ask" ? "Ask" : m === "plan" ? "Plan" : "Auto"}
     </button>
   {/each}
 </div>
