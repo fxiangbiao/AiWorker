@@ -96,13 +96,11 @@ npm run dev -- [选项]
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |
-| `/thinking` | 切换思考展示（折叠/展开），已并入 `/config thinking` |
 | `/log` | 监控日志（轮次/耗时/输入输出 token） |
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
 | `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
-| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
-| `/skill-evo` | 技能自沉淀开关（已并入 `/config skill-evo`） |
+| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） | |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |
 | `/help` / `/exit` | 帮助 / 退出 |

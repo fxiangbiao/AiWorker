@@ -99,12 +99,10 @@ npm run web:build      # Web UI 构建 → web/dist/
 /skill <名称>            手动激活技能
 /skills                  查看全部技能（分组+描述）
 /new                     新会话
-/thinking                切换思考展示
 /log                     监控日志（轮次/耗时/token）
 /context [查询]          上下文分层 token 占比 + MCP 工具列表
 /status                  运行状态
-/config                  模型/温度/max-tokens（持久化 data/runtime-config.json）
-/skill-evo               技能沉淀开关
+/config                  模型/温度/max-tokens/thinking/skill-evo（持久化 data/runtime-config.json）
 /sessions                浏览会话
 /switch <序号>           切换
 /copy                    复制最后回答 Markdown
