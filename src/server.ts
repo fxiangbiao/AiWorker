@@ -45,6 +45,10 @@ interface ServerDeps {
   }[];
   getContextBreakdown?: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) => unknown;
   getSystemPrompt?: () => string;
+  getMcpStatuses?: () => Record<
+    string,
+    { name: string; transport: string; connected: boolean; toolCount: number; state?: string; error?: string; tools?: { name: string; description: string }[] }
+  >;
   dataDir?: string;
 }
 
@@ -201,6 +205,36 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
   }
 }
 
+/** 将会话消息渲染为 Markdown 导出内容 */
+function renderSessionMarkdown(
+  title: string,
+  sessionId: string,
+  messages: Array<import("./types.js").Message & { seq: number; createdAt: number }>,
+): string {
+  const lines: string[] = [`# ${title}`, "", `> 会话 ID: ${sessionId}`, ""];
+  for (const m of messages) {
+    const time = new Date(m.createdAt).toLocaleString("zh-CN", { hour12: false });
+    if (m.role === "user") {
+      lines.push(`## 🧑 用户 · ${time}`, "", m.content.trim(), "");
+    } else if (m.role === "assistant") {
+      if (m.tool_calls && m.tool_calls.length > 0) {
+        lines.push(`## 🤖 助手 · ${time}`, "");
+        for (const tc of m.tool_calls) {
+          lines.push(`- \`${tc.function.name}\` \`\`\`json\n${tc.function.arguments}\n\`\`\``);
+        }
+        lines.push("");
+      }
+      if (m.content.trim()) {
+        if (!m.tool_calls || m.tool_calls.length === 0) lines.push(`## 🤖 助手 · ${time}`, "");
+        lines.push(m.content.trim(), "");
+      }
+    } else if (m.role === "tool") {
+      lines.push(`> 🔧 工具结果${m.name ? ` (${m.name})` : ""}: ${m.content.slice(0, 200)}`, "");
+    }
+  }
+  return lines.join("\n");
+}
+
 export function startServer(deps: ServerDeps, port: number) {
   const startTime = Date.now();
 
@@ -275,6 +309,13 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    if (url === apiUrl("/mcp") && req.method === "GET") {
+      if (!deps.getMcpStatuses) { sendJSON(res, 200, { servers: [] }); return; }
+      const statuses = deps.getMcpStatuses();
+      sendJSON(res, 200, { servers: Object.values(statuses) });
+      return;
+    }
+
     if (url === apiUrl("/sessions") && req.method === "GET") {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessions = deps.sessionStore.listSessions(50);
@@ -282,11 +323,56 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET") {
+    // 导出会话 Markdown（必须在 /sessions/:id GET 之前，避免被 startsWith 捕获）
+    if (url.startsWith(apiUrl("/sessions/")) && url.endsWith("/export") && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length).replace(/\/export$/, "");
+      const messages = deps.sessionStore.getSessionMessages(sessionId);
+      const sessions = deps.sessionStore.listSessions(1000);
+      const meta = sessions.find((s) => s.id === sessionId);
+      const title = meta?.summary ?? sessionId.slice(0, 12);
+      const md = renderSessionMarkdown(title, sessionId, messages);
+      res.writeHead(200, {
+        "Content-Type": "text/markdown; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(title)}.md"`,
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(md);
+      return;
+    }
+
+    if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export")) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       const messages = deps.sessionStore.getMessages(sessionId);
       sendJSON(res, 200, { sessionId, messages });
+      return;
+    }
+
+    // 删除会话
+    if (url.startsWith(apiUrl("/sessions/")) && req.method === "DELETE") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length);
+      const ok = deps.sessionStore.deleteSession(sessionId);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
+      return;
+    }
+
+    // 重命名会话
+    if (url.startsWith(apiUrl("/sessions/")) && url.endsWith("/rename") && req.method === "POST") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length).replace(/\/rename$/, "");
+      let parsedTitle: string;
+      try {
+        const body = JSON.parse(await parseBody(req)) as { title?: string };
+        parsedTitle = (body.title ?? "").trim();
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+      if (!parsedTitle) { sendJSON(res, 400, { error: "Missing 'title' field" }); return; }
+      const ok = deps.sessionStore.renameSession(sessionId, parsedTitle);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
 

@@ -3,10 +3,12 @@
 
   let text = $state("");
   let ta: HTMLTextAreaElement;
-  let { onSend, inputMode, onSelectMode } = $props<{
+  let { onSend, inputMode, onSelectMode, onRetryLast, canRetry } = $props<{
     onSend: (msg: string) => void;
     inputMode: "chat" | "plan" | "debate";
     onSelectMode: (m: "chat" | "plan" | "debate") => void;
+    onRetryLast?: () => void;
+    canRetry?: boolean;
   }>();
 
   const placeholders = {
@@ -61,6 +63,9 @@
     {#if stream.sending}
       <button class="send-btn stop" onclick={stop} title="停止请求">&#9632;</button>
     {:else}
+      {#if canRetry && onRetryLast}
+        <button class="retry-btn" onclick={() => onRetryLast()} title="重新生成当前回复">&#8635;</button>
+      {/if}
       <button class="send-btn" onclick={submit}>&#8593;</button>
     {/if}
   </div>
@@ -131,4 +136,17 @@
   .send-btn:disabled { opacity: .3; cursor: default; }
   .send-btn.stop { background: var(--error); }
   .send-btn.stop:hover { background: var(--error); }
+  .retry-btn {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--primary);
+    border: 1px solid var(--border);
+    font-size: 15px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all .15s;
+    flex-shrink: 0;
+  }
+  .retry-btn:hover { background: var(--hover-bg); border-color: var(--primary); }
 </style>

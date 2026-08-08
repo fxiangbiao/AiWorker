@@ -61,3 +61,15 @@ MCP 面板 (P1) ──→ server /mcp 端点（读 config/mcp.json）
 | 提问/工具重试上下文复杂 | 重发走 /chat 端点：提问重试重发同一 user 消息；工具重试仅对单个失败工具续问，不做全链路重放 |
 | 会话级联删除 SQLite 外键 | 显式 DELETE messages + sessions 两表（按 session_id） |
 | MCP 面板实时状态 | 复用 McpManager.getStatus() 已有接口，无状态轮询开销 |
+
+## 7. 执行记录
+
+| 日期 | 任务 | 说明 |
+|------|------|------|
+| 2026-08 | 会话管理 | session-store 新增 deleteSession/renameSession/getSessionMessages；server 新增 DELETE /sessions/:id、POST /sessions/:id/rename、GET /sessions/:id/export；Sidebar hover 操作菜单（自定义 ConfirmModal 弹窗替代 window.confirm/prompt） |
+| 2026-08 | 重试能力 | InputArea「重新生成」重发当前提问替换旧回复（失败恢复旧消息）；ToolCard 失败工具「重试」按钮（仅 chat 消息，plan/debate 不显示）；抽取公共 streamChatRequest |
+| 2026-08 | MCP 面板 | /mcp 端点返回服务器状态+工具列表；SystemPanel MCP Tab 可展开工具详情；getStatuses 以连接池为数据源并内嵌 tools |
+| 2026-08 | 修复 | GET /sessions/:id 路由拦截 /export；前端删除/重命名无条件更新本地（服务端 404 容忍）；MCP 加载移到 server/CLI 分支之前并 await（消除 500ms 竞态）；permissions.json 真正生效（default_mode auto + denied_patterns，strip BOM） |
+| 2026-08 | 权限/一致性 | ask 模式放行内置 MCP 工具（mcp_builtin_*）；默认模式 auto；Web 侧边栏标题用 firstUserMsg（与 TUI 一致）；mode 切换持久化 saveSettings + loadSettings 校验 |
+| 2026-08 | TUI 增强 | /mcps 命令列出 MCP 服务器+工具；/config 整合 thinking/skill-evo 子命令（/skill-evo /thinking 向后兼容）；/help 补 /skills；启动显示「系统加载 N 个 MCP」 |
+| 2026-08 | 验证 | 184 tests（+10：会话端点 6、内置 MCP 放行 2、权限回归）+ tsc + eslint + web build 全绿 |

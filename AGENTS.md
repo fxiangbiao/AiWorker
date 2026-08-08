@@ -46,7 +46,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### 工具与 MCP
 - `src/tools/builtin.ts` — 6 内置工具。`fs_read`/`fs_list` 基准 `workingDir`；`fs_write` 基准 `projectDir` + 路径遍历防护（`path.relative` 检查）
-- `src/mcp/mcp-manager.ts` — stdio/HTTP 双传输，`config/mcp.json` 配置，工具命名 `mcp_{server}_{tool}`，连接失败优雅降级
+- `src/mcp/mcp-manager.ts` — stdio/HTTP 双传输，`config/mcp.json` 配置，工具命名 `mcp_{server}_{tool}`，连接失败优雅降级；`getStatuses()` 以连接池为数据源（含未连接服务器），内嵌 tools 列表（CLI `/mcps` 与 Web `/api/v1/mcp` 共用）；启动时在 server/CLI 分支之前 await loadConfig（5s 超时保护）
 - `builtin-server.ts` — 内置 4 工具：math_eval（沙箱 `new Function()` + Math 白名单）/ uuid_gen / json_format / timestamp_convert
 - **重连**：统一 `scheduleReconnect` 防风暴；指数退避 `min(1000*2^n, 30000)` 最多 5 次；Windows `spawn` 需 `shell: true`
 
@@ -60,6 +60,8 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `src/hooks/hook-manager.ts` — 5 事件：onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError；`config/hooks.json` 注册 14 handlers，支持 `enabled: false`
 - `permissionCheck` 仅 onToolCallPre 生效；`turnLogger` onMessage 记基线 + onTaskComplete 结算增量 + onError 清理防泄漏
 - 权限三模式：ask（只读工具，写/高危被 permissionCheck 拦截产生红色告警）/ plan（每步确认）/ auto（自动，高危仍确认）；`danger-detector.ts` 正则拦截高危操作（含单文件删除 rm/del/Remove-Item）
+- `config/permissions.json` 是权限模型配置源（default_mode / modes / allowed_dirs / denied_patterns），CLI `--mode` 显式传入时覆盖 default_mode；加载时 strip UTF-8 BOM
+- 默认模式 auto；ask 模式放行只读工具 + 内置 MCP 工具（`mcp_builtin_*`，无副作用），外部 MCP 工具仍拦截
 - 确认通道 `confirm-channel.ts`：统一确认接口——CLI 走 stdin，HTTP 走 SSE `confirm_request` 挂起 + POST `/api/v1/confirm` 响应（30s 超时自动拒绝）；`runWithConfirm(write, fn)` 统一 chat/plan/debate
 - `dangerousCommandBlock` 按模式分流：ask 直接拦截，plan/auto 放行给 confirmHighRisk 弹确认卡片
 - ask 模式 agent-loop 传全部工具定义（模型可尝试调用），非只读工具由 `permissionCheck`（`allowsToolFor`）拦截

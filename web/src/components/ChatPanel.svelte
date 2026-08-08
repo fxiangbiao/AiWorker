@@ -97,6 +97,10 @@
     }
     saveChats(store.chats);
 
+    streamChat(text);
+  }
+  /** 统一发起 chat 流式请求（retryLast/streamChat/retryTool 共用） */
+  function streamChatRequest(text: string, onFail?: () => void) {
     const ac = new AbortController();
     setSending(true, ac);
     errors = [];
@@ -139,12 +143,42 @@
       .catch((e) => {
         if (e.name !== "AbortError") {
           errors = [...errors, e.message];
+          onFail?.();
         }
       })
       .finally(() => {
         setSending(false, null);
         saveMessages(store.activeChatId!, store.messages);
       });
+  }
+
+  function streamChat(text: string) {
+    streamChatRequest(text);
+  }
+
+  /** 重新生成：重发最后一条用户消息，替换最后一条助手回复 */
+  function retryLast() {
+    if (stream.sending || store.inputMode !== "chat") return;
+    let lastUserIdx = -1;
+    for (let i = store.messages.length - 1; i >= 0; i--) {
+      if (store.messages[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx === -1) return;
+    const text = store.messages[lastUserIdx].content;
+
+    // 原地移除该用户消息之后的所有消息（保持 Svelte 5 响应式），旧回复暂存用于失败恢复
+    const replaced = store.messages.splice(lastUserIdx + 1);
+    store.messages = [...store.messages];
+
+    streamChatRequest(text, () => {
+      // 失败时恢复旧回复，避免消息丢失
+      if (replaced.length > 0) {
+        store.messages = [...store.messages, ...replaced];
+      }
+    });
   }
 
   async function handleCollab(kind: "plan" | "debate", payload: string, raw: string) {
@@ -398,6 +432,20 @@
         break;
     }
   }
+  /** 工具重试：重发当前提问并附注"上次 X 工具失败，请重试"（始终走 chat 流） */
+  function retryTool(tool: import("$lib/stores/chat.svelte").TimelineItem) {
+    if (stream.sending) return;
+    const lastUser = [...store.messages].reverse().find((m) => m.role === "user");
+    if (!lastUser) return;
+    const note = `\n\n> ⚠️ 上次调用工具 \`${tool.name}\` 失败：${tool.error ?? ""}。请重试该操作。`;
+    store.messages.push({ role: "user", content: `${lastUser.content}${note}` });
+    const chat = store.chats.find((c) => c.id === store.activeChatId);
+    if (chat) {
+      chat.turns = (chat.turns || 0) + 1;
+      saveChats(store.chats);
+    }
+    streamChat(`${lastUser.content}${note}`);
+  }
 </script>
 
 <div class="main-panel">
@@ -414,7 +462,7 @@
         {#if msg.role === "user"}
           <UserMessage content={msg.content} />
         {:else if msg.role === "assistant" || msg.role === "agent"}
-          <AgentCard {msg} />
+          <AgentCard {msg} onRetryTool={retryTool} />
         {/if}
       {/each}
       {#each store.confirms as c}
@@ -430,6 +478,8 @@
     onSend={handleSend}
     inputMode={store.inputMode}
     onSelectMode={(m) => (store.inputMode = m)}
+    onRetryLast={retryLast}
+    canRetry={!stream.sending && store.inputMode === "chat" && store.messages.length > 0 && (store.messages[store.messages.length - 1].role === "assistant" || store.messages[store.messages.length - 1].role === "agent")}
   />
 </div>
 

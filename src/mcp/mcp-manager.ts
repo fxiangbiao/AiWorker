@@ -274,12 +274,21 @@ class McpManager {
 
   getStatuses(): Record<string, McpServerStatus> {
     const statuses: Record<string, McpServerStatus> = {};
-    for (const [name, conn] of this.connections) {
-      statuses[name] = {
-        name,
-        transport: conn.config.transport,
-        connected: conn.initialized,
-        toolCount: toolRegistry.getAll().filter((t) => t.definition.function.name.startsWith(`mcp_${name}_`)).length,
+    const allTools = toolRegistry.getAll();
+    // 以连接池为数据源（含已配置但未连接的服务器），比 this.connections 完整
+    for (const pooled of this.pool.getAll()) {
+      const conn = this.connections.get(pooled.name);
+      const status = this.pool.getStatus(pooled.name);
+      statuses[pooled.name] = {
+        name: pooled.name,
+        transport: pooled.config.transport,
+        connected: conn?.initialized ?? false,
+        toolCount: allTools.filter((t) => t.definition.function.name.startsWith(`mcp_${pooled.name}_`)).length,
+        state: status.state,
+        error: status.lastError ?? undefined,
+        tools: allTools
+          .filter((t) => t.definition.function.name.startsWith(`mcp_${pooled.name}_`))
+          .map((t) => ({ name: t.definition.function.name, description: t.definition.function.description ?? "" })),
       };
     }
     return statuses;

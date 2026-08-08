@@ -2,12 +2,15 @@
   import ToolCard from "./ToolCard.svelte";
   import type { TimelineItem } from "$lib/stores/chat.svelte";
 
-  let { tools }: { tools: TimelineItem[] } = $props();
+  let { tools, onRetry } = $props<{
+    tools: TimelineItem[];
+    onRetry?: (tool: TimelineItem) => void;
+  }>();
   let open = $state(false);
 </script>
 
 {#if tools.length === 1}
-  <ToolCard tool={tools[0]} />
+  <ToolCard tool={tools[0]} {onRetry} />
 {:else}
   <div class="tools-group" class:open>
     <div class="tools-toggle" onclick={() => (open = !open)} onkeydown={(e) => e.key === "Enter" && (open = !open)} role="button" tabindex="0">
@@ -16,7 +19,7 @@
     {#if open}
       <div class="tools-body">
         {#each tools as t}
-          <ToolCard tool={t} />
+          <ToolCard tool={t} {onRetry} />
         {/each}
       </div>
     {/if}

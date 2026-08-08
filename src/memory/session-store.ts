@@ -248,6 +248,60 @@ export class SessionStore {
     this.db.prepare(`UPDATE sessions SET summary = ? WHERE id = ?`).run(summary, sessionId);
   }
 
+  /** 重命名会话（更新 summary 作为标题） */
+  renameSession(id: string, title: string): boolean {
+    const result = this.db.prepare(`UPDATE sessions SET summary = ?, updated_at = ? WHERE id = ?`).run(title, Date.now(), id);
+    return result.changes > 0;
+  }
+
+  /** 删除会话（级联删除消息与 turn/tool logs） */
+  deleteSession(id: string): boolean {
+    const tx = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
+      // 先删 tool_call_logs（外键引用 turn_logs.id），再删 turn_logs
+      this.db.prepare(
+        `DELETE FROM tool_call_logs WHERE turn_id IN (SELECT id FROM turn_logs WHERE session_id = ?)`,
+      ).run(id);
+      this.db.prepare("DELETE FROM turn_logs WHERE session_id = ?").run(id);
+      this.db.prepare("DELETE FROM episodic_memory WHERE session_id = ?").run(id);
+      return this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id).changes > 0;
+    });
+    return tx();
+  }
+
+  /** 获取会话完整消息（含 seq，供导出用） */
+  getSessionMessages(id: string): Array<Message & { seq: number; createdAt: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT role, content, tool_calls, tool_call_id, seq, created_at
+         FROM messages WHERE session_id = ? ORDER BY seq ASC`,
+      )
+      .all(id) as Array<{
+      role: string;
+      content: string;
+      tool_calls: string | null;
+      tool_call_id: string | null;
+      seq: number;
+      created_at: number;
+    }>;
+
+    return rows.map((row) => {
+      const msg: Message & { seq: number; createdAt: number } = {
+        role: row.role as Message["role"],
+        content: row.content,
+        seq: row.seq,
+        createdAt: row.created_at,
+      };
+      if (row.tool_calls) {
+        msg.tool_calls = JSON.parse(row.tool_calls);
+      }
+      if (row.tool_call_id) {
+        msg.tool_call_id = row.tool_call_id;
+      }
+      return msg;
+    });
+  }
+
   /** FTS5 跨会话检索（三阶段：原始 → 分词 → LIKE + 时间衰减） */
   searchEpisodic(query: string, limit = 5): EpisodicEntry[] {
     let rows = this.tryFts5Match(query, limit);

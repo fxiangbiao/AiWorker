@@ -44,9 +44,11 @@
   }
 
   onMount(() => load());
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   $effect(() => {
     void store.diffVersion;
-    load();
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(load, 400);
   });
 
   function load() {

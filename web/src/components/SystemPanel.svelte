@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { API } from "$lib/stores/chat.svelte";
 
-  let tab = $state<"context" | "logs" | "skills">("context");
+  let tab = $state<"context" | "logs" | "skills" | "mcp">("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -39,6 +39,26 @@
   let skillList = $state<SkillCard[]>([]);
   let detail: SkillCard | null = $state(null);
   let loading = $state(false);
+
+  interface McpServer {
+    name: string;
+    transport: string;
+    connected: boolean;
+    toolCount: number;
+    state?: string;
+    error?: string;
+    tools?: { name: string; description: string }[];
+  }
+  let mcpServers = $state<McpServer[]>([]);
+  let mcpExpanded = $state<string | null>(null);
+
+  const mcpStateLabel: Record<string, string> = {
+    connected: "已连接",
+    connecting: "连接中",
+    reconnecting: "重连中",
+    disconnected: "未连接",
+    dead: "已失效",
+  };
 
   let groups = $derived.by(() => {
     const byExpert = new Map<string, SkillCard[]>();
@@ -99,12 +119,22 @@
       .finally(() => { loading = false; });
   }
 
-  function switchTab(t: "context" | "logs" | "skills") {
+  function loadMcp() {
+    loading = true;
+    fetch(`${API}/mcp`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => { mcpServers = (d.servers || []) as McpServer[]; })
+      .catch(() => { mcpServers = []; })
+      .finally(() => { loading = false; });
+  }
+
+  function switchTab(t: "context" | "logs" | "skills" | "mcp") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
     else if (t === "logs") loadLogs();
-    else loadSkills();
+    else if (t === "skills") loadSkills();
+    else loadMcp();
   }
 
   onMount(() => loadContext());
@@ -115,6 +145,7 @@
     <button class="sp-tab" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
     <button class="sp-tab" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
     <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
+    <button class="sp-tab" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
   </div>
 
   <div class="sp-body">
@@ -149,6 +180,46 @@
                     {(l.toolCallsFailed ?? 0) > 0 ? `失败 ${l.toolCallsFailed}` : "成功"}
                   </span>
               </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else if tab === "mcp"}
+      {#if mcpServers.length === 0}
+        <div class="sp-empty">暂无 MCP 服务器</div>
+      {:else}
+        <div class="sp-mcp-list">
+          {#each mcpServers as s}
+            <div class="sp-mcp">
+              <div class="sp-mcp-head" onclick={() => (mcpExpanded = mcpExpanded === s.name ? null : s.name)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (mcpExpanded = mcpExpanded === s.name ? null : s.name)}>
+                <span class="sp-mcp-name">{s.name}</span>
+                <span class="sp-mcp-right">
+                  <span class="sp-dot" class:on={s.connected} class:off={!s.connected}>
+                    {s.connected ? "已连接" : mcpStateLabel[s.state || "disconnected"] || "未连接"}
+                  </span>
+                  <span class="sp-caret">{mcpExpanded === s.name ? "▼" : "▶"}</span>
+                </span>
+              </div>
+              <div class="sp-mcp-meta">传输: {s.transport} · 工具: {s.toolCount}</div>
+              {#if s.error}
+                <div class="sp-mcp-error">{s.error}</div>
+              {/if}
+              {#if mcpExpanded === s.name}
+                <div class="sp-mcp-tools">
+                  {#if (s.tools || []).length === 0}
+                    <div class="sp-mcp-notools">该服务器暂无工具（可能未连接）</div>
+                  {:else}
+                    {#each s.tools || [] as t}
+                      <div class="sp-mcp-tool">
+                        <div class="sp-mcp-tool-name">{t.name}</div>
+                        {#if t.description}
+                          <div class="sp-mcp-tool-desc">{t.description}</div>
+                        {/if}
+                      </div>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
             </div>
           {/each}
         </div>
@@ -309,4 +380,30 @@
   .sp-log-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .ok { color: var(--success); }
   .bad { color: var(--error); }
+  .sp-mcp-list { display: flex; flex-direction: column; gap: 8px; }
+  .sp-mcp {
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .sp-mcp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+  .sp-mcp-name { font-size: 12px; font-weight: 600; font-family: var(--font-mono); }
+  .sp-mcp-right { display: flex; align-items: center; gap: 8px; }
+  .sp-caret { font-size: 10px; color: var(--dim); }
+  .sp-mcp-tools { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+  .sp-mcp-tool { padding: 6px 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .sp-mcp-tool-name { font-size: 11px; font-weight: 600; font-family: var(--font-mono); color: var(--text); }
+  .sp-mcp-tool-desc { font-size: 11px; color: var(--dim); margin-top: 2px; line-height: 1.5; }
+  .sp-mcp-notools { font-size: 11px; color: var(--dim); padding: 8px; text-align: center; }
+  .sp-dot {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+  .sp-dot.on { background: rgba(34, 197, 94, .12); color: #16a34a; }
+  .sp-dot.off { background: rgba(232, 84, 107, .1); color: var(--error); }
+  .sp-mcp-meta { font-size: 11px; color: var(--dim); margin-top: 4px; }
+  .sp-mcp-error { font-size: 11px; color: var(--error); margin-top: 4px; word-break: break-word; }
 </style>

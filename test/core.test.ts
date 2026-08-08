@@ -110,6 +110,13 @@ describe("3. 权限模型 (Ask/Plan/Auto)", () => {
     expect(permModel.allowsToolFor("ask", "fs_write")).toBe(false);
     expect(permModel.allowsToolFor("ask", "terminal_exec")).toBe(false);
   });
+  it("Ask 模式允许内置 MCP 只读工具", () => {
+    expect(permModel.allowsToolFor("ask", "mcp_builtin_math_eval")).toBe(true);
+    expect(permModel.allowsToolFor("ask", "mcp_builtin_timestamp_convert")).toBe(true);
+  });
+  it("Ask 模式禁止外部 MCP 工具（可能有写操作）", () => {
+    expect(permModel.allowsToolFor("ask", "mcp_external_write_tool")).toBe(false);
+  });
   it("Auto 模式允许全部工具", () => {
     permModel.setMode("auto");
     expect(permModel.allowsToolCalls()).toBe(true);
