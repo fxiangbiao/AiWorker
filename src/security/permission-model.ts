@@ -40,10 +40,15 @@ export class PermissionModel {
   /** 只读工具白名单（ask 模式可执行） */
   static READONLY_TOOLS: string[] = ["fs_read", "fs_list", "web_search", "web_fetch", "math_eval", "uuid_gen", "json_format", "timestamp_convert"];
 
+  /** 内置 MCP 服务器前缀——其工具全部无副作用（计算/转换类），ask 模式放行 */
+  static BUILTIN_MCP_PREFIX = "mcp_builtin_";
+
   /** 指定模式是否允许调用指定工具 */
   allowsToolFor(mode: PermissionMode, toolName: string): boolean {
     if (this.isReadOnly(mode)) {
-      return PermissionModel.READONLY_TOOLS.includes(toolName);
+      if (PermissionModel.READONLY_TOOLS.includes(toolName)) return true;
+      // 内置 MCP 工具只读无副作用，ask 模式放行；外部 MCP 工具仍拦截
+      return toolName.startsWith(PermissionModel.BUILTIN_MCP_PREFIX);
     }
     return this.allowsToolCallsFor(mode);
   }

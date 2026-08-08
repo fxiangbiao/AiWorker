@@ -5,9 +5,11 @@
 import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { resolve } from "node:path";
 import { startServer } from "../src/server.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
+import { SessionStore } from "../src/memory/session-store.js";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 
 const API = "/api/v1";
@@ -419,5 +421,101 @@ describe("HTTP Server", () => {
     const resp = await fetch(`${base}${API}/chat`, { method: "OPTIONS" });
     expect(resp.status).toBe(204);
     expect(resp.headers.get("access-control-allow-origin")).toBe("*");
+  });
+});
+
+describe("HTTP Server — 会话管理端点", () => {
+  let server2: Server | undefined;
+  let base2: string;
+  let store: SessionStore;
+
+  beforeAll(async () => {
+    setupEnv(testDir);
+    store = new SessionStore(resolve(testDir, "sessions.db"));
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      projectDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store,
+    };
+    server2 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server2!.once("listening", () => resolve()));
+    const port = (server2!.address() as AddressInfo).port;
+    base2 = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(() => {
+    if (server2) {
+      server2.close();
+      server2 = undefined;
+    }
+    if (store) store.close();
+    teardownEnv();
+  });
+
+  it("删除会话级联清理", async () => {
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "你好" });
+    store.appendMessage(sess.id, { role: "assistant", content: "你好！" });
+
+    const resp = await fetch(`${base2}${API}/sessions/${sess.id}`, { method: "DELETE" });
+    expect(resp.status).toBe(200);
+
+    const list = store.listSessions(100);
+    expect(list.find((s) => s.id === sess.id)).toBeUndefined();
+    expect(store.getMessages(sess.id)).toHaveLength(0);
+  });
+
+  it("删除不存在的会话返回 404", async () => {
+    const resp = await fetch(`${base2}${API}/sessions/nonexistent`, { method: "DELETE" });
+    expect(resp.status).toBe(404);
+  });
+
+  it("重命名会话更新 summary", async () => {
+    const sess = store.createSession("default");
+    const resp = await fetch(`${base2}${API}/sessions/${sess.id}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "新标题" }),
+    });
+    expect(resp.status).toBe(200);
+
+    const list = store.listSessions(100);
+    expect(list.find((s) => s.id === sess.id)?.summary).toBe("新标题");
+  });
+
+  it("重命名缺失 title 返回 400", async () => {
+    const resp = await fetch(`${base2}${API}/sessions/abc/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("导出会话返回 Markdown", async () => {
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "帮我写代码" });
+    store.appendMessage(sess.id, { role: "assistant", content: "好的，这是代码" });
+
+    const resp = await fetch(`${base2}${API}/sessions/${sess.id}/export`);
+    expect(resp.status).toBe(200);
+    const ct = resp.headers.get("content-type") || "";
+    expect(ct).toContain("text/markdown");
+    const md = await resp.text();
+    expect(md).toContain("帮我写代码");
+    expect(md).toContain("好的，这是代码");
+  });
+
+  it("GET /mcp 返回服务器状态列表", async () => {
+    const resp = await fetch(`${base2}${API}/mcp`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(Array.isArray(data.servers)).toBe(true);
   });
 });

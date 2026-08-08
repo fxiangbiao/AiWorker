@@ -38,7 +38,7 @@ import { tui } from "./terminal/tui.js";
 import { renderMarkdown } from "./terminal/markdown.js";
 import { StreamOutputRenderer } from "./terminal/output.js";
 import { startServer } from "./server.js";
-import type { PermissionMode, StreamCallbacks, ModelProvider } from "./types.js";
+import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider } from "./types.js";
 
 const program = new Command();
 
@@ -71,7 +71,7 @@ program
     const outputRenderer = new StreamOutputRenderer();
 
     // TUI 输入配置：历史持久化 + Tab 补全
-    const commands = ["/plan", "/debate", "/mode", "/new", "/log", "/context", "/skill", "/skills", "/skill-evo", "/status", "/config", "/thinking", "/copy", "/help", "/exit", "/sessions", "/switch"];
+    const commands = ["/plan", "/debate", "/mode", "/new", "/log", "/context", "/skill", "/skills", "/skill-evo", "/status", "/config", "/thinking", "/copy", "/help", "/exit", "/sessions", "/switch", "/mcps"];
     const completer = (line: string): [string[], string] => {
       if (!line.startsWith("/")) return [[], line];
       // 技能可直接用 /技能名 激活（无需 /skill 前缀）
@@ -89,7 +89,7 @@ program
     stdout.write(chalk.gray(`工作目录: ${workingDir}\n`));
     stdout.write(chalk.gray(`输出目录: ${projectDir}\n`));
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
-    stdout.write(chalk.gray(`权限模式: ${options.mode}\n\n`));
+    stdout.write(chalk.gray(`权限模式: ${options.mode ?? "auto（config/permissions.json 或默认）"}\n\n`));
 
     if (!process.env.DEEPSEEK_API_KEY) {
       stdout.write(chalk.yellow("⚠️  未检测到 DEEPSEEK_API_KEY 环境变量\n"));
@@ -134,16 +134,41 @@ program
 
     initAuditLog(dataDir);
 
-    const dangerDetector = new DangerDetector();
+    // 读取 config/permissions.json（权限模型配置源）；CLI --mode 显式传入时覆盖默认模式
+    let permConfig: {
+      default_mode?: PermissionMode;
+      modes?: PermissionConfig["modes"];
+      allowed_dirs?: string[];
+      denied_patterns?: string[];
+    } = {};
+    try {
+      const permPath = resolve(process.cwd(), "config", "permissions.json");
+      if (existsSync(permPath)) {
+        // 去除 UTF-8 BOM（Windows 编辑器保存时可能附加）
+        const raw = readFileSync(permPath, "utf-8").replace(/^\uFEFF/, "");
+        permConfig = JSON.parse(raw);
+      }
+    } catch {
+      permConfig = {};
+    }
+
+    const defaultMode = (options.mode as PermissionMode) || permConfig.default_mode || "auto";
+    const modes: PermissionConfig["modes"] = {
+      ask: { description: "只读问答（仅只读工具）", allow_tool_calls: true, readOnly: true },
+      plan: { description: "计划模式（每步确认后执行）", allow_tool_calls: true, require_confirmation: true },
+      auto: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
+    };
+    // 文件中的 modes 覆盖默认（保留默认的 allow_tool_calls 语义）
+    for (const m of Object.keys(modes) as PermissionMode[]) {
+      if (permConfig.modes?.[m]) modes[m] = { ...modes[m], ...permConfig.modes[m] };
+    }
+
+    const dangerDetector = new DangerDetector(permConfig.denied_patterns);
     const permissionModel = new PermissionModel({
-      defaultMode: options.mode as PermissionMode,
-      modes: {
-        ask: { description: "只读问答（仅只读工具）", allow_tool_calls: true, readOnly: true },
-        plan: { description: "计划模式（每步确认后执行）", allow_tool_calls: true, require_confirmation: true },
-        auto: { description: "自动执行（高风险仍需确认）", allow_tool_calls: true, high_risk_confirm: true },
-      },
-      allowedDirs: [workingDir],
-      deniedPatterns: [],
+      defaultMode,
+      modes,
+      allowedDirs: (permConfig.allowed_dirs && permConfig.allowed_dirs.length > 0) ? permConfig.allowed_dirs : [workingDir],
+      deniedPatterns: permConfig.denied_patterns ?? [],
     });
 
     const hooksDir = resolve(process.cwd(), "config");
@@ -180,6 +205,25 @@ program
 
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
+    // ─── MCP 服务器（在 server / CLI 分支之前统一加载） ───
+    const mcpConfigPath = resolve(process.cwd(), "config", "mcp.json");
+    // await 连接完成（loadConfig 内部会等待 stdio 子进程初始化），并加超时保护避免卡死
+    await Promise.race([
+      mcpManager.loadConfig(mcpConfigPath).catch(() => {}),
+      new Promise((r) => setTimeout(r, 5000)),
+    ]);
+    const mcpStatuses = mcpManager.getStatuses();
+    const mcpServers = Object.values(mcpStatuses);
+    if (mcpServers.length > 0) {
+      stdout.write(chalk.green(`✓ 系统加载 ${mcpServers.length} 个 MCP\n`));
+      for (const s of mcpServers) {
+        const icon = s.connected ? chalk.green("✓") : chalk.yellow("⚠");
+        stdout.write(icon + chalk.green(` MCP: ${s.name} (${s.toolCount} 工具${s.connected ? "" : ", 连接失败"})\n`));
+      }
+    } else {
+      stdout.write(chalk.gray("⚠ 未加载 MCP（检查 config/mcp.json）\n"));
+    }
+
     if (options.server) {
       const port = parseInt(options.port, 10);
       startServer(
@@ -207,6 +251,7 @@ program
           getContextBreakdown: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) =>
             contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
+          getMcpStatuses: () => mcpManager.getStatuses(),
         },
         port,
       );
@@ -219,16 +264,6 @@ program
       a.setMode(currentMode);
     }
 
-    // ─── MCP 服务器 ───
-    const mcpConfigPath = resolve(process.cwd(), "config", "mcp.json");
-    mcpManager.loadConfig(mcpConfigPath).catch(() => {});
-
-    // 等待初始化完成（stdio 服务器需要时间启动）
-    await new Promise((r) => setTimeout(r, 500));
-
-    const mcpStatuses = mcpManager.getStatuses();
-    const mcpServers = Object.values(mcpStatuses);
-
     stdout.write(chalk.green("✓ 核心引擎就绪\n"));
     stdout.write(chalk.green(`✓ 模型: ${modelRouter.getCurrentModel()}\n`));
     stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
@@ -236,13 +271,6 @@ program
       chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"),
     );
     stdout.write(chalk.green("✓ Team 协调器已就绪: 支持多专家协作\n"));
-
-    if (mcpServers.length > 0) {
-      for (const s of mcpServers) {
-        const icon = s.connected ? chalk.green("✓") : chalk.yellow("⚠");
-        stdout.write(icon + chalk.green(` MCP: ${s.name} (${s.toolCount} 工具${s.connected ? "" : ", 连接失败"})\n`));
-      }
-    }
     stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助, /plan <描述> 使用多专家协作\n\n"));
 
     // 初始状态栏
@@ -539,10 +567,11 @@ program
           ["/new", "开启新会话", "清空上下文和 token 计数，重新开始"],
           ["/log", "查看监控日志", "当前 session 的轮次摘要表"],
           ["/context", "上下文占用分析", "分层 token 占比 + MCP 工具列表"],
-          ["/skill-evo", "技能沉淀开关", "开启/关闭 LLM 自动提取技能"],
+          ["/mcps", "查看 MCP 服务器", "列出已加载的 MCP 服务、连接状态与工具"],
           ["/skill <名称>", "手动激活技能", "如 /code-review, /debug, /data-cleaning"],
+          ["/skills", "查看全部技能", "分组展示技能名称与描述"],
           ["/status", "显示运行状态", "模式/模型/token/排队"],
-          ["/config", "查看/配置模型与系统参数", "model/temperature/max-tokens/reset"],
+          ["/config", "查看/配置模型与系统参数", "model/temperature/max-tokens/thinking/skill-evo/reset"],
           ["/sessions", "浏览历史会话", "列出最近会话，/switch <序号> 切换"],
           ["/switch <序号>", "切换会话", "恢复指定会话上下文继续对话"],
           ["/copy", "复制回答", "复制上次回答的原始 Markdown 到剪贴板"],
@@ -609,6 +638,35 @@ program
         continue;
       }
 
+      if (trimmed === "/mcps") {
+        const statuses = mcpManager.getStatuses();
+        const servers = Object.values(statuses);
+        if (servers.length === 0) {
+          stdout.write(chalk.gray("未加载任何 MCP 服务器（检查 config/mcp.json）\n"));
+        } else {
+          renderer.writeLine("");
+          for (const s of servers) {
+            const icon = s.connected ? chalk.green("✓") : s.state === "connecting" || s.state === "reconnecting" ? chalk.yellow("⏳") : chalk.red("✗");
+            const stateLabel = s.connected ? "已连接" : s.state === "connecting" ? "连接中" : s.state === "reconnecting" ? "重连中" : s.state === "dead" ? "已失效" : "未连接";
+            renderer.writeLine(`  ${icon} ${chalk.white(padToWidth(s.name, 16))}${chalk.dim(s.transport)} ${chalk.dim("·")} ${stateLabel} ${chalk.dim(`· ${s.toolCount} 工具`)}${s.error ? chalk.red(` · ${s.error}`) : ""}`);
+            for (const t of s.tools ?? []) {
+              const toolName = t.name.replace(`mcp_${s.name}_`, "");
+              renderer.writeLine(`      ${chalk.dim("└")} ${chalk.cyan(padToWidth(toolName, 24))}${t.description ? chalk.dim(t.description) : ""}`);
+            }
+          }
+          renderer.writeLine("");
+          renderer.writeLine(chalk.dim(`💡 共 ${servers.length} 个 MCP 服务器，可在系统弹窗 MCP Tab 查看详情`));
+        }
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getCurrentModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          windowPct: statusWindowPct(),
+          queueSize: prefillQueue.length,
+        });
+        continue;
+      }
+
       if (trimmed === "/status") {
         const cost = modelRouter.getCost();
         stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()}\n`));
@@ -630,8 +688,9 @@ program
       }
 
       if (trimmed === "/thinking") {
+        // 向后兼容：已并入 /config thinking
         showThinking = !showThinking;
-        stdout.write(chalk.green(`✓ 思考展示: ${showThinking ? "展开" : "折叠"}\n`));
+        stdout.write(chalk.green(`✓ 思考展示: ${showThinking ? "展开" : "折叠"}（可用 /config thinking 切换）\n`));
         renderer.printStatus({
           mode: currentMode,
           model: modelRouter.getCurrentModel(),
@@ -696,6 +755,19 @@ program
               stdout.write(chalk.green(`✓ max-tokens → ${n}\n`));
             }
           }
+        } else if (sub === "skill-evo" || sub === "skill-evolution") {
+          const id = "onTaskComplete:evaluateSkillCreation";
+          if (hookManager.has(id)) {
+            hookManager.off(id);
+            stdout.write(chalk.yellow("✓ 技能自动沉淀: 关闭\n"));
+          } else {
+            const handler = createEvaluateSkillCreation({ sessionStore, modelRouter });
+            hookManager.on("onTaskComplete", handler, { id, priority: 10 });
+            stdout.write(chalk.green("✓ 技能自动沉淀: 开启\n"));
+          }
+        } else if (sub === "thinking" || sub === "thought") {
+          showThinking = !showThinking;
+          stdout.write(chalk.green(`✓ 思考展示: ${showThinking ? "展开" : "折叠"}\n`));
         } else if (sub === "reset") {
           modelRouter.setDefaultModel("");
           modelRouter.setTemperature(null);
@@ -719,11 +791,11 @@ program
           }
           stdout.write(chalk.bold("\n── 系统参数 ──\n"));
           stdout.write(chalk.gray(`  权限模式: ${currentMode} (用 /mode 切换)\n`));
-          stdout.write(chalk.gray(`  思考展示: ${showThinking ? "展开" : "折叠"} (用 /thinking 切换)\n`));
-          stdout.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /skill-evo 切换)\n\n`));
+          stdout.write(chalk.gray(`  思考展示: ${showThinking ? "展开" : "折叠"} (用 /config thinking 切换)\n`));
+          stdout.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /config skill-evo 切换)\n\n`));
           stdout.write(
             chalk.dim(
-              `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config reset\n`,
+              `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config thinking | /config skill-evo | /config reset\n`,
             ),
           );
         }
@@ -731,15 +803,15 @@ program
       }
 
       if (trimmed === "/skill-evo") {
+        // 向后兼容：已并入 /config skill-evo
         const id = "onTaskComplete:evaluateSkillCreation";
         if (hookManager.has(id)) {
           hookManager.off(id);
-          stdout.write(chalk.yellow("✓ 技能自动沉淀: 关闭\n"));
+          stdout.write(chalk.yellow("✓ 技能自动沉淀: 关闭（可用 /config skill-evo 切换）\n"));
         } else {
-          // Re-register — factory needs the same deps as initial setup
           const handler = createEvaluateSkillCreation({ sessionStore, modelRouter });
           hookManager.on("onTaskComplete", handler, { id, priority: 10 });
-          stdout.write(chalk.green("✓ 技能自动沉淀: 开启\n"));
+          stdout.write(chalk.green("✓ 技能自动沉淀: 开启（可用 /config skill-evo 切换）\n"));
         }
         continue;
       }

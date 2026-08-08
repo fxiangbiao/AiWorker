@@ -1,5 +1,5 @@
 ﻿{
-  "default_mode": "ask",
+  "default_mode": "auto",
   "modes": {
     "ask": {
       "description": "只读问答，仅执行只读工具（读取/搜索）",

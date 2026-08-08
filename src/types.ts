@@ -308,7 +308,9 @@ export interface McpServerStatus {
   transport: McpTransport;
   connected: boolean;
   toolCount: number;
+  state?: "disconnected" | "connecting" | "connected" | "reconnecting" | "dead";
   error?: string;
+  tools?: { name: string; description: string }[];
 }
 
 // ===== Skills 系统 =====

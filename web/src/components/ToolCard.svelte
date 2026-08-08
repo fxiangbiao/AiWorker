@@ -2,7 +2,10 @@
   import { esc } from "$lib/utils/format";
   import type { TimelineItem } from "$lib/stores/chat.svelte";
 
-  let { tool }: { tool: TimelineItem } = $props();
+  let { tool, onRetry } = $props<{
+    tool: TimelineItem;
+    onRetry?: (tool: TimelineItem) => void;
+  }>();
   let args = $derived.by(() => {
     try {
       return typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args, null, 2);
@@ -23,6 +26,9 @@
     <div class="tc-bubble">
       <span class="tb-title">⚠ 操作被拦截</span>
       <span class="tb-msg">{esc(tool.error)}</span>
+      {#if onRetry}
+        <button class="tb-retry" onclick={() => onRetry(tool)}>&#8635; 重试</button>
+      {/if}
     </div>
   {:else if tool.result}
     <div class="tc-result">
@@ -73,6 +79,20 @@
   }
   .tb-title { font-size: 12px; font-weight: 600; color: var(--error); }
   .tb-msg { font-size: 11px; color: var(--error); font-family: var(--font-mono); word-break: break-word; white-space: pre-wrap; }
+  .tb-retry {
+    margin-top: 6px;
+    align-self: flex-start;
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--primary);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .tb-retry:hover { background: var(--primary-light); border-color: var(--primary); }
   @keyframes spin { to { transform: rotate(360deg); } }
   .spin {
     display: inline-block;

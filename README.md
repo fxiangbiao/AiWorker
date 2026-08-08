@@ -96,12 +96,11 @@ npm run dev -- [选项]
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |
-| `/thinking` | 切换思考展示（折叠/展开） |
 | `/log` | 监控日志（轮次/耗时/输入输出 token） |
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
-| `/config` | 查看/配置模型与系统参数（持久化到 `data/runtime-config.json`） |
-| `/skill-evo` | 技能自沉淀开关 |
+| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
+| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） | |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |
 | `/help` / `/exit` | 帮助 / 退出 |
@@ -135,6 +134,10 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/tools` | GET | 已注册工具列表 |
 | `/api/v1/sessions` | GET | 最近 50 个历史会话 |
 | `/api/v1/sessions/:id` | GET | 会话消息明细 |
+| `/api/v1/sessions/:id` | DELETE | 删除会话（级联清理消息/日志） |
+| `/api/v1/sessions/:id/rename` | POST | 重命名会话（JSON：`title`） |
+| `/api/v1/sessions/:id/export` | GET | 导出会话为 Markdown 下载 |
+| `/api/v1/mcp` | GET | MCP 服务器状态 + 各服务器工具列表 |
 | `/api/v1/context` | GET | 上下文分层 token 占比 |
 | `/api/v1/logs` | GET | 最近 50 条轮次日志 |
 | `/api/v1/skills` | GET | 已加载技能列表（含描述与分组） |

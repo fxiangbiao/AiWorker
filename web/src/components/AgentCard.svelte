@@ -5,7 +5,7 @@
   import PlanStepsBlock from "./PlanStepsBlock.svelte";
   import type { UIMessage, TimelineItem } from "$lib/stores/chat.svelte";
 
-  let { msg }: { msg: UIMessage } = $props();
+  let { msg, onRetryTool }: { msg: UIMessage; onRetryTool?: (tool: TimelineItem) => void } = $props();
   let timeline = $derived(msg.timeline || []);
   let liveLabel = $derived.by(() => {
     if (msg._kind === "plan") {
@@ -51,7 +51,7 @@
             {#if g.type === "thinking"}
               <ThinkBlock content={g.item.content || ""} />
             {:else}
-              <ToolsGroup tools={g.items} />
+              <ToolsGroup tools={g.items} onRetry={msg._kind === "chat" || !msg._kind ? onRetryTool : undefined} />
             {/if}
           {/each}
         </div>

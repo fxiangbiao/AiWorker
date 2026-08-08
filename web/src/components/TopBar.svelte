@@ -1,7 +1,7 @@
 <script lang="ts">
   import ModeTabs from "./ModeTabs.svelte";
   import AgentSelect from "./AgentSelect.svelte";
-  import { store } from "$lib/stores/chat.svelte";
+  import { store, saveSettings } from "$lib/stores/chat.svelte";
 
   let { agents = [] as { id: string; name: string }[], onOpenSystem, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
     agents?: { id: string; name: string }[];
@@ -11,6 +11,15 @@
     leftHidden: boolean;
     rightHidden: boolean;
   }>();
+
+  function selectMode(m: string) {
+    store.mode = m;
+    saveSettings();
+  }
+  function selectAgent(id: string) {
+    store.agentId = id;
+    saveSettings();
+  }
 </script>
 
 <div class="topbar">
@@ -18,8 +27,8 @@
     <button class="side-btn" title="展开左侧栏" onclick={onExpandLeft}>&#8811;</button>
   {/if}
   <div class="logo"><img src="/logo.svg" alt="AiWorker" class="logo-img" />AiWorker</div>
-  <ModeTabs mode={store.mode} onSelect={(m) => (store.mode = m)} />
-  <AgentSelect agentId={store.agentId} {agents} onchange={(id) => (store.agentId = id)} />
+  <ModeTabs mode={store.mode} onSelect={selectMode} />
+  <AgentSelect agentId={store.agentId} {agents} onchange={selectAgent} />
   <div class="spacer"></div>
   <button class="side-btn" title="系统设置" onclick={onOpenSystem}>&#9881;</button>
   {#if rightHidden}
