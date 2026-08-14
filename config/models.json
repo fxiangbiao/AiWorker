@@ -6,7 +6,8 @@
     "apiKey": "${DEEPSEEK_API_KEY}",
     "temperature": 0.5,
     "maxTokens": 16384,
-    "thinking": true
+    "thinking": true,
+    "adapter": "openai-compatible"
   },
   "pricing": {
     "deepseek": { "prompt": 1, "completion": 2 }

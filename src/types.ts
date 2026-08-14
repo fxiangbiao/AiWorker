@@ -103,6 +103,8 @@ export interface StreamChunk {
   toolName?: string;
   finishReason?: "stop" | "tool_calls" | "length" | "content_filter";
   error?: string;
+  /** 稳定错误码（llm 适配器层分类，见 src/core/llm/llm-error.ts） */
+  errorCode?: string;
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
