@@ -81,13 +81,13 @@
 
 ## 作品展示
 
-用 AiWorker 生成的 Web 小作品（HTML 单文件，浏览器直接打开）：
+用 AiWorker 生成的 Web 小作品（HTML 单文件，浏览器直接打开；`docs/demos/`）：
 
-- [blackhole.html](docs/videos/blackhole.html) — 黑洞模拟
-- [ocean-sunset.html](docs/videos/ocean-sunset.html) — 海上日落
-- [starship_design.html](docs/videos/starship_design.html) — 星舰设计
-
-> 🎬 演示视频（压缩版）：[AiWorker-Game-Demos-1080p-HQ.mp4](docs/videos/AiWorker-Game-Demos-1080p-HQ.mp4) — 原 226MB 2.5K 录屏压缩为 **8.9MB 1080p**（CRF 20），克隆仓库即可播放；原始大文件保留在本地。
+| 作品 | 预览 | 演示 |
+|---|---|---|
+| 黑洞模拟 | ![blackhole](docs/demos/blackhole.png) | [blackhole.html](docs/demos/blackhole.html) |
+| 海上日落 | ![ocean-sunset](docs/demos/ocean-sunset.png) | [ocean-sunset.html](docs/demos/ocean-sunset.html) |
+| 星舰设计 | ![starship](docs/demos/starship.png) | [starship_design.html](docs/demos/starship_design.html) |
 
 ---
 
