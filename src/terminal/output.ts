@@ -12,7 +12,13 @@
 
 import { stdout } from "node:process";
 import chalk from "chalk";
-import { renderLine, defaultTableState, type TableState } from "./markdown.js";
+import {
+  renderLine,
+  renderTableBlock,
+  isTableLine,
+  defaultTableState,
+  type TableState,
+} from "./markdown.js";
 import { highlightLine } from "./highlight.js";
 import { tui } from "./tui.js";
 
@@ -29,6 +35,8 @@ export class StreamOutputRenderer {
   private fenceLang = "";
   private tools = new Map<string, ToolRow>();
   private tableState: TableState = defaultTableState();
+  /** 表格块缓冲：流式表格按块对齐（跨行列宽一致）后整块输出 */
+  private tableBuf: string[] = [];
 
   /** 输出一行到消息区（TUI）或 stdout（普通） */
   private emitLineRaw(line: string): void {
@@ -69,12 +77,15 @@ export class StreamOutputRenderer {
       this.emitLineRaw(chalk.gray("─".repeat(44)));
       this.inFence = false;
     }
+    // 未闭合表格块（末尾无空行）→ 整块对齐输出
+    this.flushTable();
   }
 
   private emitLine(line: string): void {
     const result = renderLine(line, this.inFence, this.tableState);
 
     if (result.fenceStart) {
+      this.flushTable();
       this.inFence = true;
       this.fenceLang = result.lang ?? "";
       const header = this.fenceLang ? `${chalk.dim(this.fenceLang)} ` : "";
@@ -82,20 +93,39 @@ export class StreamOutputRenderer {
       return;
     }
     if (result.fenceEnd) {
+      this.flushTable();
       this.inFence = false;
       this.emitLineRaw(chalk.gray("─".repeat(44)));
       return;
     }
     if (this.inFence) {
+      this.flushTable();
       this.emitLineRaw(`${chalk.cyan("▍")} ${highlightLine(line, this.fenceLang)}`);
       return;
     }
+    // 表格行 → 累积，块结束时统一对齐渲染（跨行列宽一致）
+    if (isTableLine(line)) {
+      this.tableBuf.push(line);
+      this.tableState = { inTable: true, tableFirstRow: false };
+      return;
+    }
+    this.flushTable();
+
     if (result.tableState) this.tableState = result.tableState;
     if (result.rendered !== null) {
       this.emitLineRaw(result.rendered);
     } else {
       this.emitLineRaw(line);
     }
+  }
+
+  /** 表格块结束：按统一列宽对齐后整块输出 */
+  private flushTable(): void {
+    if (this.tableBuf.length === 0) return;
+    for (const l of renderTableBlock(this.tableBuf)) {
+      this.emitLineRaw(l);
+    }
+    this.tableBuf = [];
   }
 
   /** TUI 模式下实时追加半行（无换行） */
@@ -106,10 +136,23 @@ export class StreamOutputRenderer {
 
   /** 工具调用开始（onToolCall） */
   toolStart(name: string, args: string, id: string): void {
-    const preview = this.sanitizePreview(args, 40);
-    const marker = `${chalk.blue(`🔧 ${name}`)}${preview ? chalk.dim(` ${preview}`) : ""}`;
-    this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: preview });
-    this.emitLineRaw(`  ${marker}`);
+    let preview = this.sanitizePreview(args, 40);
+    let marker = chalk.blue(`🔧 ${name}`);
+    let resultPreview = preview; // 结果行的预览（ask_user 不重复展示问题）
+    if (name === "ask_user") {
+      // ask_user 的 args 是 {question, options?, multiple?}：卡片展示问题本身（截断），而非原始 JSON
+      const parsed = tryParseJson(args) as { question?: unknown; options?: unknown; multiple?: unknown } | null;
+      const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
+      const optCount = Array.isArray(parsed?.options) ? parsed.options.length : 0;
+      const multi = parsed?.multiple === true;
+      preview = q ? this.sanitizePreview(q, 56) : "";
+      marker = chalk.blue(
+        `🔧 ${name}${optCount > 0 ? chalk.dim(`（${optCount} 个选项${multi ? "，可多选" : ""}）`) : ""}`,
+      );
+      resultPreview = "";
+    }
+    this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: resultPreview });
+    this.emitLineRaw(`  ${marker}${preview ? chalk.dim(` ${preview}`) : ""}`);
   }
 
   /** 工具调用结束（onToolResult） */
@@ -164,5 +207,14 @@ export class StreamOutputRenderer {
     let clean = s.replace(/\s+/g, " ").trim();
     if (clean.length > max) clean = clean.slice(0, max) + "…";
     return clean;
+  }
+}
+
+/** 轻量 JSON 解析（失败返回 null） */
+function tryParseJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }

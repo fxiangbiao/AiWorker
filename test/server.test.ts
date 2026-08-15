@@ -139,6 +139,7 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(data.status).toBe("ok");
+    expect(data.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(data.model).toBe("deepseek-v4-flash");
     expect(data.tokenUsage.total).toBe(100);
     expect(data.skills).toContain("skill-a");
@@ -183,6 +184,35 @@ describe("HTTP Server", () => {
     const data = await resp.json();
     expect(data.skills).toHaveLength(2);
     expect(data.skills[0]).toEqual({ name: "web-deep-search", description: "深度网络搜索", expert: "research" });
+    local.close();
+  });
+
+  it("/plugins 返回插件列表（未注入 getPlugins 时为空）", async () => {
+    const resp = await fetch(`${base}${API}/plugins`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.plugins).toEqual([]);
+  });
+
+  it("/plugins 支持 getPlugins 返回插件信息", async () => {
+    const deps = mockDeps();
+    deps.getPlugins = () => [
+      {
+        name: "demo",
+        entry: "/tmp/demo/plugin.ts",
+        status: "loaded",
+        registeredTools: ["demo_tool"],
+        registeredHooks: 0,
+      },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/plugins`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.plugins).toHaveLength(1);
+    expect(data.plugins[0]).toMatchObject({ name: "demo", status: "loaded", registeredTools: ["demo_tool"] });
     local.close();
   });
 
@@ -254,6 +284,33 @@ describe("HTTP Server", () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value: "allow" }),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("POST /ask 未知 id 返回 404", async () => {
+    const resp = await fetch(`${base}${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "nonexistent", answer: "42" }),
+    });
+    expect(resp.status).toBe(404);
+  });
+
+  it("POST /ask 缺失 id 返回 400", async () => {
+    const resp = await fetch(`${base}${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer: "42" }),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("POST /ask 非法 JSON 返回 400", async () => {
+    const resp = await fetch(`${base}${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{bad",
     });
     expect(resp.status).toBe(400);
   });
@@ -507,6 +564,39 @@ describe("HTTP Server — 会话管理端点", () => {
     const md = await resp.text();
     expect(md).toContain("帮我写代码");
     expect(md).toContain("好的，这是代码");
+  });
+
+  it("GET /sessions/:id 返回事件回放序列（含 assistant(tool_calls) 与 tool 结果）", async () => {
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "看下文件" });
+    // 中间轮 assistant(tool_calls)（agent-loop 持久化形态）
+    store.appendMessage(sess.id, {
+      role: "assistant",
+      content: "调用",
+      tool_calls: [
+        { id: "t1", type: "function", function: { name: "terminal_exec", arguments: '{"command":"dir"}' } },
+      ],
+    });
+    store.appendEvent(sess.id, "tool/call", { callId: "t1", name: "terminal_exec", arguments: "{}" }, "agent-loop");
+    store.appendEvent(
+      sess.id,
+      "tool/result",
+      { callId: "t1", success: true, content: "文件列表", durationMs: 5 },
+      "agent-loop",
+    );
+    store.appendMessage(sess.id, { role: "assistant", content: "完成" });
+
+    const resp = await fetch(`${base2}${API}/sessions/${sess.id}`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    const roles = (data.messages as Array<{ role: string }>).map((m) => m.role);
+    expect(roles).toEqual(["user", "assistant", "tool", "assistant"]);
+    const toolMsg = (data.messages as Array<{ tool_call_id?: string; content?: string }>)[2];
+    expect(toolMsg.tool_call_id).toBe("t1");
+    expect(toolMsg.content).toBe("文件列表");
+    // assistant(tool_calls) 消息带 tool_calls（Web 端重建工具卡）
+    const midAssistant = (data.messages as Array<{ tool_calls?: unknown[] }>)[1];
+    expect(midAssistant.tool_calls).toHaveLength(1);
   });
 
   it("GET /mcp 返回服务器状态列表", async () => {

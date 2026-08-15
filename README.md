@@ -2,28 +2,57 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
+<!-- 版本徽章与 package.json 同步更新 -->
+![version](https://img.shields.io/badge/version-0.2.0-blue)
+![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
+![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
+![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
+![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
+
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP 协议、技能库自动匹配、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种交互界面。
+
+## 目录
+
+- [特性](#特性)
+- [界面预览](#界面预览)
+- [作品展示](#作品展示)
+- [快速开始](#快速开始)
+- [交互界面](#交互界面)
+- [项目结构](#项目结构)
+- [配置](#配置)
+- [插件开发](#插件开发)
+- [测试与开发](#测试与开发)
+- [技术栈](#技术栈)
+- [相关文档](#相关文档)
+- [许可证](#许可证)
 
 ## 特性
 
 **Agent 核心**
-- 流式逐 token 输出 + AbortSignal 中断 + 空响应断路器 + token 压缩（75% 阈值，保留最近 3-8 轮）
+- 流式逐 token 输出 + AbortSignal 中断 + 空响应断路器 + **防循环提醒**（连续相同工具调用自动注入提示）+ token 压缩（75% 阈值，保留最近 3-8 轮）
 - 多 profile 模型路由：coding / reasoning / writing / creative / lite + DeepSeek 思考模式（`extra_body`）
 - 7 个专家智能体：通用 / 研究 / 编码 / 数据分析 / 理财 / 游戏 / 产品运营，关键词正则 → LLM 语义两阶段路由
 - Team 协调器：`/plan` DAG 编排（4 种模板 + Kahn 环路检测）、`/debate` 双专家互审
 
 **工具与扩展**
-- 6 个内置工具：fs_read / fs_write / fs_list / terminal_exec（异步）/ web_search（Bing 零 key）/ web_fetch（15s 超时）
+- 8 个内置工具：fs_read / fs_write / fs_list / terminal_exec（异步）/ **terminal_session（持久终端，cd/env 跨调用保留）** / web_search（Bing 零 key）/ web_fetch（15s 超时）/ **ask_user（模型主动向用户提问，CLI stdin / Web 提问卡片）**
 - MCP 协议：stdio/HTTP 双传输 + 内置工具服务器（math_eval/uuid_gen/json_format/timestamp_convert）+ 自动重连 + 健康检查
 - 38 个技能（7 大领域）：SKILL.md 正则触发 + 依赖缺失自动降级 + 复杂任务后自沉淀（可开关）
+- **轻量插件系统**：`config/plugins/` 即插即用——`setup(ctx)` 注册自定义工具/Hook（默认全局可见，可限定专家作用域），`/plugins` 查看状态；同名冲突 ⚠ 警告、Hook 错误隔离（fail-soft，插件 bug 不崩任务）
+- **scoped 工具注册**：工具按专家遮蔽（同名遮蔽全局），模型只见自己专家的工具（`mcp_`/插件工具豁免白名单）
 
 **安全与合规**
 - Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
+- **审批服务（ApprovalService）**：权限决策单点（模式矩阵 + fail-closed，无确认通道默认拒绝），hooks 内权限 handler 均为薄委托
+- **工具调用统一超时护栏**（默认 60s），任何工具不会无限挂起
 - Hooks 5 生命周期点 + 14 个 Handler：敏感数据过滤 / 高危确认 / 权限检查 / Diff 快照 / 审计日志 / 重试退避 / 模型降级
 
 **记忆与上下文**
 - 三层记忆：工作记忆（SQLite）+ 情景记忆（FTS5 + 中文分词 + 时间衰减）+ 语义记忆（MEMORY.md/USER.md 有界管理）
 - **会话事件溯源**：`session_events` 仅追加日志作为唯一真源，消息/轮次/工具调用可回放派生（`/trace`、统计、遥测共用）
+- **超长工具结果落盘（spill）**：fs_read/terminal 输出 > 8000 字符自动写入 `data/spills/`，上下文只留定位符 + 预览（replay-safe）
+- **工具结果剪枝**：上下文组装时超长 tool 消息截断 + 标记（完整内容仍在事件日志）
+- **会话自动标题**：首条用户消息自动生成（首行截断 ≤24 字符，不覆盖手动重命名）
 - 上下文管理：冻结快照 + 自适应压缩 + 分层 token 占比统计（`/context`）+ 工作目录感知（ProjectProfiler）
 - 监控日志：轮次日志（TurnLog）+ 工具调用日志（ToolCallLog），`/log` 查看真实耗时与 token
 
@@ -33,8 +62,32 @@
 
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
-- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、系统管理弹窗与 favicon
+- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
 - **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
+
+---
+
+## 界面预览
+
+![TUI 终端 — 问候](docs/screenshots/tui_hello.png)
+
+![TUI 终端 — 工具调用](docs/screenshots/tui_tool_call.png)
+
+![Web UI — 演示 1](docs/screenshots/web_ui_demo1.png)
+
+![Web UI — 演示 2](docs/screenshots/web_ui_demo2.png)
+
+---
+
+## 作品展示
+
+用 AiWorker 生成的 Web 小作品（HTML 单文件，浏览器直接打开）：
+
+- [blackhole.html](docs/videos/blackhole.html) — 黑洞模拟
+- [ocean-sunset.html](docs/videos/ocean-sunset.html) — 海上日落
+- [starship_design.html](docs/videos/starship_design.html) — 星舰设计
+
+> 🎬 演示视频（压缩版）：[AiWorker-Game-Demos-1080p-HQ.mp4](docs/videos/AiWorker-Game-Demos-1080p-HQ.mp4) — 原 226MB 2.5K 录屏压缩为 **8.9MB 1080p**（CRF 20），克隆仓库即可播放；原始大文件保留在本地。
 
 ---
 
@@ -105,12 +158,12 @@ npm run dev -- [选项]
 | `/trace [序号]` | 会话轨迹时间线（事件级复盘，--json 输出） |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
 | `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
-| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） | |
+| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |
 | `/help` / `/exit` | 帮助 / 退出 |
 
-快捷键：`Ctrl+C` 中断当前运行，`Tab` 补全（`/命令` + 技能名），方向键浏览历史与滚动回看。
+快捷键：`Ctrl+C` 中断当前运行，`Tab` 补全（`/命令` + 技能名），方向键浏览历史与滚动回看；输入框**支持多行**——长内容自动换行不截断，`Shift+Enter`（或 Alt/Ctrl+Enter）插入换行、`Enter` 提交，多行编辑时 `↑`/`↓` 在行间移动光标。
 
 ### Web UI
 
@@ -151,6 +204,8 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/skills` | GET | 已加载技能列表（含描述与分组） |
 | `/api/v1/diffs` | GET | 会话文件变更（快照 diff 结构化，按会话分组） |
 | `/api/v1/confirm` | POST | 确认卡片响应（JSON：`id` / `value`） |
+| `/api/v1/ask` | POST | 提问卡片回答（JSON：`id` / `answer`，ask_user 工具用） |
+| `/api/v1/plugins` | GET | 已加载插件列表（名称/版本/状态/注册工具） |
 
 ---
 
@@ -163,27 +218,29 @@ aiworker/
 │   ├── agents/           # 6 个 Agent YAML（覆盖 TS 默认配置）
 │   ├── mcp.json          # MCP 服务器
 │   ├── permissions.json  # 权限规则
-│   └── hooks.json        # Hook 注册（14 handlers / 5 events）
+│   ├── hooks.json        # Hook 注册（14 handlers / 5 events）
+│   └── plugins/          # 插件（每目录一个，plugin.ts|js 入口 + 可选 config.json）
 ├── skills/               # 技能库（38 个 SKILL.md，7 领域 + pending）
 ├── plans/                # Sprint 设计文档
 ├── src/
 │   ├── core/             # agent-loop / model-router / context-manager /
-│   │                     # team-coordinator / skill-registry / trace（轨迹投影）...
+│   │                     # team-coordinator / skill-registry / trace（轨迹投影）/
+│   │                     # tool-registry（作用域视图）/ plugin-manager（插件加载）...
 │   ├── commands/         # CLI 命令注册表（CliCommand/CommandContext 模块化）
 │   ├── agents/           # BaseAgent + 7 专家实现 + 路由
 │   ├── hooks/            # Hook 管理器 + 配置加载 + 14 个 handler
-│   ├── memory/           # session-store（SQLite/FTS5 + 事件溯源）+ telemetry（遥测）+ compressor
+│   ├── memory/           # session-store（SQLite/FTS5 + 事件溯源 + 自动标题）+ telemetry（遥测）+ compressor
 │   ├── mcp/              # 协议客户端 + 内置服务器 + 重连/健康检查
-│   ├── security/         # 危险检测 / 权限模型 / 审计
+│   ├── security/         # 危险检测 / 权限模型 / 审批服务（ApprovalService）/ 审计
 │   ├── terminal/         # TUI 引擎（screen 帧缓冲 / term 键解析 /
 │   │                     # components 组件 / tui 控制器 / markdown / highlight / trace-view）
-│   ├── tools/            # 内置工具
+│   ├── tools/            # 内置工具（fs/terminal/web + spill 落盘 + ask-channel + terminal-session）
 │   ├── server.ts         # HTTP Server + SSE（/chat /plan /debate + trace/stats/telemetry 端点）
 │   ├── index.ts          # CLI 入口
 │   └── types.ts          # 核心类型定义
 ├── test/                 # 测试（模块化，独立 data 目录防并行冲突）
 ├── web/                  # Web UI（Svelte 5 + Vite，独立 package.json）
-├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照
+├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照 / spills（超长工具结果）
 ├── ai_default_project/   # Agent 默认工作目录（读写基准，gitignored）
 ├── AGENTS.md             # AI 辅助开发指南
 └── vitest.config.ts
@@ -200,7 +257,130 @@ aiworker/
 | MCP 服务器 | `config/mcp.json` | stdio/HTTP 传输，`enabled: false` 禁用 |
 | 权限规则 | `config/permissions.json` | 工具级权限 |
 | Hook 注册 | `config/hooks.json` | 14 handlers，支持 `enabled: false` |
+| 插件 | `config/plugins/` | 每目录一个插件，默认导出 `setup(ctx)`（见下） |
 | 运行时覆盖 | `data/runtime-config.json` | `/config` 命令持久化，启动自动恢复 |
+
+---
+
+## 插件开发
+
+轻量插件契约（对齐 DSH "seam" 思想，不上 Cordis）：`config/plugins/<name>/` 下每个子目录一个插件，启动时自动加载（`/plugins` 查看状态）。
+
+```
+config/plugins/my-plugin/
+├── plugin.ts        # 入口（也支持 plugin.js / index.ts / index.js，.ts 优先）
+└── config.json      # 可选，注入 ctx.config
+```
+
+契约即"默认导出一个 `setup(ctx)` 函数"（也可导出 `{ setup, version, description }` 对象）。下面是**完整示例**（可复制到 `config/plugins/my-plugin/` 直接运行），覆盖：对象导出、类型导入、带 Schema 的工具、错误处理、scope 注册、Hook 写日志：
+
+```ts
+// config/plugins/my-plugin/plugin.ts
+import { appendFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import type { PluginContext, HookContext, ToolResult } from "../../../src/types.js";
+
+export default {
+  version: "0.1.0",
+  description: "完整示例：weather（枚举参数）+ hello（scope 注册）+ 工具调用日志 Hook",
+  async setup(ctx: PluginContext) {
+    // dataDir 可能尚未创建，日志目录自建更健壮
+    mkdirSync(ctx.dataDir, { recursive: true });
+    const defaultCity = typeof ctx.config.defaultCity === "string" ? ctx.config.defaultCity : "北京";
+
+    // ── 1) 带完整参数 Schema 的工具（string / enum / required）──
+    ctx.registerTool(
+      "weather",
+      {
+        type: "function",
+        function: {
+          name: "weather",
+          description: "查询指定城市当前天气（演示数据）",
+          parameters: {
+            type: "object",
+            properties: {
+              city: { type: "string", description: "城市名，缺省用 config 的 defaultCity" },
+              unit: { type: "string", enum: ["celsius", "fahrenheit"], description: "温度单位（默认 celsius）" },
+            },
+          },
+        },
+      },
+      async (args): Promise<ToolResult> => {
+        try {
+          const city = args.city ? String(args.city) : defaultCity;
+          const unit = String(args.unit ?? "celsius");
+          const temp = unit === "celsius" ? 26 : 79; // 演示值
+          return {
+            tool_call_id: "",
+            success: true,
+            content: `${city}：${temp}°${unit === "celsius" ? "C" : "F"}（演示数据）`,
+          };
+        } catch (err) {
+          // handler 出错请返回 success:false，不要抛异常
+          return { tool_call_id: "", success: false, content: "", error: (err as Error).message };
+        }
+      },
+    );
+
+    // ── 2) scope 注册：仅 coding 专家的模型可见（缺省全局可见）──
+    ctx.registerTool(
+      "hello",
+      {
+        type: "function",
+        function: { name: "hello", description: "打个招呼", parameters: { type: "object", properties: {} } },
+      },
+      async (_args, toolCtx) => ({ tool_call_id: "", success: true, content: `你好，${toolCtx.agentId}！` }),
+      { scope: "coding" },
+    );
+
+    // ── 3) Hook：记录每次工具调用（写文件而非 console.log，避免破坏 TUI 界面）──
+    ctx.registerHook("onToolCallPost", async (hc: HookContext) => {
+      const d = hc.data as { toolName?: string; result?: { success?: boolean } };
+      appendFileSync(
+        resolve(ctx.dataDir, "my-plugin-tools.log"),
+        `${new Date().toISOString()} ${hc.agentId} ${d.toolName ?? "?"} ${d.result?.success ? "ok" : "fail"}\n`,
+        "utf-8",
+      );
+    });
+  },
+};
+```
+
+配套的 `config.json`（可选，自动解析后注入 `ctx.config`）：
+
+```json
+{
+  "defaultCity": "北京"
+}
+```
+
+**各部分说明**：
+
+| 片段 | 要点 |
+|---|---|
+| `export default { version, description, setup }` | 对象导出带元数据（`/plugins` 显示）；也可直接导出 `setup(ctx)` 函数 |
+| `import type { PluginContext, HookContext, ToolResult }` | 相对根目录 `../../../src/types.js` 引用类型（可选，JS 插件可省） |
+| `parameters.properties[].enum` / `required` | 完整参数 Schema，模型会按定义生成参数 |
+| `try/catch` 返回 `success:false` | handler 出错**返回错误结果**而非抛异常（抛异常会被当作工具超时/失败处理） |
+| `{ scope: "coding" }` | 第 4 参：限定专家可见；缺省全局可见（豁免 agent `tools:` 白名单） |
+| `ctx.registerHook("onToolCallPost", ...)` | 6 个 Hook 事件任选；抛错不崩任务（fail-soft，记审计） |
+
+**PluginContext**：
+
+| 成员 | 说明 |
+|------|------|
+| `name` / `dataDir` | 插件名 / 数据目录 |
+| `config` | `config.json` 内容（存在则解析） |
+| `registerTool(name, definition, handler, options?)` | 注册工具；`options.scope` 指定专家作用域（缺省全局） |
+| `registerHook(event, handler, options?)` | 注册 Hook（6 事件见 AGENTS.md） |
+
+**要点**：
+- **fail-soft**：单个插件加载失败记录 error 并在启动横幅 ⚠ 告警，不阻断启动（`/plugins` 可查）。
+- **安全**：插件是任意进程权限代码，仅加载可信插件。
+- **同名覆盖**：全局工具同名时后加载的覆盖先加载的（加载顺序不定）；插件管理器检测到覆盖会记录警告，`/plugins` 以 ⚠ 展示（scope 注册遮蔽全局是设计特性，不警告）。工具名保持唯一。
+- **Hook 错误隔离**：插件 hook 抛错**不会中断任务**（fail-soft），错误记入审计（`/log` 可查）并视为放行；要拦截请显式返回 `{ proceed: false }`。
+- **工具作用域**：插件工具**默认全局可见**（豁免各 agent YAML 的 `tools:` 白名单，与 `mcp_` 前缀工具同等待遇，即插即用）；注册到 `scope: "coding"` 后仅 coding 专家的模型可见。
+- dev（tsx）下 `.ts`/`.js` 均可；编译后（node dist）仅 `.js` 可用。
 
 ---
 
@@ -226,3 +406,16 @@ npm run web:build   # Web UI 构建
 - **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
 - **设计依据**: 《docs/个人AI-Agent助手设计方案.md》
+
+---
+
+## 相关文档
+
+- [AGENTS.md](AGENTS.md) — AI 辅助开发指南（模块速览 / 关键约定 / 测试）
+- [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
+- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档
+- [docs/comparison-report.md](docs/comparison-report.md) — 与 DeepSeek Harness 的源码对比报告
+
+## 许可证
+
+[Mulan PSL v2](LICENSE)（木兰宽松许可证第二版）

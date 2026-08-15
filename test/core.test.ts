@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 核心模块测试：工具注册表 / 危险检测 / 权限模型 / 专家路由 / 技能注册表
  */
 
@@ -24,9 +24,9 @@ afterAll(() => {
 });
 
 describe("1. 工具注册表", () => {
-  it("注册 6 个内置工具", () => {
+  it("注册 8 个内置工具（含 ask_user / terminal_session）", () => {
     const tools = toolRegistry.getAll();
-    expect(tools.length).toBe(6);
+    expect(tools.length).toBe(8);
   });
   it("fs_read 可用", () => {
     expect(toolRegistry.isAvailable("fs_read")).toBe(true);

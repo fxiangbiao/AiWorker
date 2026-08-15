@@ -1,4 +1,4 @@
-﻿/**
+/**
  * TUI 引擎测试 — 帧合成 / 流式半行 / 滚动 / 输入解析
  * 不依赖真实 TTY：直接测组件与键解析纯逻辑。
  */
@@ -139,6 +139,85 @@ describe("InputLine 输入编辑", () => {
   });
 });
 
+describe("InputLine 多行输入（Sprint 26）", () => {
+  // eslint-disable-next-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+
+  it("type 插入换行，isMultiLine 判定", () => {
+    const il = new InputLine();
+    il.type("a");
+    il.type("\n");
+    il.type("b");
+    expect(il.getValue()).toBe("a\nb");
+    expect(il.isMultiLine()).toBe(true);
+    expect(new InputLine().isMultiLine()).toBe(false);
+  });
+
+  it("超长单行按宽度 wrap 为多视觉行，不再截断", () => {
+    const il = new InputLine();
+    il.type("这是一条很长的输入".repeat(8));
+    const out = il.render(20);
+    expect(out.length).toBeGreaterThan(1);
+    for (const row of out) {
+      expect(strip(row).length).toBeLessThanOrEqual(20);
+    }
+    // 内容完整（无省略号截断）
+    const joined = out.map(strip).join("");
+    expect(joined).toContain("这是一条很长的输入");
+  });
+
+  it("显式换行渲染为多行，前缀仅首行", () => {
+    const il = new InputLine();
+    il.setPrefix("你> ");
+    il.type("第一行");
+    il.type("\n");
+    il.type("第二行");
+    const out = il.render(40);
+    expect(out).toHaveLength(2);
+    expect(strip(out[0]!)).toBe("你> 第一行");
+    expect(strip(out[1]!)).toBe("第二行");
+  });
+
+  it("cursorPosition/cursorCol 按视觉行计算", () => {
+    const il = new InputLine();
+    il.setPrefix("你> ");
+    il.type("ab");
+    expect(il.cursorPosition(40)).toEqual({ row: 0, col: 6 }); // 前缀 4 列 + ab
+    il.type("\ncd");
+    expect(il.cursorPosition(40)).toEqual({ row: 1, col: 2 });
+    expect(il.cursorCol()).toBe(2);
+  });
+
+  it("moveLineUp/Down 按列对齐跨行移动光标", () => {
+    const il = new InputLine();
+    il.type("abc\ndef\nghi");
+    il.moveHome();
+    // 光标在 (0,0)：上移无效果
+    il.moveLineUp(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 0, col: 0 });
+    // 移到末尾（第 2 行 col 3）→ 上移到第 1 行 col 3
+    il.moveEnd();
+    expect(il.cursorPosition(20)).toEqual({ row: 2, col: 3 });
+    il.moveLineUp(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 1, col: 3 });
+    il.moveLineUp(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 0, col: 3 });
+    il.moveLineDown(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 1, col: 3 });
+  });
+
+  it("超过 8 视觉行时滚动窗口，光标行始终可见", () => {
+    const il = new InputLine();
+    for (let i = 1; i <= 12; i++) il.type(`行${i}\n`);
+    il.type("末尾");
+    const out = il.render(40);
+    expect(out.length).toBeLessThanOrEqual(8);
+    // 末尾行（光标所在）在可视窗口内
+    expect(strip(out[out.length - 1]!)).toBe("末尾");
+    expect(il.cursorRowInWindow()).toBe(out.length - 1);
+  });
+});
+
 describe("StatusBar 渲染", () => {
   it("包含模式与模型信息", () => {
     const sb = new StatusBar();
@@ -267,6 +346,126 @@ describe("Markdown 块级渲染", () => {
     expect(out[0]!).not.toContain("# "); // 已渲染，非原始 Markdown
     expect(out).toHaveLength(3);
   });
+
+  it("charWidth：emoji 呈现字符 2 列、文本符号 1 列、CJK 2 列", () => {
+    expect(charWidth("✅")).toBe(2); // U+2705 Emoji_Presentation
+    expect(charWidth("⭐")).toBe(2);
+    expect(charWidth("🔥")).toBe(2);
+    expect(charWidth("✗")).toBe(1); // U+2717 文本呈现
+    expect(charWidth("✓")).toBe(1);
+    expect(charWidth("★")).toBe(1);
+    expect(charWidth("中")).toBe(2);
+    expect(charWidth("a")).toBe(1);
+    expect(charWidth("\u200d")).toBe(0); // ZWJ
+  });
+});
+
+describe("StreamOutputRenderer 流式表格对齐（Sprint 26）", () => {
+  // eslint-disable-next-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+  /** 捕获 stdout，返回写入的行数组（还原 write 后调用方再用） */
+  function captureStdout(fn: () => void): string[] {
+    const out: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    (process.stdout.write as unknown) = ((chunk: string | Uint8Array) => {
+      out.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      fn();
+    } finally {
+      process.stdout.write = orig;
+    }
+    return out;
+  }
+  /** 所有行 │ 分隔符的显示列位置一致 */
+  function assertAligned(lines: string[]): void {
+    const colPos = (l: string) => {
+      const idxs: number[] = [];
+      let w = 0;
+      for (const ch of l) {
+        if (ch === "│") idxs.push(w);
+        w += charWidth(ch);
+      }
+      return idxs.join(",");
+    };
+    const first = colPos(lines[0]!);
+    for (const l of lines) expect(colPos(l)).toBe(first);
+  }
+
+  it("流式表格整块对齐：表头/分隔线/数据行列宽一致", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| 维度 | 吴恩达 ML 专项 | fast.ai |\n|---|---|---|\n| 覆盖 | ML 全貌 | DL 实战 |\n| 数学门槛 | 低 | 极低 |\n\n");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    expect(lines.length).toBe(4); // 表头 + 分隔线 + 2 数据行
+    assertAligned(lines);
+    // 分隔线单元格与数据行同构（│ 对齐，─ 铺满列宽）
+    expect(lines[1]).toContain("─");
+  });
+
+  it("跨 chunk 到达的表格行仍整块对齐，非表格行触发冲刷", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| A | B |");
+      r.writeChunk("\n|--|--|");
+      r.writeChunk("\n| 1 | 2 |");
+      r.writeChunk("\n\n正文段落");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    // 3 行表格 + 1 行正文
+    expect(lines.length).toBe(4);
+    assertAligned(lines.slice(0, 3));
+    expect(lines[3]).toContain("正文段落");
+  });
+
+  it("末尾无空行的表格在 flush 时对齐输出", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| x | y |\n|---|---|\n| 1 | 2 |");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    expect(lines.length).toBe(3);
+    assertAligned(lines);
+  });
+
+  it("含 emoji（✅）与符号（✗★）的表格仍严格对齐", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| 资源 | 免费 | 评分 |\n|---|---|---|\n| fast.ai | ✅ | ★★★ |\n| 《MML》书 | ✗ | ★★ |\n| 吴恩达课程 | 可旁听 | ★★★★ |\n\n");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    expect(lines.length).toBe(5); // 表头 + 分隔线 + 3 数据行
+    assertAligned(lines);
+  });
+
+  it("ask_user 工具卡展示问题与选项数，而非原始 JSON", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.toolStart("ask_user", JSON.stringify({ question: "请告诉我你的职业信息？", options: ["程序员", "产品", "教师"] }), "t1");
+      r.toolResult("ask_user", true, "用户回答: 程序员", "t1");
+    });
+    const joined = out.join("");
+    expect(joined).toContain("🔧 ask_user（3 个选项）");
+    expect(joined).toContain("请告诉我你的职业信息？");
+    // 不展示原始 JSON
+    expect(joined).not.toContain('"question"');
+    expect(joined).not.toContain('"options"');
+    // 结果行不含重复问题预览
+    expect(joined).toContain("✓ 用户回答: 程序员");
+    const askLines = joined.split("\n").filter(Boolean);
+    expect(askLines[0]).not.toContain("用户回答");
+  });
 });
 
 describe("键解析 parseKeys", () => {
@@ -300,6 +499,16 @@ describe("键解析 parseKeys", () => {
     const { events } = parseKeys("\x1b[<64;10;20M\x1b[<65;10;20M");
     expect(events.map((e) => e.type)).toEqual(["wheelup", "wheeldown"]);
   });
+
+  it("Shift/Alt/Ctrl+Enter 解析为 altEnter（插入换行），普通 Enter 仍是 enter", () => {
+    // CSI-u Shift+Enter、Alt+Enter（ESC+CR）、Ctrl+Enter
+    expect(parseKeys("\x1b[13;2u").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b[13;3u").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b[13;5u").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b\r").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b\n").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\r").events.map((e) => e.type)).toEqual(["enter"]);
+  });
 });
 
 describe("Tui 帧合成", () => {
@@ -329,6 +538,299 @@ describe("Tui 帧合成", () => {
     t.simulateKey({ type: "enter" });
     const value = await p;
     expect(value).toBe("hello");
+    t.destroy();
+  });
+
+  it("altEnter 插入换行，Enter 提交多行输入", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.prompt();
+    for (const ch of "第一行") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "altEnter" });
+    for (const ch of "第二行") t.simulateKey({ type: "char", char: ch });
+    expect(t.input.getValue()).toBe("第一行\n第二行");
+    expect(t.input.isMultiLine()).toBe(true);
+    t.simulateKey({ type: "enter" });
+    const value = await p;
+    expect(value).toBe("第一行\n第二行");
+    // 消息历史按多行展示（首行带前缀）
+    const rendered = t.messages.renderViewport(80, 5);
+    // eslint-disable-next-line no-control-regex
+    const clean = rendered.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, "")).join("\n");
+    expect(clean).toContain("你> 第一行");
+    expect(clean).toContain("第二行");
+    t.destroy();
+  });
+
+  it("多行输入时 Up/Down 移动光标行，而非切历史", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    t.prompt();
+    t.input.setHistory(["cmd1"]);
+    for (const ch of "a\nb") t.simulateKey({ type: "char", char: ch });
+    // 光标在最后一行
+    expect(t.input.cursorPosition(80).row).toBe(1);
+    t.simulateKey({ type: "up" });
+    expect(t.input.cursorPosition(80).row).toBe(0);
+    expect(t.input.getValue()).toBe("a\nb"); // 未被历史替换
+    t.simulateKey({ type: "down" });
+    expect(t.input.cursorPosition(80).row).toBe(1);
+    t.destroy();
+  });
+
+  it("光标定位在输入区当前行而非分隔线（单行输入）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    const out: string[] = [];
+    t.screen.setOut((s) => out.push(s));
+    t.messages.append("你> hi");
+    t.prompt();
+    t.requestRender();
+    await new Promise((r) => setTimeout(r, 40));
+    // 最后一次光标定位：单行输入 1 基行号 = rows-1（分隔线在其上，状态栏在其下）
+    // eslint-disable-next-line no-control-regex
+    const last = [...out.join("").matchAll(/\x1b\[(\d+);(\d+)H/g)].at(-1);
+    expect(Number(last?.[1])).toBe(t.screen.getRows() - 1);
+    t.destroy();
+  });
+
+  it("光标跟随多行输入的光标行（非末尾行）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    const out: string[] = [];
+    t.screen.setOut((s) => out.push(s));
+    t.prompt();
+    for (const ch of "a\nb") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "home" }); // 光标到首行
+    t.requestRender();
+    await new Promise((r) => setTimeout(r, 40));
+    // 多行输入 2 行：输入区占 rows-3、rows-2（0 基）；光标在首行 → 1 基 rows-2
+    // eslint-disable-next-line no-control-regex
+    const last = [...out.join("").matchAll(/\x1b\[(\d+);(\d+)H/g)].at(-1);
+    expect(Number(last?.[1])).toBe(t.screen.getRows() - 2);
+    t.destroy();
+  });
+
+  it("ask 提问走 TUI 输入行：选项序号回车提交并复位输入态", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("你平时喜欢什么游戏？", ["竞技类", "单机大作", "休闲类"]);
+    // 挂起期间状态栏显示"等待你的回答"（不依赖已被工具调用停掉的定时器）
+    expect(t.status.getData().status).toBe("等待你的回答");
+    // 问题与选项渲染进消息区
+    const rendered = t.messages.renderViewport(80, 10);
+    // eslint-disable-next-line no-control-regex
+    const clean = rendered.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, "")).join("\n");
+    expect(clean).toContain("❓ 你平时喜欢什么游戏？");
+    expect(clean).toContain("1) 竞技类");
+    expect(clean).toContain("3) 休闲类");
+    // 输入行进入答> 编辑态
+    expect(t.input.getPrefix()).toBe("答> ");
+    // 输入序号 2 回车 → 解析为选项文本
+    t.simulateKey({ type: "char", char: "2" });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("单机大作");
+    // 状态复位：前缀恢复、缓冲区清空、状态栏回到思考中
+    expect(t.input.getPrefix()).toBe("你> ");
+    expect(t.input.getValue()).toBe("");
+    expect(t.input.isMultiLine()).toBe(false);
+    expect(t.status.getData().status).toBe("思考中");
+    t.destroy();
+  });
+
+  it("ask 自由文本回车提交；空输入忽略不提交", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("问题", []);
+    t.simulateKey({ type: "enter" }); // 空输入 → 不提交
+    let resolved = false;
+    void p.then(() => {
+      resolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false);
+    for (const ch of "自由回答") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("自由回答");
+    t.destroy();
+  });
+
+  it("ask 超时返回 null；Ctrl+C 取消返回 null", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p1 = t.ask("q", [], 50);
+    expect(await p1).toBeNull();
+    const p2 = t.ask("q", []);
+    t.simulateKey({ type: "ctrlC" });
+    expect(await p2).toBeNull();
+    expect(t.input.getPrefix()).toBe("你> ");
+    t.destroy();
+  });
+
+  it("ask 多选：逗号分隔序号提交多个选项", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("你玩哪些类型？", ["竞技类", "单机大作", "休闲类", "什么都玩"], 30000, true);
+    // 多选提示渲染
+    const rendered = t.messages.renderViewport(80, 12);
+    // eslint-disable-next-line no-control-regex
+    const clean = rendered.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, "")).join("\n");
+    expect(clean).toContain("可多选");
+    // 输入 "1,3" 回车 → 两个选项以 ", " 连接
+    for (const ch of "1,3") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("竞技类, 休闲类");
+    t.destroy();
+  });
+
+  it("ask 多选：Tab 勾选选项并标记 [*]，↑/↓ 移动，Enter 提交选中项", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // eslint-disable-next-line no-control-regex
+    const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+    const text = () => t.messages.renderViewport(80, 12).map(strip).join("\n");
+
+    const p = t.ask("你玩哪些？", ["竞技类", "单机大作", "休闲类"], 30000, true);
+    // 初始：第 1 项高亮（>），未勾选
+    expect(text()).toContain(">[ ] 1) 竞技类");
+    expect(text()).toContain("  [ ] 2) 单机大作");
+    // Tab 勾选第 1 项
+    t.simulateKey({ type: "tab" });
+    expect(text()).toContain(">[*] 1) 竞技类");
+    // ↓ 到第 2 项并勾选
+    t.simulateKey({ type: "down" });
+    t.simulateKey({ type: "tab" });
+    expect(text()).toContain("  [*] 1) 竞技类");
+    expect(text()).toContain(">[*] 2) 单机大作");
+    // Tab 再按一次取消第 2 项
+    t.simulateKey({ type: "tab" });
+    expect(text()).toContain(">[ ] 2) 单机大作");
+    t.simulateKey({ type: "tab" }); // 重新勾选
+    // ↑ 回第 1 项，Enter（输入为空）→ 提交两个勾选项
+    t.simulateKey({ type: "up" });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("竞技类, 单机大作");
+    t.destroy();
+  });
+
+  it("ask 多选：输入框内容优先于 Tab 勾选", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("q", ["甲", "乙", "丙"], 30000, true);
+    t.simulateKey({ type: "tab" }); // 勾选甲
+    for (const ch of "2,3") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("乙, 丙");
+    t.destroy();
+  });
+
+  it("ask 多选：空格键勾选/取消（输入框为空时）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // eslint-disable-next-line no-control-regex
+    const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+    const text = () => t.messages.renderViewport(80, 12).map(strip).join("\n");
+
+    const p = t.ask("你玩哪些？", ["竞技类", "单机大作"], 30000, true);
+    // 空输入 + 空格 → 勾选高亮项
+    t.simulateKey({ type: "char", char: " " });
+    expect(text()).toContain(">[*] 1) 竞技类");
+    // 再按空格 → 取消
+    t.simulateKey({ type: "char", char: " " });
+    expect(text()).toContain(">[ ] 1) 竞技类");
+    // 勾选后 Enter 提交
+    t.simulateKey({ type: "char", char: " " });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("竞技类");
+    t.destroy();
+  });
+
+  it("ask 多选：输入开始后空格照常插入（序号空格分隔与自由文本不受影响）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // 空格分隔序号列表
+    const p1 = t.ask("q", ["甲", "乙", "丙"], 30000, true);
+    t.simulateKey({ type: "char", char: "1" });
+    t.simulateKey({ type: "char", char: " " }); // 输入中：插入空格而非勾选
+    t.simulateKey({ type: "char", char: "3" });
+    t.simulateKey({ type: "enter" });
+    expect(await p1).toBe("甲, 丙");
+    // 含空格自由文本
+    const p2 = t.ask("q", ["甲", "乙"], 30000, true);
+    for (const ch of "自定义 回答") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p2).toBe("自定义 回答");
+    t.destroy();
+  });
+
+  it("ask 单选：↑/↓ 移动高亮，Enter 提交高亮项", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // eslint-disable-next-line no-control-regex
+    const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+    const text = () => t.messages.renderViewport(80, 12).map(strip).join("\n");
+
+    const p = t.ask("你偏好哪个？", ["竞技类", "单机大作", "休闲类"]);
+    // 初始高亮第 1 项
+    expect(text()).toContain("> 1) 竞技类");
+    // ↓ 两次到第 3 项，↑ 回第 2 项
+    t.simulateKey({ type: "down" });
+    t.simulateKey({ type: "down" });
+    expect(text()).toContain("> 3) 休闲类");
+    t.simulateKey({ type: "up" });
+    expect(text()).toContain("> 2) 单机大作");
+    // Enter 提交高亮项
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("单机大作");
+    t.destroy();
+  });
+
+  it("parseKeys 拆分序列重组：孤立 ESC 保留为 rest，与后续 [A 重组为 up", () => {
+    const r1 = parseKeys("", "\x1b");
+    expect(r1.events).toEqual([]);
+    expect(r1.rest).toBe("\x1b");
+    const r2 = parseKeys("[A", r1.rest);
+    expect(r2.events.map((e) => e.type)).toEqual(["up"]);
+  });
+
+  it("ask 多选：单序号走单选路径，自由文本原样返回", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p1 = t.ask("q", ["甲", "乙"], 30000, true);
+    t.simulateKey({ type: "char", char: "2" });
+    t.simulateKey({ type: "enter" });
+    expect(await p1).toBe("乙");
+
+    const p2 = t.ask("q", ["甲", "乙"], 30000, true);
+    for (const ch of "自定义回答") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p2).toBe("自定义回答");
     t.destroy();
   });
 

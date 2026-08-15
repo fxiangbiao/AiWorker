@@ -4,14 +4,14 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { projectTrace, computeSessionStats } from "../src/core/trace.js";
 import { TelemetryCoordinator, readTelemetryFile } from "../src/memory/telemetry.js";
 import { createTelemetryRedact } from "../src/hooks/handlers.js";
 import { hookManager } from "../src/hooks/hook-manager.js";
-import type { SessionEvent, SessionTelemetryRecord } from "../src/types.js";
+import type { SessionEvent } from "../src/types.js";
 
 let dir: string;
 

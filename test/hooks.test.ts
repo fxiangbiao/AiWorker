@@ -6,6 +6,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { resolve, dirname } from "node:path";
 import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync } from "node:fs";
 import { hookManager } from "../src/hooks/hook-manager.js";
+import { auditLogger } from "../src/core/audit-logger.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { DangerDetector } from "../src/security/danger-detector.js";
 import type { HookContext } from "../src/types.js";
@@ -498,5 +499,67 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(turns[0].tokensCompletion).toBe(750); // 800 - 50
     expect(turns[0].userInput).toBe("问题");
     sessionStore.close();
+  });
+});
+
+describe("Hook fail-soft（插件健壮性）", () => {
+  it("抛错 hook 不中断任务：其余 hook 继续执行且修改生效", async () => {
+    hookManager.clear();
+    hookManager.on("onMessage", async () => {
+      throw new Error("插件 bug: resolve is not defined");
+    });
+    hookManager.on("onMessage", async () => ({ proceed: true, modifiedData: { marker: true } }));
+    const result = await hookManager.trigger("onMessage", {
+      agentId: "coding",
+      sessionId: "fs-1",
+      data: { instruction: "hi" },
+    });
+    expect(result.proceed).toBe(true);
+    expect(result.modifiedData).toMatchObject({ marker: true });
+  });
+
+  it("抛错 hook 不影响其他 hook 的拦截", async () => {
+    hookManager.clear();
+    hookManager.on("onToolCallPre", async () => {
+      throw new Error("boom");
+    });
+    hookManager.on("onToolCallPre", async () => ({ proceed: false, message: "权限拦截" }));
+    const result = await hookManager.trigger("onToolCallPre", {
+      agentId: "coding",
+      sessionId: "fs-2",
+      data: { toolName: "fs_write" },
+    });
+    expect(result.proceed).toBe(false);
+    expect(result.message).toBe("权限拦截");
+  });
+
+  it("全部 hook 抛错视为放行", async () => {
+    hookManager.clear();
+    hookManager.on("onMessage", async () => {
+      throw new Error("e1");
+    });
+    hookManager.on("onMessage", async () => {
+      throw new Error("e2");
+    });
+    const result = await hookManager.trigger("onMessage", {
+      agentId: "coding",
+      sessionId: "fs-3",
+      data: {},
+    });
+    expect(result.proceed).toBe(true);
+  });
+
+  it("抛错记录到审计日志", async () => {
+    hookManager.clear();
+    hookManager.on("onMessage", async () => {
+      throw new Error("audit-check-error");
+    });
+    await hookManager.trigger("onMessage", {
+      agentId: "coding",
+      sessionId: "fs-audit",
+      data: {},
+    });
+    const logs = auditLogger.queryBySession("fs-audit");
+    expect(JSON.stringify(logs)).toContain("audit-check-error");
   });
 });

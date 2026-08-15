@@ -3,6 +3,7 @@
   import UserMessage from "./UserMessage.svelte";
   import AgentCard from "./AgentCard.svelte";
   import ConfirmCard from "./ConfirmCard.svelte";
+  import AskCard from "./AskCard.svelte";
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
   import {
@@ -14,6 +15,8 @@
     type UIMessage,
     type PlanStep,
     type ConfirmItem,
+    type AskItem,
+    toolArgsDisplay,
     API,
   } from "$lib/stores/chat.svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
@@ -21,13 +24,14 @@
 
   let errors: string[] = $state([]);
 
-  // 切换会话时清空错误提示与确认卡片（临时状态）
+  // 切换会话时清空错误提示与确认/提问卡片（临时状态）
   let _lastSession = $state(store.activeChatId);
   $effect(() => {
     if (store.activeChatId !== _lastSession) {
       _lastSession = store.activeChatId;
       errors = [];
       store.confirms = [];
+      store.asks = [];
     }
   });
 
@@ -90,6 +94,15 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, value }),
+    }).catch(() => { /* 服务端超时后忽略 */ });
+  }
+
+  function respondAsk(id: string, answer: string | null) {
+    store.asks = store.asks.filter((a) => a.id !== id);
+    fetch(`${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, answer }),
     }).catch(() => { /* 服务端超时后忽略 */ });
   }
 
@@ -317,7 +330,7 @@
         agent.timeline.push({
           type: "tool",
           name: data.name as string,
-          args: data.args as string,
+          args: toolArgsDisplay(data.name as string, data.args),
           id: data.id as string,
           result: false,
           pending: true,
@@ -325,6 +338,7 @@
         agent._thinkingActive = true;
         break;
       case "tool_result": {
+        if (data.name === "ask_user") store.asks = [];
         for (let i = (agent.timeline || []).length - 1; i >= 0; i--) {
           const t = agent.timeline![i];
           if (t.type === "tool" && !t.result) {
@@ -396,7 +410,7 @@
         agent.timeline.push({
           type: "tool",
           name: data.name as string,
-          args: data.args as string,
+          args: toolArgsDisplay(data.name as string, data.args),
           id: data.id as string,
           result: false,
           pending: true,
@@ -404,6 +418,8 @@
         tick().then(() => scrollToBottom());
         break;
       case "tool_result": {
+        // ask_user 已结算（回答/跳过/超时）→ 移除挂起的提问卡片
+        if (data.name === "ask_user") store.asks = [];
         for (let i = agent.timeline.length - 1; i >= 0; i--) {
           const t = agent.timeline[i];
           if (t.type === "tool" && !t.result) {
@@ -428,6 +444,7 @@
           m._activeStep = undefined;
         }
         store.confirms = [];
+        store.asks = [];
         store.diffVersion++;
         tick().then(() => scrollToBottom(true));
         break;
@@ -443,6 +460,18 @@
         };
         const exist = store.confirms.find((c) => c.id === confirm.id);
         if (!exist) store.confirms.push(confirm);
+        break;
+      }
+      case "ask_user": {
+        const ask: AskItem = {
+          id: data.askId as string,
+          question: (data.question as string) || "",
+          options: ((data.options as string[]) || []).filter(Boolean),
+          multiple: data.multiple === true,
+        };
+        const exist = store.asks.find((a) => a.id === ask.id);
+        if (!exist) store.asks.push(ask);
+        tick().then(() => scrollToBottom());
         break;
       }
       case "tool_blocked": {
@@ -470,6 +499,7 @@
           m._activeStep = undefined;
         }
         store.confirms = [];
+        store.asks = [];
         break;
     }
   }
@@ -508,6 +538,9 @@
       {/each}
       {#each store.confirms as c}
         <ConfirmCard confirm={c} onRespond={(v) => respondConfirm(c.id, v)} />
+      {/each}
+      {#each store.asks as a}
+        <AskCard ask={a} onRespond={(v) => respondAsk(a.id, v)} />
       {/each}
       {#each errors as err}
         <ErrorBanner message={err} />

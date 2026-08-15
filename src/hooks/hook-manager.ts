@@ -10,6 +10,7 @@
  */
 
 import type { HookEvent, HookHandler, HookContext, HookResult } from "../types.js";
+import { auditLogger } from "../core/audit-logger.js";
 
 interface RegisteredHook {
   id: string;
@@ -60,17 +61,33 @@ class HookManager {
   /**
    * 触发事件
    * 依次执行所有 hook，任一返回 proceed=false 则中止并返回拦截
+   * fail-soft：单个 hook 抛错不中断任务（记审计 + 视为放行，其余 hook 继续执行）
+   * 约定：权限类 hook 请用显式 { proceed: false } 拦截，抛错不等于拒绝
    */
   async trigger(event: HookEvent, ctx: Omit<HookContext, "event">): Promise<HookResult> {
     const hooks = this.hooks.filter((h) => h.event === event);
     let currentData = { ...ctx.data };
 
     for (const hook of hooks) {
-      const result = await hook.handler({
-        ...ctx,
-        event,
-        data: currentData,
-      });
+      let result: HookResult | void;
+      try {
+        result = await hook.handler({
+          ...ctx,
+          event,
+          data: currentData,
+        });
+      } catch (err) {
+        auditLogger.log({
+          timestamp: Date.now(),
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          action: `hook:${event}`,
+          target: hook.id,
+          result: "error",
+          detail: (err as Error).message.slice(0, 200),
+        });
+        continue;
+      }
 
       if (result) {
         if (!result.proceed) {

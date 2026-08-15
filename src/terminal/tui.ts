@@ -1,4 +1,4 @@
-﻿/**
+/**
  * tui.ts — TUI 主控制器
  *
  * 组合 MessageList + InputLine + StatusBar，用 Screen 差分渲染。
@@ -11,6 +11,7 @@
 import { Screen } from "./screen.js";
 import { Terminal, type KeyEvent } from "./term.js";
 import { MessageList, InputLine, StatusBar, type StatusData } from "./components.js";
+import { parseOptionInput } from "../tools/ask-channel.js";
 import chalk from "chalk";
 
 export class Tui {
@@ -31,6 +32,18 @@ export class Tui {
   private realWrite: ((s: string) => void) | null = null;
   private capturedWrite: typeof process.stdout.write | null = null;
   private completionHints: string[] = [];
+  /** 输入区当前可视行数（renderNow 更新，消息区高度计算用） */
+  private inputHeight = 1;
+  /** ask_user 等待回答状态（输入行「答> 」编辑，Enter 提交） */
+  private askPending = false;
+  private askResolve: ((v: string | null) => void) | null = null;
+  private askTimer: ReturnType<typeof setTimeout> | null = null;
+  private askOptions: string[] = [];
+  private askMultiple = false;
+  /** 多选：当前高亮选项索引 + 勾选集合 + 选项行起始消息索引 */
+  private askHighlight = 0;
+  private askSelected: boolean[] = [];
+  private askOptionStart = -1;
 
   init(): void {
     if (this.active) return;
@@ -127,22 +140,27 @@ export class Tui {
       this.screen.render([this.status.render(cols)[0]!]);
       return;
     }
-    // 布局：消息区 + [hint] + 分隔线 + 输入行 + 状态栏
+    // 布局：消息区 + [hint] + 分隔线 + 输入区（动态多行）+ 状态栏
     const hintActive = this.completionHints.length > 0;
-    const fixedRows = 3 + (hintActive ? 1 : 0); // 分隔线 + 输入行 + 状态栏 [+ hint]
+    const inputLines = this.input.render(cols);
+    this.inputHeight = inputLines.length;
+    const fixedRows = 2 + this.inputHeight + (hintActive ? 1 : 0); // 分隔线 + 输入区 + 状态栏 [+ hint]
     const contentHeight = rows - fixedRows;
     const msgLines = this.messages.renderViewport(cols, contentHeight);
     const hintLines = hintActive ? [this.renderHints(cols)] : [];
     const dividerLines = [this.renderDivider(cols)];
-    const inputLines = this.input.render(cols);
     const statusLines = this.status.render(cols);
     this.screen.render([...msgLines, ...hintLines, ...dividerLines, ...inputLines, ...statusLines]);
-    // 光标：agent 运行期间隐藏；prompt 期间显示在输入行
-    const inputRow = rows - 1;
-    if (this.agentRunning) {
+    // 光标：agent 运行期间隐藏（ask 等待回答除外）；prompt/ask 期间显示在输入区当前行
+    // positionCursor 用 1 基行号：inputStart(0 基) + 1 换算
+    const statusRow = rows - 1;
+    const inputStart = statusRow - this.inputHeight;
+    const cursorRow = inputStart + 1 + this.input.cursorRowInWindow();
+    const cursorCol = this.input.cursorCol() + 1;
+    if (this.agentRunning && !this.askPending) {
       this.screen.hideCursor();
     } else {
-      this.screen.positionCursor(inputRow, this.input.cursorCol() + 1);
+      this.screen.positionCursor(cursorRow, cursorCol);
       this.screen.showCursor();
     }
   }
@@ -161,9 +179,9 @@ export class Tui {
     return `${chalk.dim("▸")} ${line}`;
   }
 
-  /** 当前消息区可视高度（分隔线/输入行/状态栏固定，含提示行占用） */
+  /** 当前消息区可视高度（分隔线/输入区/状态栏固定，输入区按当前可视行数计，含提示行占用） */
   private messageViewport(): number {
-    return Math.max(1, this.screen.getRows() - 3 - (this.completionHints.length > 0 ? 1 : 0));
+    return Math.max(1, this.screen.getRows() - 2 - this.inputHeight - (this.completionHints.length > 0 ? 1 : 0));
   }
 
   private onResize(): void {
@@ -244,6 +262,184 @@ export class Tui {
     this.onInterrupt = fn;
   }
 
+  // ── ask_user 提问（TUI 输入行交互） ──
+
+  /**
+   * 发起提问（ask_user 工具）：渲染问题/选项到消息区，输入行前缀「答> 」，Enter 提交
+   * 输入序号自动解析为对应选项文本；multiple 时支持逗号/空格分隔的多序号（如 1,3，结果以 ", " 连接）；
+   * 超时（默认 30s）或 Ctrl+C 取消返回 null
+   */
+  ask(question: string, options: string[], timeoutMs = 30000, multiple = false): Promise<string | null> {
+    // 上次提问未决：先取消
+    if (this.askPending) this.resolveAsk(null);
+
+    const startIdx = this.messages.getTotalLines();
+    this.askOptions = options;
+    this.askMultiple = multiple;
+    this.askSelected = options.map(() => false);
+    this.askHighlight = 0;
+    this.askOptionStart = startIdx + 2; // 空行(0) + 问题行(1) 之后是选项行
+
+    this.messages.append("");
+    this.messages.append(`${chalk.cyan("❓")} ${question}`);
+    options.forEach((_, i) => {
+      this.messages.append(this.askOptionLine(i));
+    });
+    let hint: string;
+    if (multiple && options.length > 0) {
+      hint = "（可多选：↑/↓ 移动，Tab/空格 勾选/取消，Enter 提交；也可输入序号如 1,3）";
+    } else if (options.length > 0) {
+      hint = "（↑/↓ 选择，Enter 提交；也可输入序号或自由文本）";
+    } else {
+      hint = "（输入回答后回车）";
+    }
+    this.messages.append(chalk.dim(hint));
+
+    this.input.setPrefix("答> ");
+    this.input.setDisabled(false);
+    this.input.clear();
+    this.askPending = true;
+    // 直接更新状态栏：实时定时器在首个工具调用时已停止（onToolCall 内 stopLiveStatus），
+    // 不能依赖定时器轮询 isAskWaiting()
+    this.status.setData({ ...this.status.getData(), status: "等待你的回答" });
+    this.requestRender();
+
+    return new Promise<string | null>((resolve) => {
+      this.askResolve = resolve;
+      this.askTimer = setTimeout(() => this.resolveAsk(null), timeoutMs);
+    });
+  }
+
+  /** 构建选项行（勾选标记 + 高亮光标；单选仅显示光标） */
+  private askOptionLine(i: number): string {
+    const cursor = i === this.askHighlight ? ">" : " ";
+    let line: string;
+    if (this.askMultiple) {
+      const marker = this.askSelected[i] ? "[*]" : "[ ]";
+      line = `  ${cursor}${marker} ${i + 1}) ${this.askOptions[i]}`;
+    } else {
+      line = `  ${cursor} ${i + 1}) ${this.askOptions[i]}`;
+    }
+    if (i === this.askHighlight) return chalk.cyan(line);
+    return this.askMultiple && this.askSelected[i] ? chalk.green(line) : chalk.dim(line);
+  }
+
+  /** 重绘选项行（勾选/高亮变化后） */
+  private renderAskOptions(): void {
+    if (this.askOptionStart < 0) return;
+    this.askOptions.forEach((_, i) => {
+      this.messages.setLine(this.askOptionStart + i, this.askOptionLine(i));
+    });
+    this.requestRender();
+  }
+
+  /** 结算提问：复位输入态并 resolve */
+  private resolveAsk(value: string | null): void {
+    if (!this.askPending) return;
+    this.askPending = false;
+    if (this.askTimer) {
+      clearTimeout(this.askTimer);
+      this.askTimer = null;
+    }
+    this.input.clear();
+    this.input.setDisabled(true);
+    this.input.setPrefix("你> ");
+    this.askOptions = [];
+    this.askMultiple = false;
+    this.askSelected = [];
+    this.askHighlight = 0;
+    this.askOptionStart = -1;
+    const resolve = this.askResolve;
+    this.askResolve = null;
+    // 恢复"思考中"（agent 仍在运行；定时器若已恢复会继续接管）
+    this.status.setData({ ...this.status.getData(), status: "思考中" });
+    this.requestRender();
+    resolve?.(value);
+  }
+
+  /** ask 等待回答期间的按键处理 */
+  private handleAskKey(ev: KeyEvent): void {
+    switch (ev.type) {
+      case "char":
+        // 多选模式：输入框为空时空格 = 勾选/取消当前高亮项（与 Tab 一致）；
+        // 一旦开始输入（序号列表/自由文本），空格照常插入
+        if (ev.char === " " && this.askMultiple && this.askOptions.length > 0 && this.input.getValue() === "") {
+          this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
+          this.renderAskOptions();
+          return;
+        }
+        this.input.type(ev.char);
+        break;
+      case "paste":
+        for (const ch of ev.text) this.input.type(ch);
+        break;
+      case "enter": {
+        const value = this.input.getValue().trim();
+        if (value) {
+          this.resolveAsk(parseOptionInput(value, this.askOptions, this.askMultiple));
+          return;
+        }
+        // 多选：提交 Tab/空格 勾选的选项
+        if (this.askMultiple && this.askSelected.some(Boolean)) {
+          const picked = this.askSelected
+            .map((sel, i) => (sel ? this.askOptions[i] : null))
+            .filter((x): x is string => x !== null);
+          this.resolveAsk(picked.join(", "));
+          return;
+        }
+        // 单选：空输入 → 提交高亮项
+        if (!this.askMultiple && this.askOptions.length > 0) {
+          this.resolveAsk(this.askOptions[this.askHighlight]!);
+          return;
+        }
+        return; // 空输入且无选中 → 忽略
+      }
+      case "backspace":
+        this.input.backspace();
+        break;
+      case "delete":
+        this.input.deleteChar();
+        break;
+      case "left":
+        this.input.moveLeft();
+        break;
+      case "right":
+        this.input.moveRight();
+        break;
+      case "home":
+        this.input.moveHome();
+        break;
+      case "end":
+        this.input.moveEnd();
+        break;
+      case "up":
+        if (this.askOptions.length > 0) {
+          this.askHighlight = Math.max(0, this.askHighlight - 1);
+          this.renderAskOptions();
+        }
+        return;
+      case "down":
+        if (this.askOptions.length > 0) {
+          this.askHighlight = Math.min(this.askOptions.length - 1, this.askHighlight + 1);
+          this.renderAskOptions();
+        }
+        return;
+      case "tab":
+        if (this.askMultiple && this.askOptions.length > 0) {
+          this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
+          this.renderAskOptions();
+        }
+        return;
+      case "ctrlC":
+      case "ctrlD":
+        this.resolveAsk(null); // 取消提问
+        return;
+      default:
+        return; // altEnter 等忽略（答案保持单行）
+    }
+    this.requestRender();
+  }
+
   /** 测试/工具用：模拟注入键事件 */
   simulateKey(ev: KeyEvent): void {
     this.handleKey(ev);
@@ -252,6 +448,12 @@ export class Tui {
   // ── 键处理 ──
 
   private handleKey(ev: KeyEvent): void {
+    // ask_user 等待回答：输入行编辑优先（agent 运行期间也响应）
+    if (this.askPending) {
+      this.handleAskKey(ev);
+      return;
+    }
+
     // 粘贴：插入文本
     if (ev.type === "paste") {
       if (this.promptActive && !this.agentRunning) {
@@ -291,9 +493,9 @@ export class Tui {
         this.promptActive = false;
         this.input.clear();
         this.completionHints = [];
-        // 用户提问追加为消息（显示在对话历史中）
+        // 用户提问追加为消息（显示在对话历史中；多行输入去除首尾换行）
         if (value.trim()) {
-          this.messages.append(`${this.input.getPrefix()}${value}`);
+          this.messages.append(`${this.input.getPrefix()}${value.trim()}`);
         }
         this.requestRender();
         const resolve = this.promptResolve;
@@ -301,6 +503,11 @@ export class Tui {
         resolve?.(value);
         return;
       }
+      case "altEnter":
+        // Shift/Alt/Ctrl+Enter：插入换行（Enter 提交）
+        this.input.type("\n");
+        this.completionHints = [];
+        break;
       case "backspace":
         this.input.backspace();
         this.completionHints = [];
@@ -322,8 +529,10 @@ export class Tui {
         this.input.moveEnd();
         break;
       case "up":
-        // 输入框有内容 → 切历史；为空 → 滚动消息列表（滚轮亦然）
-        if (this.input.getValue()) {
+        // 多行输入 → 光标上移一行；单行有内容 → 切历史；为空 → 滚动消息列表（滚轮亦然）
+        if (this.input.isMultiLine()) {
+          this.input.moveLineUp(this.screen.getCols());
+        } else if (this.input.getValue()) {
           this.input.historyUp();
         } else {
           this.messages.scroll(3, this.messageViewport());
@@ -331,7 +540,9 @@ export class Tui {
         this.completionHints = [];
         break;
       case "down":
-        if (this.input.getValue()) {
+        if (this.input.isMultiLine()) {
+          this.input.moveLineDown(this.screen.getCols());
+        } else if (this.input.getValue()) {
           this.input.historyDown();
         } else {
           this.messages.scroll(-3, this.messageViewport());

@@ -45,6 +45,7 @@ describe("事件溯源", () => {
     expect(events.map((e) => e.type)).toEqual([
       "session/created",
       "user/message",
+      "title/set",
       "turn/start",
       "step/start",
       "tool/call",
@@ -86,7 +87,7 @@ describe("事件溯源", () => {
 
     const v = store.verifyProjection(sessionId);
     expect(v.ok).toBe(true);
-    expect(v.eventCount).toBe(5);
+    expect(v.eventCount).toBe(6); // session/created + user/message + title/set + tool/call + tool/result + assistant/message
     expect(v.messageCount).toBe(2);
   });
 
@@ -122,7 +123,7 @@ describe("事件溯源", () => {
       store.appendMessage(sessionId, { role: "user", content: `msg-${i}` });
     }
     const all = store.getEvents(sessionId);
-    expect(all).toHaveLength(6); // session/created + 5 条 user/message
+    expect(all).toHaveLength(7); // session/created + 5 条 user/message + 1 条自动标题 title/set
     const from3 = store.getEvents(sessionId, 3);
     expect(from3[0]!.seq).toBe(3);
     const limited = store.getEvents(sessionId, 1, 2);
@@ -184,5 +185,44 @@ describe("事件溯源", () => {
     expect(replayed[2]).toMatchObject({ role: "tool", tool_call_id: "t1", content: "数据" });
     const v = store.verifyProjection(sessionId);
     expect(v.ok).toBe(true);
+  });
+});
+
+describe("会话自动标题（Sprint 26）", () => {
+  it("首条用户消息自动生成标题并发出 title/set 事件（source=auto）", () => {
+    store.appendMessage(sessionId, { role: "user", content: "帮我重构这个项目的路由模块" });
+    const sessions = store.listSessions(100);
+    const sess = sessions.find((s) => s.id === sessionId)!;
+    expect(sess.summary).toBe("帮我重构这个项目的路由模块");
+    const events = store.getEvents(sessionId);
+    const titleEv = events.find((e) => e.type === "title/set") as SessionEvent | undefined;
+    expect(titleEv).toBeDefined();
+    expect(titleEv!.data).toEqual({ title: "帮我重构这个项目的路由模块", source: "auto" });
+  });
+
+  it("超长首行截断为 ≤24 字符 + 省略号；多行取首条非空行", () => {
+    store.appendMessage(sessionId, { role: "user", content: "这是一条非常非常长的用户消息，远远超过二十四个字符的标题长度限制需要被截断" });
+    const sessions = store.listSessions(100);
+    const sess = sessions.find((s) => s.id === sessionId)!;
+    expect(sess.summary!.endsWith("…")).toBe(true);
+    expect([...sess.summary!].length).toBeLessThanOrEqual(25);
+
+    store.appendMessage(sessionId, { role: "user", content: "\n\n  第二行才是正文内容  " });
+    // 已有标题不覆盖
+    const sessions2 = store.listSessions(100);
+    expect(sessions2.find((s) => s.id === sessionId)!.summary).toBe(sess.summary);
+  });
+
+  it("已有标题（重命名）不被后续用户消息覆盖", () => {
+    store.renameSession(sessionId, "自定义标题");
+    store.appendMessage(sessionId, { role: "user", content: "新任务" });
+    const sessions = store.listSessions(100);
+    expect(sessions.find((s) => s.id === sessionId)!.summary).toBe("自定义标题");
+  });
+
+  it("generateSessionTitle 直接可用（导出函数）", async () => {
+    const { generateSessionTitle } = await import("../src/memory/session-store.js");
+    expect(generateSessionTitle("  hello   world  ")).toBe("hello world");
+    expect(generateSessionTitle("a".repeat(30))).toBe(`${"a".repeat(24)}…`);
   });
 });

@@ -16,15 +16,22 @@ export abstract class BaseAgent {
   protected modelRouter: ModelRouter;
   protected contextManager: ContextManager;
   protected sessionStore: SessionStore;
+  protected dataDir?: string;
 
   constructor(
     config: AgentConfig,
-    deps: { modelRouter: ModelRouter; contextManager: ContextManager; sessionStore: SessionStore },
+    deps: {
+      modelRouter: ModelRouter;
+      contextManager: ContextManager;
+      sessionStore: SessionStore;
+      dataDir?: string;
+    },
   ) {
     this.config = config;
     this.modelRouter = deps.modelRouter;
     this.contextManager = deps.contextManager;
     this.sessionStore = deps.sessionStore;
+    this.dataDir = deps.dataDir;
   }
 
   getId(): string {
@@ -79,6 +86,8 @@ export abstract class BaseAgent {
       sessionStore: this.sessionStore,
       sessionId,
       workingDir: task.workingDir ?? workingDir,
+      dataDir: this.dataDir,
+      toolScope: this.config.id,
     });
 
     // 持久化助手回复（携带本轮主请求 usage，供轨迹/遥测；来自 loop 显式返回，避免被压缩请求覆盖）
@@ -155,6 +164,8 @@ export abstract class BaseAgent {
         sessionStore: this.sessionStore,
         sessionId,
         workingDir: task.workingDir ?? workingDir,
+        dataDir: this.dataDir,
+        toolScope: this.config.id,
       },
       callbacks,
       signal,

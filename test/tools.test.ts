@@ -65,4 +65,26 @@ describe("7. 工具执行", () => {
     const result = await handler({ command: "echo safe" }, ctx);
     expect(result.success).toBe(true);
   });
+
+  it("ask_user 透传 multiple 到提问通道", async () => {
+    const { setAskProvider } = await import("../src/tools/ask-channel.js");
+    const captured: Array<{ question: string; options: string[]; multiple?: boolean }> = [];
+    setAskProvider(async (req) => {
+      captured.push(req);
+      return "x";
+    });
+    try {
+      const handler = toolRegistry.getHandler("ask_user")!;
+      await handler({ question: "q", options: ["a", "b"], multiple: true }, ctx);
+      await handler({ question: "q", options: ["a", "b"] }, ctx);
+      expect(captured[0]!.multiple).toBe(true);
+      expect(captured[1]!.multiple).toBe(false);
+      // 结果携带用户回答
+      const r = await handler({ question: "q", options: ["a", "b"] }, ctx);
+      expect(r.success).toBe(true);
+      expect(r.content).toContain("用户回答");
+    } finally {
+      setAskProvider(null);
+    }
+  });
 });

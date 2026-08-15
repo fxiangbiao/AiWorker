@@ -57,6 +57,8 @@ export interface ToolContext {
   /** 工作目录（读写统一基准；--dir 指定，默认 ./ai_default_project） */
   workingDir: string;
   permissions: PermissionMode;
+  /** 数据目录（spill 落盘用：<dataDir>/spills/，缺省则不落盘） */
+  dataDir?: string;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
@@ -67,6 +69,8 @@ export interface RegisteredTool {
   enabled: boolean;
   /** 运行时可用性检查，返回 false 则该工具在本次调用中不可见 */
   availabilityCheck?: (ctx: ToolContext) => boolean | Promise<boolean>;
+  /** 注册来源插件名（插件注册的工具带此标记，供 /plugins 追踪） */
+  plugin?: string;
 }
 
 // ===== 模型接口 =====
@@ -403,6 +407,47 @@ export interface SessionEvent {
   createdAt: number;
   /** 可选来源标记（hook / agent / server），便于溯源 */
   source?: string;
+}
+
+// ===== 插件系统（Sprint 27，报告 #1 轻量插件契约） =====
+
+export interface PluginInfo {
+  /** 插件名（config/plugins/<name>/ 目录名） */
+  name: string;
+  version?: string;
+  description?: string;
+  /** 实际加载的入口文件路径 */
+  entry: string;
+  status: "loaded" | "error";
+  error?: string;
+  /** 注册的工具（scope 注册带 "scope:name" 前缀） */
+  registeredTools: string[];
+  registeredHooks: number;
+  /** 注册期警告（如全局同名工具覆盖），/plugins 以 ⚠ 展示 */
+  warnings?: string[];
+}
+
+export interface PluginRegisterToolOptions {
+  /** 注册到指定作用域（缺省全局；同名遮蔽全局，见 ToolScopeView） */
+  scope?: string;
+  enabled?: boolean;
+  availabilityCheck?: (ctx: ToolContext) => boolean | Promise<boolean>;
+}
+
+/** 插件运行上下文 — 契约即"默认导出 setup(ctx)"，零框架依赖 */
+export interface PluginContext {
+  name: string;
+  dataDir: string;
+  /** config/plugins/<name>/config.json（存在则解析） */
+  config: Record<string, unknown>;
+  registerTool(
+    name: string,
+    definition: ToolDefinition,
+    handler: ToolHandler,
+    options?: PluginRegisterToolOptions,
+  ): void;
+  /** 委托 hookManager.on（返回 hook id，供插件注销） */
+  registerHook(event: HookEvent, handler: HookHandler, options?: { id?: string; priority?: number }): string;
 }
 
 // ===== 轨迹观测（Sprint 25） =====

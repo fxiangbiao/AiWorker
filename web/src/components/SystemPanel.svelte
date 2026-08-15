@@ -3,7 +3,7 @@
   import { API } from "$lib/stores/chat.svelte";
   import TracePanel from "./TracePanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp" | "trace">("context");
+  let tab = $state<"context" | "logs" | "skills" | "mcp" | "trace" | "plugins">("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -52,6 +52,18 @@
   }
   let mcpServers = $state<McpServer[]>([]);
   let mcpExpanded = $state<string | null>(null);
+
+  interface PluginCard {
+    name: string;
+    version?: string;
+    description?: string;
+    status: string;
+    error?: string;
+    warnings?: string[];
+    registeredTools: string[];
+    registeredHooks: number;
+  }
+  let pluginList = $state<PluginCard[]>([]);
 
   const mcpStateLabel: Record<string, string> = {
     connected: "已连接",
@@ -129,13 +141,23 @@
       .finally(() => { loading = false; });
   }
 
-  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "trace") {
+  function loadPlugins() {
+    loading = true;
+    fetch(`${API}/plugins`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => { pluginList = (d.plugins || []) as PluginCard[]; })
+      .catch(() => { pluginList = []; })
+      .finally(() => { loading = false; });
+  }
+
+  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "trace" | "plugins") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
     else if (t === "logs") loadLogs();
     else if (t === "skills") loadSkills();
     else if (t === "mcp") loadMcp();
+    else if (t === "plugins") loadPlugins();
   }
 
   onMount(() => loadContext());
@@ -147,6 +169,7 @@
     <button class="sp-tab" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
     <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-tab" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
+    <button class="sp-tab" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
     <button class="sp-tab" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
@@ -222,6 +245,47 @@
                       </div>
                     {/each}
                   {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else if tab === "plugins"}
+      {#if pluginList.length === 0}
+        <div class="sp-empty">暂无插件（config/plugins/）</div>
+      {:else}
+        <div class="sp-mcp-list">
+          {#each pluginList as p}
+            <div class="sp-mcp">
+              <div class="sp-mcp-head">
+                <span class="sp-mcp-name">{p.name}</span>
+                <span class="sp-mcp-right">
+                  {#if p.version}
+                    <span class="sp-card-ver">v{p.version}</span>
+                  {/if}
+                  <span class="sp-dot" class:on={p.status === "loaded"} class:off={p.status !== "loaded"}>
+                    {p.status === "loaded" ? "已加载" : "加载失败"}
+                  </span>
+                </span>
+              </div>
+              {#if p.description}
+                <div class="sp-mcp-meta">{p.description}</div>
+              {/if}
+              <div class="sp-mcp-meta">{p.registeredTools.length} 工具 · {p.registeredHooks} hook</div>
+              {#if p.error}
+                <div class="sp-mcp-error">{p.error}</div>
+              {/if}
+              {#each p.warnings || [] as w}
+                <div class="sp-warn">{w}</div>
+              {/each}
+              {#if p.registeredTools.length > 0}
+                <div class="sp-mcp-tools">
+                  {#each p.registeredTools as t}
+                    <div class="sp-mcp-tool">
+                      <div class="sp-mcp-tool-name">{t}</div>
+                    </div>
+                  {/each}
                 </div>
               {/if}
             </div>
@@ -410,4 +474,5 @@
   .sp-dot.off { background: rgba(232, 84, 107, .1); color: var(--error); }
   .sp-mcp-meta { font-size: 11px; color: var(--dim); margin-top: 4px; }
   .sp-mcp-error { font-size: 11px; color: var(--error); margin-top: 4px; word-break: break-word; }
+  .sp-warn { font-size: 11px; color: #d97706; margin-top: 4px; word-break: break-word; }
 </style>

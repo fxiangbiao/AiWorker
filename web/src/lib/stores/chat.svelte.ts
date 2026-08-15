@@ -8,6 +8,9 @@ export interface ChatItem {
 
 export const API = "/api/v1";
 
+/** 消息缓存 key 前缀（版本化：消息结构变化时递增，强制下次重新拉取服务器） */
+const MSGS_PREFIX = "aiworker_msgs_v2_";
+
 export interface UIMessage {
   role: "user" | "assistant" | "agent";
   content: string;
@@ -36,6 +39,14 @@ export interface ConfirmItem {
   options: { value: string; label: string }[];
 }
 
+export interface AskItem {
+  id: string;
+  question: string;
+  options: string[];
+  /** 是否允许多选（复选列表 + 确认选择） */
+  multiple?: boolean;
+}
+
 export interface TimelineItem {
   type: "thinking" | "tool";
   content?: string;
@@ -51,6 +62,26 @@ export interface TimelineItem {
   pending?: boolean;
 }
 
+/** ask_user 等工具的 args 展示：解析 JSON 显示问题与选项数，避免原始 JSON 刷屏 */
+export function toolArgsDisplay(name: string, args: unknown): string {
+  if (name === "ask_user") {
+    try {
+      const parsed = (typeof args === "string" ? JSON.parse(args) : args) as {
+        question?: unknown;
+        options?: unknown;
+        multiple?: unknown;
+      } | null;
+      const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
+      const n = Array.isArray(parsed?.options) ? parsed.options.length : 0;
+      const multi = parsed?.multiple === true;
+      if (q) return n > 0 ? `${q}（${n} 个选项${multi ? "，可多选" : ""}）` : q;
+    } catch {
+      /* 解析失败回退原始 args */
+    }
+  }
+  return typeof args === "string" ? args : JSON.stringify(args);
+}
+
 export const store = $state({
   mode: "auto" as string,
   agentId: "default" as string,
@@ -59,6 +90,7 @@ export const store = $state({
   activeChatId: null as string | null,
   messages: [] as UIMessage[],
   confirms: [] as ConfirmItem[],
+  asks: [] as AskItem[],
   diffVersion: 0,
 });
 
@@ -95,11 +127,11 @@ export function saveChats(all: ChatItem[]) {
 }
 
 export function loadMessages(id: string): UIMessage[] {
-  return load<UIMessage[]>("aiworker_msgs_" + id, []);
+  return load<UIMessage[]>(MSGS_PREFIX + id, []);
 }
 
 export function saveMessages(id: string, msgs: UIMessage[]) {
-  if (id) save("aiworker_msgs_" + id, msgs);
+  if (id) save(MSGS_PREFIX + id, msgs);
 }
 
 /** 从服务器 /sessions 合并会话列表（服务器有而本地没有的补进来，按创建时间最新在前） */
@@ -146,16 +178,57 @@ export async function syncServerSessions(): Promise<boolean> {
   }
 }
 
-/** 从服务器加载会话消息（本地无缓存时） */
+/** 从服务器加载会话消息（本地无缓存时）。
+ * 服务端返回事件回放序列（含 assistant(tool_calls) 与 tool 结果），
+ * 这里重建为 UIMessage：assistant 的 tool_calls → timeline 工具卡，tool 结果按 tool_call_id 归属
+ */
 export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
   try {
     const resp = await fetch(`${API}/sessions/${encodeURIComponent(id)}`);
     if (!resp.ok) return [];
     const data = await resp.json();
-    const msgs: UIMessage[] = (data.messages || []).map((m: { role: string; content: string }) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.content,
-    }));
+    const msgs: UIMessage[] = [];
+    // 待归属的 tool_call_id → 所在 assistant 消息
+    const pendingTools: { id: string; msg: UIMessage }[] = [];
+
+    for (const m of data.messages || []) {
+      const role = m.role as string;
+      if (role === "user") {
+        msgs.push({ role: "user", content: m.content || "" });
+      } else if (role === "assistant") {
+        const um: UIMessage = { role: "assistant", content: m.content || "", timeline: [] };
+        const tcs = m.tool_calls as
+          | Array<{ id: string; type: string; function: { name: string; arguments: string } }>
+          | undefined;
+        if (tcs && tcs.length > 0) {
+          um.timeline = tcs.map((tc) => ({
+            type: "tool",
+            name: tc.function.name,
+            args: toolArgsDisplay(tc.function.name, tc.function.arguments),
+            id: tc.id,
+            pending: true,
+          }));
+          for (const tc of tcs) pendingTools.push({ id: tc.id, msg: um });
+        }
+        msgs.push(um);
+      } else if (role === "tool") {
+        const target = pendingTools.find((p) => p.id === m.tool_call_id);
+        const item = target?.msg.timeline?.find((t) => t.type === "tool" && t.id === m.tool_call_id);
+        if (item) {
+          const content = String(m.content || "");
+          const failed = content.startsWith("Error:");
+          item.result = !failed;
+          item.error = failed ? content.slice(6, 300) : undefined;
+          item.resultPreview = failed ? undefined : content.slice(0, 300);
+          item.pending = false;
+          pendingTools.splice(pendingTools.indexOf(target), 1);
+        } else {
+          // 无对应 tool_call（异常数据）：作为独立错误消息展示
+          msgs.push({ role: "assistant", content: m.content || "", _kind: "error" });
+        }
+      }
+      // 其他角色（system 等）不展示
+    }
     saveMessages(id, msgs);
     return msgs;
   } catch {
@@ -167,7 +240,8 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
 export async function deleteChat(id: string): Promise<boolean> {
   // 本地聊天列表独立于服务端 session：无论服务端是否 404（本地创建但未发送过消息的会话），都更新本地
   store.chats = store.chats.filter((c) => c.id !== id);
-  localStorage.removeItem(`aiworker_msgs_${id}`);
+  localStorage.removeItem(`aiworker_msgs_${id}`); // 旧版本缓存（清理）
+  localStorage.removeItem(`${MSGS_PREFIX}${id}`);
   if (store.activeChatId === id) {
     store.activeChatId = null;
     store.messages = [];

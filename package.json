@@ -1,6 +1,6 @@
 {
   "name": "aiworker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AiWorker - 个人 AI Agent 助手，多智能体协作 + MCP + Skills + Hooks",
   "type": "module",
   "main": "dist/index.js",
@@ -33,7 +33,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.10.0",
+    "@types/node": "^22.20.1",
     "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.6",

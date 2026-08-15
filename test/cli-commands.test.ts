@@ -5,8 +5,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { buildCliCommands } from "../src/commands/registry.js";
+import { pluginManager } from "../src/core/plugin-manager.js";
 import type { CommandContext, CliCommand } from "../src/commands/types.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
@@ -21,6 +23,7 @@ function modelRouterMock() {
     getPromptTokens: vi.fn(() => 0),
     getCompletionTokens: vi.fn(() => 0),
     getCurrentModel: vi.fn(() => "m"),
+    getDisplayModel: vi.fn(() => "test-model"),
     getCost: vi.fn(() => 0),
   } as unknown as ModelRouter;
 }
@@ -169,6 +172,22 @@ describe("模式命令", () => {
     expect(setMode).not.toHaveBeenCalled();
     expect(writeLines.some((l) => l.includes("无效模式"))).toBe(true);
   });
+
+  it("status 显示版本与专家列表", async () => {
+    const agents = {
+      default: { getName: () => "通用助手" },
+      coding: { getName: () => "编码工程师" },
+      financial: { getName: () => "理财投资顾问" },
+    } as never;
+    const { ctx, writes } = makeCtx({ agents });
+    await find("status").handler(ctx, "", "/status");
+    const joined = writes.join("");
+    expect(joined).toMatch(/AiWorker v\d+\.\d+\.\d+/);
+    expect(joined).toContain("专家:");
+    expect(joined).toContain("通用助手");
+    expect(joined).toContain("编码工程师");
+    expect(joined).toContain("理财投资顾问");
+  });
 });
 
 describe("技能命令", () => {
@@ -221,5 +240,33 @@ describe("trace 会话切换", () => {
     const { ctx, writeLines } = makeCtx({ currentSessionId: () => "no-such-session" });
     await find("trace").handler(ctx, "", "/trace");
     expect(writeLines.some((l) => l.includes("暂无事件记录"))).toBe(true);
+  });
+});
+
+describe("plugins 命令", () => {
+  it("/plugins 列出已加载插件与注册工具", async () => {
+    const pluginsDir = resolve(makeTestDir("cli-plugins"), "plugins");
+    mkdirSync(resolve(pluginsDir, "demo"), { recursive: true });
+    writeFileSync(
+      resolve(pluginsDir, "demo", "plugin.ts"),
+      `export default async function setup(c) {
+        c.registerTool("demo_tool", { type: "function", function: { name: "demo_tool", description: "x", parameters: { type: "object", properties: {} } } }, async () => ({ tool_call_id: "", success: true, content: "ok" }));
+      }`,
+      "utf-8",
+    );
+    await pluginManager.loadFromDir(pluginsDir);
+
+    const { ctx, writeLines } = makeCtx();
+    await find("plugins").handler(ctx, "", "/plugins");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("demo");
+    expect(joined).toContain("demo_tool");
+  });
+
+  it("/plugins 无插件时提示", async () => {
+    pluginManager.clear();
+    const { ctx, writeLines } = makeCtx();
+    await find("plugins").handler(ctx, "", "/plugins");
+    expect(writeLines.join("\n")).toContain("未加载任何插件");
   });
 });
