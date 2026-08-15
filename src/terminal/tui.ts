@@ -40,6 +40,10 @@ export class Tui {
   private askTimer: ReturnType<typeof setTimeout> | null = null;
   private askOptions: string[] = [];
   private askMultiple = false;
+  /** 多选：当前高亮选项索引 + 勾选集合 + 选项行起始消息索引 */
+  private askHighlight = 0;
+  private askSelected: boolean[] = [];
+  private askOptionStart = -1;
 
   init(): void {
     if (this.active) return;
@@ -269,21 +273,26 @@ export class Tui {
     // 上次提问未决：先取消
     if (this.askPending) this.resolveAsk(null);
 
+    const startIdx = this.messages.getTotalLines();
+    this.askOptions = options;
+    this.askMultiple = multiple;
+    this.askSelected = options.map(() => false);
+    this.askHighlight = 0;
+    this.askOptionStart = startIdx + 2; // 空行(0) + 问题行(1) 之后是选项行
+
     this.messages.append("");
     this.messages.append(`${chalk.cyan("❓")} ${question}`);
-    options.forEach((o, i) => {
-      this.messages.append(`   ${chalk.dim(`${i + 1})`)} ${o}`);
+    options.forEach((_, i) => {
+      this.messages.append(this.askOptionLine(i));
     });
     this.messages.append(
       chalk.dim(
         multiple && options.length > 0
-          ? "（可多选：输入序号，逗号或空格分隔，如 1,3）"
+          ? "（可多选：↑/↓ 移动，Tab 勾选/取消，Enter 提交；也可输入序号如 1,3）"
           : "（直接输入回答，或输入选项序号后回车）",
       ),
     );
 
-    this.askOptions = options;
-    this.askMultiple = multiple;
     this.input.setPrefix("答> ");
     this.input.setDisabled(false);
     this.input.clear();
@@ -299,6 +308,24 @@ export class Tui {
     });
   }
 
+  /** 构建选项行（勾选标记 + 高亮光标） */
+  private askOptionLine(i: number): string {
+    const marker = this.askSelected[i] ? "[*]" : "[ ]";
+    const cursor = i === this.askHighlight ? ">" : " ";
+    const line = `  ${cursor}${marker} ${i + 1}) ${this.askOptions[i]}`;
+    if (i === this.askHighlight) return chalk.cyan(line);
+    return this.askSelected[i] ? chalk.green(line) : chalk.dim(line);
+  }
+
+  /** 重绘选项行（勾选/高亮变化后） */
+  private renderAskOptions(): void {
+    if (this.askOptionStart < 0) return;
+    this.askOptions.forEach((_, i) => {
+      this.messages.setLine(this.askOptionStart + i, this.askOptionLine(i));
+    });
+    this.requestRender();
+  }
+
   /** 结算提问：复位输入态并 resolve */
   private resolveAsk(value: string | null): void {
     if (!this.askPending) return;
@@ -312,6 +339,9 @@ export class Tui {
     this.input.setPrefix("你> ");
     this.askOptions = [];
     this.askMultiple = false;
+    this.askSelected = [];
+    this.askHighlight = 0;
+    this.askOptionStart = -1;
     const resolve = this.askResolve;
     this.askResolve = null;
     // 恢复"思考中"（agent 仍在运行；定时器若已恢复会继续接管）
@@ -331,9 +361,19 @@ export class Tui {
         break;
       case "enter": {
         const value = this.input.getValue().trim();
-        if (!value) return; // 空输入忽略（等待继续输入）
-        this.resolveAsk(parseOptionInput(value, this.askOptions, this.askMultiple));
-        return;
+        if (value) {
+          this.resolveAsk(parseOptionInput(value, this.askOptions, this.askMultiple));
+          return;
+        }
+        // 输入为空：提交 Tab 勾选的选项
+        if (this.askMultiple && this.askSelected.some(Boolean)) {
+          const picked = this.askSelected
+            .map((sel, i) => (sel ? this.askOptions[i] : null))
+            .filter((x): x is string => x !== null);
+          this.resolveAsk(picked.join(", "));
+          return;
+        }
+        return; // 空输入且无选中 → 忽略
       }
       case "backspace":
         this.input.backspace();
@@ -353,12 +393,33 @@ export class Tui {
       case "end":
         this.input.moveEnd();
         break;
+      case "up":
+        if (this.askMultiple && this.askOptions.length > 0) {
+          this.askHighlight = Math.max(0, this.askHighlight - 1);
+          this.renderAskOptions();
+          return;
+        }
+        return;
+      case "down":
+        if (this.askMultiple && this.askOptions.length > 0) {
+          this.askHighlight = Math.min(this.askOptions.length - 1, this.askHighlight + 1);
+          this.renderAskOptions();
+          return;
+        }
+        return;
+      case "tab":
+        if (this.askMultiple && this.askOptions.length > 0) {
+          this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
+          this.renderAskOptions();
+          return;
+        }
+        return;
       case "ctrlC":
       case "ctrlD":
         this.resolveAsk(null); // 取消提问
         return;
       default:
-        return; // ↑/↓/Tab/altEnter 等忽略（答案保持单行）
+        return; // altEnter 等忽略（答案保持单行）
     }
     this.requestRender();
   }

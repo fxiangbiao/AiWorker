@@ -80,6 +80,12 @@ export class MessageList implements Component {
     for (const l of lines) this.append(l);
   }
 
+  /** 替换指定逻辑行（ask 选项勾选标记等动态更新用）；越界忽略 */
+  setLine(index: number, text: string): void {
+    if (index < 0 || index >= this.lines.length) return;
+    this.lines[index] = text;
+  }
+
   /**
    * 滚动：delta > 0 向上看历史，< 0 向下；到底部后 offset=0 跟随。
    * offset 语义：从视觉行末尾回退 N 行。viewport 用于滚动步长估算。

@@ -697,6 +697,51 @@ describe("Tui 帧合成", () => {
     t.destroy();
   });
 
+  it("ask 多选：Tab 勾选选项并标记 [*]，↑/↓ 移动，Enter 提交选中项", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // eslint-disable-next-line no-control-regex
+    const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+    const text = () => t.messages.renderViewport(80, 12).map(strip).join("\n");
+
+    const p = t.ask("你玩哪些？", ["竞技类", "单机大作", "休闲类"], 30000, true);
+    // 初始：第 1 项高亮（>），未勾选
+    expect(text()).toContain(">[ ] 1) 竞技类");
+    expect(text()).toContain("  [ ] 2) 单机大作");
+    // Tab 勾选第 1 项
+    t.simulateKey({ type: "tab" });
+    expect(text()).toContain(">[*] 1) 竞技类");
+    // ↓ 到第 2 项并勾选
+    t.simulateKey({ type: "down" });
+    t.simulateKey({ type: "tab" });
+    expect(text()).toContain("  [*] 1) 竞技类");
+    expect(text()).toContain(">[*] 2) 单机大作");
+    // Tab 再按一次取消第 2 项
+    t.simulateKey({ type: "tab" });
+    expect(text()).toContain(">[ ] 2) 单机大作");
+    t.simulateKey({ type: "tab" }); // 重新勾选
+    // ↑ 回第 1 项，Enter（输入为空）→ 提交两个勾选项
+    t.simulateKey({ type: "up" });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("竞技类, 单机大作");
+    t.destroy();
+  });
+
+  it("ask 多选：输入框内容优先于 Tab 勾选", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("q", ["甲", "乙", "丙"], 30000, true);
+    t.simulateKey({ type: "tab" }); // 勾选甲
+    for (const ch of "2,3") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("乙, 丙");
+    t.destroy();
+  });
+
   it("ask 多选：单序号走单选路径，自由文本原样返回", async () => {
     const { Tui } = await import("../src/terminal/tui.js");
     const t = new Tui();
