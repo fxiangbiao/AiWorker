@@ -87,8 +87,7 @@
 - [ocean-sunset.html](docs/videos/ocean-sunset.html) — 海上日落
 - [starship_design.html](docs/videos/starship_design.html) — 星舰设计
 
-> 🎬 演示视频：`docs/videos/AiWorker - Visual Studio Code - Game Demos.mp4`（本地播放）。
-> 因体积 226MB 超过 [GitHub 单文件 100MB 限制](https://docs.github.com/repositories/working-with-files/managing-large-files/about-large-files-on-github)，未纳入仓库，可自行放到本地 `docs/videos/` 查看。
+> 🎬 演示视频（压缩版）：[AiWorker-Game-Demos-1080p-HQ.mp4](docs/videos/AiWorker-Game-Demos-1080p-HQ.mp4) — 原 226MB 2.5K 录屏压缩为 **8.9MB 1080p**（CRF 20），克隆仓库即可播放；原始大文件保留在本地。
 
 ---
 
