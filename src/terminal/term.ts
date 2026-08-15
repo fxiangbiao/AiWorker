@@ -204,6 +204,8 @@ export class Terminal {
   private pasteBuf = "";
   private inPaste = false;
   private out: (s: string) => void = (s) => process.stdout.write(s);
+  /** 不完整转义序列暂存（\x1b 被拆到多个 chunk 时重组，防方向键变成 [A 字符） */
+  private pending = "";
 
   /** 启动 raw mode 输入监听 + 鼠标协议 */
   start(keyHandler: (ev: KeyEvent) => void, onResize?: () => void, out?: (s: string) => void): void {
@@ -212,6 +214,7 @@ export class Terminal {
     if (out) this.out = out;
     if (this.listening) return;
     this.listening = true;
+    this.pending = "";
 
     if (typeof stdin.setRawMode === "function") {
       stdin.setRawMode(true);
@@ -257,7 +260,8 @@ export class Terminal {
   }
 
   private dispatch(s: string): void {
-    const { events } = parseKeys(s, "");
+    const { events, rest } = parseKeys(s, this.pending);
+    this.pending = rest;
     for (const ev of events) {
       this.keyHandler?.(ev);
     }
@@ -267,6 +271,7 @@ export class Terminal {
   stop(): void {
     if (!this.listening) return;
     this.listening = false;
+    this.pending = "";
     if (this.handler) {
       stdin.removeListener("data", this.handler);
       this.handler = null;

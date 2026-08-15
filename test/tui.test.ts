@@ -785,6 +785,38 @@ describe("Tui 帧合成", () => {
     t.destroy();
   });
 
+  it("ask 单选：↑/↓ 移动高亮，Enter 提交高亮项", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // eslint-disable-next-line no-control-regex
+    const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+    const text = () => t.messages.renderViewport(80, 12).map(strip).join("\n");
+
+    const p = t.ask("你偏好哪个？", ["竞技类", "单机大作", "休闲类"]);
+    // 初始高亮第 1 项
+    expect(text()).toContain("> 1) 竞技类");
+    // ↓ 两次到第 3 项，↑ 回第 2 项
+    t.simulateKey({ type: "down" });
+    t.simulateKey({ type: "down" });
+    expect(text()).toContain("> 3) 休闲类");
+    t.simulateKey({ type: "up" });
+    expect(text()).toContain("> 2) 单机大作");
+    // Enter 提交高亮项
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("单机大作");
+    t.destroy();
+  });
+
+  it("parseKeys 拆分序列重组：孤立 ESC 保留为 rest，与后续 [A 重组为 up", () => {
+    const r1 = parseKeys("", "\x1b");
+    expect(r1.events).toEqual([]);
+    expect(r1.rest).toBe("\x1b");
+    const r2 = parseKeys("[A", r1.rest);
+    expect(r2.events.map((e) => e.type)).toEqual(["up"]);
+  });
+
   it("ask 多选：单序号走单选路径，自由文本原样返回", async () => {
     const { Tui } = await import("../src/terminal/tui.js");
     const t = new Tui();

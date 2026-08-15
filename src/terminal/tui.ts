@@ -285,13 +285,15 @@ export class Tui {
     options.forEach((_, i) => {
       this.messages.append(this.askOptionLine(i));
     });
-    this.messages.append(
-      chalk.dim(
-        multiple && options.length > 0
-          ? "（可多选：↑/↓ 移动，Tab/空格 勾选/取消，Enter 提交；也可输入序号如 1,3）"
-          : "（直接输入回答，或输入选项序号后回车）",
-      ),
-    );
+    let hint: string;
+    if (multiple && options.length > 0) {
+      hint = "（可多选：↑/↓ 移动，Tab/空格 勾选/取消，Enter 提交；也可输入序号如 1,3）";
+    } else if (options.length > 0) {
+      hint = "（↑/↓ 选择，Enter 提交；也可输入序号或自由文本）";
+    } else {
+      hint = "（输入回答后回车）";
+    }
+    this.messages.append(chalk.dim(hint));
 
     this.input.setPrefix("答> ");
     this.input.setDisabled(false);
@@ -308,13 +310,18 @@ export class Tui {
     });
   }
 
-  /** 构建选项行（勾选标记 + 高亮光标） */
+  /** 构建选项行（勾选标记 + 高亮光标；单选仅显示光标） */
   private askOptionLine(i: number): string {
-    const marker = this.askSelected[i] ? "[*]" : "[ ]";
     const cursor = i === this.askHighlight ? ">" : " ";
-    const line = `  ${cursor}${marker} ${i + 1}) ${this.askOptions[i]}`;
+    let line: string;
+    if (this.askMultiple) {
+      const marker = this.askSelected[i] ? "[*]" : "[ ]";
+      line = `  ${cursor}${marker} ${i + 1}) ${this.askOptions[i]}`;
+    } else {
+      line = `  ${cursor} ${i + 1}) ${this.askOptions[i]}`;
+    }
     if (i === this.askHighlight) return chalk.cyan(line);
-    return this.askSelected[i] ? chalk.green(line) : chalk.dim(line);
+    return this.askMultiple && this.askSelected[i] ? chalk.green(line) : chalk.dim(line);
   }
 
   /** 重绘选项行（勾选/高亮变化后） */
@@ -372,12 +379,17 @@ export class Tui {
           this.resolveAsk(parseOptionInput(value, this.askOptions, this.askMultiple));
           return;
         }
-        // 输入为空：提交 Tab 勾选的选项
+        // 多选：提交 Tab/空格 勾选的选项
         if (this.askMultiple && this.askSelected.some(Boolean)) {
           const picked = this.askSelected
             .map((sel, i) => (sel ? this.askOptions[i] : null))
             .filter((x): x is string => x !== null);
           this.resolveAsk(picked.join(", "));
+          return;
+        }
+        // 单选：空输入 → 提交高亮项
+        if (!this.askMultiple && this.askOptions.length > 0) {
+          this.resolveAsk(this.askOptions[this.askHighlight]!);
           return;
         }
         return; // 空输入且无选中 → 忽略
@@ -401,24 +413,21 @@ export class Tui {
         this.input.moveEnd();
         break;
       case "up":
-        if (this.askMultiple && this.askOptions.length > 0) {
+        if (this.askOptions.length > 0) {
           this.askHighlight = Math.max(0, this.askHighlight - 1);
           this.renderAskOptions();
-          return;
         }
         return;
       case "down":
-        if (this.askMultiple && this.askOptions.length > 0) {
+        if (this.askOptions.length > 0) {
           this.askHighlight = Math.min(this.askOptions.length - 1, this.askHighlight + 1);
           this.renderAskOptions();
-          return;
         }
         return;
       case "tab":
         if (this.askMultiple && this.askOptions.length > 0) {
           this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
           this.renderAskOptions();
-          return;
         }
         return;
       case "ctrlC":
