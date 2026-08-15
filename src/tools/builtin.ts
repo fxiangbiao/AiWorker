@@ -367,7 +367,7 @@ const askUserDef: ToolDefinition = {
   function: {
     name: "ask_user",
     description:
-      "向用户提出澄清问题。当任务信息不足、存在多种合理解释或需要用户决策时使用。options 提供候选选项（可选），用户可选项或输入自由文本。",
+      "向用户提出澄清问题。当任务信息不足、存在多种合理解释或需要用户决策时使用。options 提供候选选项（可选），用户可选项或输入自由文本；multiple=true 时用户可多选（建议选项 ≤6 个）。",
     parameters: {
       type: "object",
       properties: {
@@ -376,6 +376,10 @@ const askUserDef: ToolDefinition = {
           type: "array",
           items: { type: "string" },
           description: "候选选项（可选），用户可直接选择或输入自由文本",
+        },
+        multiple: {
+          type: "boolean",
+          description: "是否允许多选（默认 false）",
         },
       },
       required: ["question"],
@@ -388,10 +392,11 @@ const askUserHandler: ToolHandler = async (args) => {
   const options = Array.isArray(args.options)
     ? (args.options as unknown[]).map(String).filter(Boolean)
     : [];
+  const multiple = args.multiple === true;
   if (!question.trim()) {
     return { tool_call_id: "", success: false, content: "", error: "问题不能为空" };
   }
-  const answer = await requestAsk(question, options);
+  const answer = await requestAsk(question, options, multiple);
   if (answer === null) {
     return { tool_call_id: "", success: false, content: "", error: "用户未在限时内回答，请基于已有信息继续" };
   }

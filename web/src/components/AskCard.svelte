@@ -7,6 +7,8 @@
   let text = $state("");
   let submitting = $state(false);
   let inputEl: HTMLInputElement | undefined = $state();
+  /** 多选：已勾选选项索引 */
+  let selected: number[] = $state([]);
 
   // 自动聚焦输入框
   $effect(() => {
@@ -24,26 +26,53 @@
     if (!value) return;
     respond(value);
   }
+
+  function toggle(i: number) {
+    if (submitting) return;
+    selected = selected.includes(i) ? selected.filter((x) => x !== i) : [...selected, i];
+  }
+
+  function submitSelection() {
+    if (submitting || selected.length === 0) return;
+    const answer = selected.map((i) => ask.options[i]).join(", ");
+    respond(answer);
+  }
 </script>
 
 <div class="ask-card">
-  <div class="ac-title">❓ 模型提问 <span class="ac-hint">（30s 未作答将自动跳过）</span></div>
+  <div class="ac-title">
+    ❓ 模型提问{ask.multiple ? "（可多选）" : ""}
+    <span class="ac-hint">（30s 未作答将自动跳过）</span>
+  </div>
   <div class="ac-question">{ask.question}</div>
   {#if ask.options && ask.options.length > 0}
     <div class="ac-options">
       {#each ask.options as opt, i}
-        <button class="ac-btn" onclick={() => respond(opt)}>
+        <button
+          class="ac-btn"
+          class:selected={selected.includes(i)}
+          onclick={() => (ask.multiple ? toggle(i) : respond(opt))}
+        >
           <span class="ac-num">{i + 1}</span>
           <span class="ac-opt-text">{opt}</span>
+          {#if ask.multiple}
+            <span class="ac-check">{selected.includes(i) ? "✓" : ""}</span>
+          {/if}
         </button>
       {/each}
     </div>
+    {#if ask.multiple}
+      <div class="ac-selected">已选 {selected.length} 项</div>
+      <button class="ac-confirm" onclick={submitSelection} disabled={submitting || selected.length === 0}>
+        确认选择
+      </button>
+    {/if}
   {/if}
   <div class="ac-input-row">
     <input
       bind:this={inputEl}
       type="text"
-      placeholder="输入回答，回车确认（或点上方选项）"
+      placeholder={ask.multiple ? "或直接输入其他回答，回车确认" : "输入回答，回车确认（或点上方选项）"}
       value={text}
       oninput={(e) => (text = e.currentTarget.value)}
       onkeydown={(e) => {
@@ -85,6 +114,7 @@
     transition: all .15s;
   }
   .ac-btn:hover { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+  .ac-btn.selected { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
   .ac-num {
     flex: none;
     min-width: 18px;
@@ -98,6 +128,22 @@
     font-weight: 600;
   }
   .ac-opt-text { word-break: break-all; }
+  .ac-check { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--primary); }
+  .ac-selected { font-size: 11px; color: var(--dim); margin: 0 0 8px; }
+  .ac-confirm {
+    width: 100%;
+    padding: 8px 0;
+    margin-bottom: 10px;
+    border: 1px solid var(--primary);
+    border-radius: var(--radius-sm);
+    background: var(--primary);
+    color: #fff;
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .ac-confirm:disabled { opacity: .5; cursor: not-allowed; }
   .ac-input-row { display: flex; gap: 8px; }
   .ac-input-row input {
     flex: 1;

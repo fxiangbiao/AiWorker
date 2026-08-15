@@ -11,6 +11,7 @@
 import { Screen } from "./screen.js";
 import { Terminal, type KeyEvent } from "./term.js";
 import { MessageList, InputLine, StatusBar, type StatusData } from "./components.js";
+import { parseOptionInput } from "../tools/ask-channel.js";
 import chalk from "chalk";
 
 export class Tui {
@@ -38,6 +39,7 @@ export class Tui {
   private askResolve: ((v: string | null) => void) | null = null;
   private askTimer: ReturnType<typeof setTimeout> | null = null;
   private askOptions: string[] = [];
+  private askMultiple = false;
 
   init(): void {
     if (this.active) return;
@@ -260,9 +262,10 @@ export class Tui {
 
   /**
    * 发起提问（ask_user 工具）：渲染问题/选项到消息区，输入行前缀「答> 」，Enter 提交
-   * 输入序号自动解析为对应选项文本；超时（默认 30s）或 Ctrl+C 取消返回 null
+   * 输入序号自动解析为对应选项文本；multiple 时支持逗号/空格分隔的多序号（如 1,3，结果以 ", " 连接）；
+   * 超时（默认 30s）或 Ctrl+C 取消返回 null
    */
-  ask(question: string, options: string[], timeoutMs = 30000): Promise<string | null> {
+  ask(question: string, options: string[], timeoutMs = 30000, multiple = false): Promise<string | null> {
     // 上次提问未决：先取消
     if (this.askPending) this.resolveAsk(null);
 
@@ -271,9 +274,16 @@ export class Tui {
     options.forEach((o, i) => {
       this.messages.append(`   ${chalk.dim(`${i + 1})`)} ${o}`);
     });
-    this.messages.append(chalk.dim("（直接输入回答，或输入选项序号后回车）"));
+    this.messages.append(
+      chalk.dim(
+        multiple && options.length > 0
+          ? "（可多选：输入序号，逗号或空格分隔，如 1,3）"
+          : "（直接输入回答，或输入选项序号后回车）",
+      ),
+    );
 
     this.askOptions = options;
+    this.askMultiple = multiple;
     this.input.setPrefix("答> ");
     this.input.setDisabled(false);
     this.input.clear();
@@ -301,6 +311,7 @@ export class Tui {
     this.input.setDisabled(true);
     this.input.setPrefix("你> ");
     this.askOptions = [];
+    this.askMultiple = false;
     const resolve = this.askResolve;
     this.askResolve = null;
     // 恢复"思考中"（agent 仍在运行；定时器若已恢复会继续接管）
@@ -321,12 +332,7 @@ export class Tui {
       case "enter": {
         const value = this.input.getValue().trim();
         if (!value) return; // 空输入忽略（等待继续输入）
-        const idx = parseInt(value, 10);
-        const answer =
-          !Number.isNaN(idx) && idx >= 1 && idx <= this.askOptions.length
-            ? this.askOptions[idx - 1]!
-            : value;
-        this.resolveAsk(answer);
+        this.resolveAsk(parseOptionInput(value, this.askOptions, this.askMultiple));
         return;
       }
       case "backspace":

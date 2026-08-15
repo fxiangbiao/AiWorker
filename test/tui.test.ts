@@ -679,6 +679,41 @@ describe("Tui 帧合成", () => {
     t.destroy();
   });
 
+  it("ask 多选：逗号分隔序号提交多个选项", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("你玩哪些类型？", ["竞技类", "单机大作", "休闲类", "什么都玩"], 30000, true);
+    // 多选提示渲染
+    const rendered = t.messages.renderViewport(80, 12);
+    // eslint-disable-next-line no-control-regex
+    const clean = rendered.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, "")).join("\n");
+    expect(clean).toContain("可多选");
+    // 输入 "1,3" 回车 → 两个选项以 ", " 连接
+    for (const ch of "1,3") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("竞技类, 休闲类");
+    t.destroy();
+  });
+
+  it("ask 多选：单序号走单选路径，自由文本原样返回", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p1 = t.ask("q", ["甲", "乙"], 30000, true);
+    t.simulateKey({ type: "char", char: "2" });
+    t.simulateKey({ type: "enter" });
+    expect(await p1).toBe("乙");
+
+    const p2 = t.ask("q", ["甲", "乙"], 30000, true);
+    for (const ch of "自定义回答") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p2).toBe("自定义回答");
+    t.destroy();
+  });
+
   it("Enter 后提问内容追加到消息历史（你> 前缀）", async () => {
     const { Tui } = await import("../src/terminal/tui.js");
     const t = new Tui();

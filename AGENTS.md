@@ -54,7 +54,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### 工具与 MCP
 - `src/tools/builtin.ts` — 8 内置工具。`fs_read`/`fs_list`/`fs_write` 均基准 `workingDir`（读写统一目录）；`fs_write` 路径遍历防护（`path.relative` 检查）；**超长结果落盘**：fs_read/terminal 输出 >8000 字符经 `spillOrTruncate` 写入 `data/spills/`（需 `ToolContext.dataDir`，由 agent-loop 从 `deps.dataDir` 透传）
-- `src/tools/ask-channel.ts` — **ask_user 提问通道**：`AskProvider` 全局分发（对齐 confirm-channel）；**TUI 模式走输入行**（`tui.ask`：答> 前缀 + Enter 提交、序号自动解析选项、超时/Ctrl+C 取消），无 TUI 时回退 stdin（问题独立成行 + 选项逐行编号）；HTTP 走 SSE `ask_user` 挂起 + POST `/api/v1/ask`；`isAskWaiting()` 供 TUI 状态栏显示"等待你的回答"；`ask_user` 已加入只读白名单（`PermissionModel.READONLY_TOOLS`）
+- `src/tools/ask-channel.ts` — **ask_user 提问通道**：`AskProvider` 全局分发（对齐 confirm-channel），请求携带 `multiple`（多选）；**TUI 模式走输入行**（`tui.ask`：答> 前缀 + Enter 提交、序号自动解析选项、多选支持 "1,3" 逗号/空格分隔、超时/Ctrl+C 取消），无 TUI 时回退 stdin；HTTP 走 SSE `ask_user` 挂起 + POST `/api/v1/ask`；`isAskWaiting()` 供 TUI 状态栏显示"等待你的回答"；`parseOptionInput`（单选/多选/自由文本统一解析，TUI 与 stdin 共用）；`ask_user` 已加入只读白名单（`PermissionModel.READONLY_TOOLS`）
 - `src/tools/terminal-session.ts` — **持久终端会话**：`cmd.exe /Q` spawn + marker 分隔符解析；cd/env 跨调用保留；**超时销毁进程防缓冲区错位**（下次 exec 自动重启）；`process.on("exit")` 清理孤儿进程
 - `src/mcp/mcp-manager.ts` — stdio/HTTP 双传输，`config/mcp.json` 配置，工具命名 `mcp_{server}_{tool}`，连接失败优雅降级；`getStatuses()` 以连接池为数据源（含未连接服务器），内嵌 tools 列表（CLI `/mcps` 与 Web `/api/v1/mcp` 共用）；启动时在 server/CLI 分支之前 await loadConfig（5s 超时保护）
 - `builtin-server.ts` — 内置 4 工具：math_eval（沙箱 `new Function()` + Math 白名单）/ uuid_gen / json_format / timestamp_convert
@@ -94,7 +94,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `/chat` 接受 `sessionId`：Web UI 用 chat id 作为 sessionId 持久化到 SQLite
 - `web/` — Svelte 5 + Vite 6，独立 package.json；API 常量在 `chat.svelte.ts` 导出 `API = "/api/v1"`（fetch 统一走该常量）；vite proxy 为 `/api → :3000`
 - `ChatPanel.handleSSE()` 直接 mutate `store.messages` 触发重渲染；`DOMPurify` 消毒 `marked.parse()` 输出防 XSS；`store.inputMode` 控制输入模式（chat/plan/debate），协作/辩论复用 `handleCollabSSE` 渲染步骤/工具/阶段提示
-- `SystemPanel.svelte`（context/logs/skills 管理面板，顶部导航弹窗）、`TracePanel.svelte`（轨迹两栏：左列表 + 右详情，弹窗固定 50% 宽）、`PlanStepsBlock.svelte`（/plan 步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`AskCard.svelte`（ask_user 提问卡片：选项按钮 + 自由文本输入）、`FileDiffPanel.svelte`（/diffs 左右分栏）
+- `SystemPanel.svelte`（context/logs/skills 管理面板，顶部导航弹窗）、`TracePanel.svelte`（轨迹两栏：左列表 + 右详情，弹窗固定 50% 宽）、`PlanStepsBlock.svelte`（/plan 步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`AskCard.svelte`（ask_user 提问卡片：选项逐行编号 + 可多选复选 + 确认选择 + 自由文本 + 跳过）、`FileDiffPanel.svelte`（/diffs 左右分栏）
 - `/chat` 透传 `task.mode`（权限模式），BaseAgent.runStream 消费；`permissionCheck` 读请求级 `ctx.data.permissions`（Ask 拦截）；`captureDiff` 写磁盘快照（`data/snapshots/`，首行 `# path:` 记录原始路径）+ 审计，`/diffs` 读取展示
 - `runWithChannels(write, fn)`：chat/plan/debate 三端点统一包装，同时注册确认（`confirm_request`）与提问（`ask_user`）两个 SSE provider，挂起等待前端卡片响应
 - `/skills` 返回 `{name, version, description, expert, triggers, body, raw}`（raw 为完整 SKILL.md 原文）

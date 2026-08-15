@@ -7,6 +7,8 @@ export interface AskRequest {
   id: string;
   question: string;
   options: string[];
+  /** 是否允许多选（true 时用户可输入多个序号，Web 端为复选列表） */
+  multiple?: boolean;
 }
 
 export type AskProvider = (req: AskRequest) => Promise<string | null>;
@@ -62,20 +64,24 @@ export function askResponse(id: string, answer: string | null): boolean {
   return true;
 }
 
-/** 发起提问，返回用户回答（自由文本或选中选项）；取消/超时返回 null */
-export async function requestAsk(question: string, options: string[] = []): Promise<string | null> {
+/** 发起提问，返回用户回答（自由文本或选中选项；多选时选项以 ", " 连接）；取消/超时返回 null */
+export async function requestAsk(
+  question: string,
+  options: string[] = [],
+  multiple = false,
+): Promise<string | null> {
   askWaiting = true;
   try {
     if (provider) {
-      return await provider({ id: `ask-${Date.now().toString(36)}`, question, options });
+      return await provider({ id: `ask-${Date.now().toString(36)}`, question, options, multiple });
     }
-    return await stdinAsk(question, options);
+    return await stdinAsk(question, options, multiple);
   } finally {
     askWaiting = false;
   }
 }
 
-async function stdinAsk(question: string, options: string[]): Promise<string | null> {
+async function stdinAsk(question: string, options: string[], multiple: boolean): Promise<string | null> {
   const { stdin, stdout } = await import("node:process");
   const { default: chalk } = await import("chalk");
   const rawMode = typeof stdin.setRawMode === "function";
@@ -92,11 +98,15 @@ async function stdinAsk(question: string, options: string[]): Promise<string | n
         lines.push(`   ${chalk.dim(`${i + 1})`)} ${options[i]}`);
       }
     }
-    lines.push(
-      chalk.dim(
-        options.length > 0 ? "（直接输入回答，或输入选项序号后回车）: " : "（输入回答后回车）: ",
-      ),
-    );
+    if (multiple && options.length > 0) {
+      lines.push(chalk.dim("（可多选：输入序号，逗号或空格分隔，如 1,3）: "));
+    } else {
+      lines.push(
+        chalk.dim(
+          options.length > 0 ? "（直接输入回答，或输入选项序号后回车）: " : "（输入回答后回车）: ",
+        ),
+      );
+    }
     stdout.write(lines.join("\n"));
 
     const handler = (data: Buffer) => {
@@ -108,12 +118,8 @@ async function stdinAsk(question: string, options: string[]): Promise<string | n
         resolve(null);
         return;
       }
-      const idx = parseInt(input, 10);
-      if (!Number.isNaN(idx) && idx >= 1 && idx <= options.length) {
-        resolve(options[idx - 1]!);
-        return;
-      }
-      resolve(input);
+      const parsed = parseOptionInput(input, options, multiple);
+      resolve(parsed);
     };
 
     stdin.once("data", handler);
@@ -126,4 +132,30 @@ async function stdinAsk(question: string, options: string[]): Promise<string | n
       resolve(null);
     }, 30000);
   });
+}
+
+/**
+ * 解析回答输入：多选时支持逗号/空格/顿号分隔的序号列表（如 "1,3" → 选中第 1、3 项，
+ * 以 ", " 连接）；纯数字序号走单选路径；其余按自由文本处理
+ */
+export function parseOptionInput(input: string, options: string[], multiple: boolean): string {
+  // 纯数字：单选序号（"1" / 多选时 "2" 都指向对应选项）
+  if (/^\d+$/.test(input)) {
+    const idx = parseInt(input, 10);
+    if (idx >= 1 && idx <= options.length) {
+      return options[idx - 1]!;
+    }
+  }
+  // 多选：逗号/空格/顿号/中文逗号分隔的序号列表
+  if (multiple && options.length > 0) {
+    const parts = input.split(/[,，、\s+]+/).filter(Boolean);
+    if (parts.length > 1 && parts.every((p) => /^\d+$/.test(p))) {
+      const picked = parts
+        .map((p) => parseInt(p, 10))
+        .filter((n) => n >= 1 && n <= options.length)
+        .map((n) => options[n - 1]!);
+      if (picked.length > 0) return picked.join(", ");
+    }
+  }
+  return input;
 }

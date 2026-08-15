@@ -43,6 +43,8 @@ export interface AskItem {
   id: string;
   question: string;
   options: string[];
+  /** 是否允许多选（复选列表 + 确认选择） */
+  multiple?: boolean;
 }
 
 export interface TimelineItem {
@@ -67,10 +69,12 @@ export function toolArgsDisplay(name: string, args: unknown): string {
       const parsed = (typeof args === "string" ? JSON.parse(args) : args) as {
         question?: unknown;
         options?: unknown;
+        multiple?: unknown;
       } | null;
       const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
       const n = Array.isArray(parsed?.options) ? parsed.options.length : 0;
-      if (q) return n > 0 ? `${q}（${n} 个选项）` : q;
+      const multi = parsed?.multiple === true;
+      if (q) return n > 0 ? `${q}（${n} 个选项${multi ? "，可多选" : ""}）` : q;
     } catch {
       /* 解析失败回退原始 args */
     }

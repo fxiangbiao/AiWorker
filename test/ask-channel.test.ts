@@ -10,6 +10,7 @@ import {
   askResponse,
   requestAsk,
   isAskWaiting,
+  parseOptionInput,
 } from "../src/tools/ask-channel.js";
 
 afterEach(() => {
@@ -83,5 +84,34 @@ describe("ask-channel", () => {
     setAskProvider(async () => null); // 立即返回
     await requestAsk("q");
     expect(isAskWaiting()).toBe(false);
+  });
+
+  it("requestAsk 透传 multiple 到 provider", async () => {
+    const captured: Array<{ multiple?: boolean }> = [];
+    setAskProvider(async (req) => {
+      captured.push(req);
+      return "ok";
+    });
+    await requestAsk("q", ["a", "b"], true);
+    await requestAsk("q", ["a", "b"]);
+    expect(captured[0]!.multiple).toBe(true);
+    expect(captured[1]!.multiple).toBe(false);
+  });
+
+  it("parseOptionInput：多选序号列表解析", () => {
+    const options = ["竞技类", "单机大作", "休闲类", "什么都玩"];
+    // 单选序号
+    expect(parseOptionInput("2", options, false)).toBe("单机大作");
+    // 多选：逗号分隔
+    expect(parseOptionInput("1,3", options, true)).toBe("竞技类, 休闲类");
+    // 多选：空格/顿号/中文逗号混合
+    expect(parseOptionInput("1 4", options, true)).toBe("竞技类, 什么都玩");
+    expect(parseOptionInput("1、2，4", options, true)).toBe("竞技类, 单机大作, 什么都玩");
+    // 越界序号过滤
+    expect(parseOptionInput("2,9", options, true)).toBe("单机大作");
+    // 含非数字 → 视为自由文本
+    expect(parseOptionInput("竞技类、休闲", options, true)).toBe("竞技类、休闲");
+    // 单选模式下多序号不解析（按自由文本）
+    expect(parseOptionInput("1,3", options, false)).toBe("1,3");
   });
 });

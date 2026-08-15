@@ -467,6 +467,7 @@
           id: data.askId as string,
           question: (data.question as string) || "",
           options: ((data.options as string[]) || []).filter(Boolean),
+          multiple: data.multiple === true,
         };
         const exist = store.asks.find((a) => a.id === ask.id);
         if (!exist) store.asks.push(ask);

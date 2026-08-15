@@ -164,7 +164,7 @@ async function runWithChannels<T>(write: (data: object) => void, fn: () => Promi
   );
   const previousAsk = setAskProvider(
     createHttpAskProvider((req) => {
-      write({ type: "ask_user", askId: req.id, question: req.question, options: req.options });
+      write({ type: "ask_user", askId: req.id, question: req.question, options: req.options, multiple: req.multiple === true });
     }),
   );
   try {

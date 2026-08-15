@@ -71,7 +71,7 @@ program
 
     // TUI 激活时：ask_user 提问走 TUI 输入行（答> 前缀 + Enter 提交），而非 cooked-mode stdin
     if (!isServer && tui.isActive()) {
-      setAskProvider((req) => tui.ask(req.question, req.options));
+      setAskProvider((req) => tui.ask(req.question, req.options, 30000, req.multiple === true));
     }
 
     const outputRenderer = new StreamOutputRenderer();

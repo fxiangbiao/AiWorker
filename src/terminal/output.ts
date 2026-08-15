@@ -140,12 +140,15 @@ export class StreamOutputRenderer {
     let marker = chalk.blue(`🔧 ${name}`);
     let resultPreview = preview; // 结果行的预览（ask_user 不重复展示问题）
     if (name === "ask_user") {
-      // ask_user 的 args 是 {question, options?}：卡片展示问题本身（截断），而非原始 JSON
-      const parsed = tryParseJson(args) as { question?: unknown; options?: unknown } | null;
+      // ask_user 的 args 是 {question, options?, multiple?}：卡片展示问题本身（截断），而非原始 JSON
+      const parsed = tryParseJson(args) as { question?: unknown; options?: unknown; multiple?: unknown } | null;
       const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
       const optCount = Array.isArray(parsed?.options) ? parsed.options.length : 0;
+      const multi = parsed?.multiple === true;
       preview = q ? this.sanitizePreview(q, 56) : "";
-      marker = chalk.blue(`🔧 ${name}${optCount > 0 ? chalk.dim(`（${optCount} 个选项）`) : ""}`);
+      marker = chalk.blue(
+        `🔧 ${name}${optCount > 0 ? chalk.dim(`（${optCount} 个选项${multi ? "，可多选" : ""}）`) : ""}`,
+      );
       resultPreview = "";
     }
     this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: resultPreview });
