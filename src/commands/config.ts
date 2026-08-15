@@ -5,6 +5,7 @@
 import chalk from "chalk";
 import { hookManager } from "../hooks/hook-manager.js";
 import { createEvaluateSkillCreation } from "../hooks/handlers.js";
+import { getAppVersion } from "../core/version.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
 import type { PermissionMode } from "../types.js";
@@ -31,17 +32,21 @@ export const configCommands: CliCommand[] = [
     name: "status",
     usage: "status",
     description: "显示运行状态",
-    detail: "模式/模型/token/排队",
+    detail: "版本/模式/模型/token/专家/技能/排队",
     handler: async (ctx) => {
       const cost = ctx.modelRouter.getCost();
-      ctx.write(chalk.gray(`模式: ${ctx.mode()} | 模型: ${ctx.modelRouter.getDisplayModel()}\n`));
+      ctx.write(chalk.gray(`AiWorker v${getAppVersion()} | 模式: ${ctx.mode()} | 模型: ${ctx.modelRouter.getDisplayModel()}\n`));
       ctx.write(
         chalk.gray(
           `Token: ${ctx.modelRouter.getTokenUsage()} (提示: ${ctx.modelRouter.getPromptTokens()}, 生成: ${ctx.modelRouter.getCompletionTokens()})`,
         ),
       );
       if (cost > 0) ctx.write(chalk.gray(` | 成本: ¥${cost.toFixed(4)}`));
-      ctx.write(chalk.gray(`\n技能: ${ctx.skillCount} | 排队: ${ctx.prefillQueue.length}\n`));
+      const experts = Object.values(ctx.agents)
+        .map((a) => a.getName())
+        .join(" / ");
+      ctx.write(chalk.gray(`\n专家: ${experts}\n`));
+      ctx.write(chalk.gray(`技能: ${ctx.skillCount} | 排队: ${ctx.prefillQueue.length}\n`));
       ctx.printStatus();
       return "continue";
     },

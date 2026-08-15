@@ -34,6 +34,7 @@ import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
 import { TeamCoordinator } from "./core/team-coordinator.js";
 import { pluginManager } from "./core/plugin-manager.js";
+import { getAppVersion } from "./core/version.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
@@ -46,7 +47,7 @@ import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider }
 
 const program = new Command();
 
-program.name("aiworker").description("AiWorker — 个人 AI Agent 助手").version("0.1.0");
+program.name("aiworker").description("AiWorker — 个人 AI Agent 助手").version(getAppVersion());
 
 program
   .option("-m, --mode <mode>", "权限模式: ask | plan | auto", "auto")
@@ -91,10 +92,15 @@ program
     };
     renderer.configureInput(resolve(dataDir, ".aiworker_history"), completer);
 
-    // ─── Banner ───
-    stdout.write(chalk.cyan("╔══════════════════════════════════════╗\n"));
-    stdout.write(chalk.cyan("║        AiWorker v0.1.0               ║\n"));
-    stdout.write(chalk.cyan("╚══════════════════════════════════════╝\n\n"));
+    // ─── Banner（版本号来自 package.json，动态居中防边框错位） ───
+    const bannerTitle = `AiWorker v${getAppVersion()}`;
+    const bannerInner = 36;
+    const bannerPad = Math.max(0, bannerInner - bannerTitle.length);
+    const bannerLeft = Math.floor(bannerPad / 2);
+    const bannerRight = bannerPad - bannerLeft;
+    stdout.write(chalk.cyan(`╔${"═".repeat(bannerInner)}╗\n`));
+    stdout.write(chalk.cyan(`║${" ".repeat(bannerLeft)}${bannerTitle}${" ".repeat(bannerRight)}║\n`));
+    stdout.write(chalk.cyan(`╚${"═".repeat(bannerInner)}╝\n\n`));
     stdout.write(chalk.gray(`工作目录: ${workingDir}\n`));
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
     stdout.write(chalk.gray(`权限模式: ${options.mode ?? "auto（config/permissions.json 或默认）"}\n\n`));

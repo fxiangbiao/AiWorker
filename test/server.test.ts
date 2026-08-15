@@ -139,6 +139,7 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(data.status).toBe("ok");
+    expect(data.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(data.model).toBe("deepseek-v4-flash");
     expect(data.tokenUsage.total).toBe(100);
     expect(data.skills).toContain("skill-a");

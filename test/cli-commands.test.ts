@@ -23,6 +23,7 @@ function modelRouterMock() {
     getPromptTokens: vi.fn(() => 0),
     getCompletionTokens: vi.fn(() => 0),
     getCurrentModel: vi.fn(() => "m"),
+    getDisplayModel: vi.fn(() => "test-model"),
     getCost: vi.fn(() => 0),
   } as unknown as ModelRouter;
 }
@@ -170,6 +171,22 @@ describe("模式命令", () => {
     await find("mode").handler(ctx, "evil", "/mode evil");
     expect(setMode).not.toHaveBeenCalled();
     expect(writeLines.some((l) => l.includes("无效模式"))).toBe(true);
+  });
+
+  it("status 显示版本与专家列表", async () => {
+    const agents = {
+      default: { getName: () => "通用助手" },
+      coding: { getName: () => "编码工程师" },
+      financial: { getName: () => "理财投资顾问" },
+    } as never;
+    const { ctx, writes } = makeCtx({ agents });
+    await find("status").handler(ctx, "", "/status");
+    const joined = writes.join("");
+    expect(joined).toMatch(/AiWorker v\d+\.\d+\.\d+/);
+    expect(joined).toContain("专家:");
+    expect(joined).toContain("通用助手");
+    expect(joined).toContain("编码工程师");
+    expect(joined).toContain("理财投资顾问");
   });
 });
 

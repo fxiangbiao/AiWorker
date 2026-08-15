@@ -12,6 +12,7 @@ import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
 import { projectTrace, computeSessionStats } from "./core/trace.js";
+import { getAppVersion } from "./core/version.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
@@ -314,6 +315,7 @@ export function startServer(deps: ServerDeps, port: number) {
       sendJSON(res, 200, {
         status: "ok",
         uptime: Date.now() - startTime,
+        version: getAppVersion(),
         model: deps.modelRouter.getCurrentModel(),
         tokenUsage: {
           total: deps.modelRouter.getTokenUsage(),
