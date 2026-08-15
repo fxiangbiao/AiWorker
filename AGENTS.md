@@ -25,18 +25,26 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `ToolResult` = `{ success: boolean, error?: string }`；`HookResult` = `{ proceed: boolean }`
 - **不添加注释**，除非绝对必要
 - `coerceToolArgs`：数字字符串转换前校验合法数字（含科学计数法），排除 NaN/Infinity；`"true"/"false"` 优先于数字判断
-- 设计文档：`个人AI-Agent助手设计方案.md`
+- 设计文档：`docs/个人AI-Agent助手设计方案.md`
+
+## CLI 命令系统（`src/commands/`）
+- 命令用**注册表**定义：`src/commands/types.ts` 的 `CliCommand`（name/aliases/usage/description/detail/handler），handler 签名 `(ctx, arg, line) => Promise<"continue"|"exit">`
+- **新增命令**：在对应分组文件（session/collab/skills/config/misc）注册即可，`/help` 表格与 Tab 补全自动生成；数组顺序 = 匹配优先级
+- `CommandContext`（零闭包捕获）由 `index.ts` 组装注入：会话状态/服务引用/输出抽象（`write`/`writeLine`/`printStatus`）；命令 handler 可独立单测（见 `test/cli-commands.test.ts`）
+- 工具函数：`commands/format.ts`（displayWidth/padToWidth/formatDuration/fmtK）、`commands/clipboard.ts`（copyToClipboard）
 
 ## 模块速览
 
 ### 核心引擎 `src/core/`
-- `agent-loop.ts` — `runAgentLoop`（同步）/ `runAgentLoopStream`（流式 + AbortSignal）。空响应 3 次断路器；token 压缩阈值 75%，保留最近 3-8 轮
-- `model-router.ts` — 多 profile（`config/models.json`，支持 `${ENV}`）。**思考模式**：`thinking: true` 时 temperature 失效，经 `extra_body` 传递；流式 usage 只在循环外一次性 `+=`（防多 chunk 计数膨胀）
-- `context-manager.ts` — `assembleContext()` 组装 + 压缩 + `getContextBreakdown()` 分层统计；`freezeSnapshot()` 捕获记忆快照保证前缀缓存
+- `agent-loop.ts` — `runAgentLoop`（同步）/ `runAgentLoopStream`（流式 + AbortSignal）。空响应 3 次断路器；token 压缩阈值 75%，保留最近 3-8 轮；循环边界发 `step/start`/`step/end`（`endStep()` 必须先于 `iterations++`，编号才一致）；`executeTool` 包装层发 `tool/call`/`tool/result`；每轮 `assistant(tool_calls)` 经 appendMessage 持久化
+- `model-router.ts` — 多 profile（`config/models.json`，支持 `${ENV}`）。**思考模式**：`thinking: true` 时 temperature 失效，经 `extra_body` 传递；流式 usage 只在循环外一次性 `+=`；`getDisplayModel()` 带 profile 上下文；`lastUsage` 供 assistant 事件携带 token
+- `context-manager.ts` — `assembleContext()` 组装 + 压缩 + `getContextBreakdown()` 分层统计；`freezeSnapshot()` 捕获记忆快照保证前缀缓存；历史源用 `replayEvents`（含 tool 结果，LLM 消息序列完整）
 - `team-coordinator.ts` — DAG 编排：Kahn 环路检测 + 死锁检测；4 模板；非关键步骤失败跳过，关键失败中止
+- `trace.ts` — 轨迹投影：`projectTrace`（事件 → 时间线，含 full 完整内容）+ `computeSessionStats`
 - `skill-registry.ts` / `skill-evolution.ts` — 递归加载 SKILL.md；自进化阈值 `iterations>=3 && toolCalls>=3`，Jaccard 0.5 去重，评分 >=3★ 注册，默认关闭（`skills/pending/` 存候选）
 - `project-profiler.ts` — 启动扫描工作目录，注入 system prompt
 - `tool-registry.ts` — 工具注册 + 运行时可用性检查
+- `llm/` — LLM Provider Seam：`llm-adapter.ts`（LlmConnection/LlmAdapter 契约）、`llm-error.ts`（稳定错误码 + classifyError/isRetryable）、`adapter-registry.ts`（单例，未知 id 降级 openai-compatible）、`openai-compatible.ts`（唯一接触 openai SDK 的模块；流式已产出 chunk 后失败**不重试**防重复）
 
 ### 智能体与路由 `src/agents/`
 - `BaseAgent` 子类 ×7；`router.ts` 正则路由（带权重）→ LLM 语义兜底
@@ -51,14 +59,15 @@ npm run web:build      # Web UI 构建 → web/dist/
 - **重连**：统一 `scheduleReconnect` 防风暴；指数退避 `min(1000*2^n, 30000)` 最多 5 次；Windows `spawn` 需 `shell: true`
 
 ### 记忆与上下文
-- `src/memory/session-store.ts` — SQLite（WAL）+ FTS5；`turn_logs`/`tool_call_logs` 表，snake_case → camelCase 显式映射
+- `src/memory/session-store.ts` — SQLite（WAL）+ FTS5；`turn_logs`/`tool_call_logs` 表，snake_case → camelCase 显式映射；**事件溯源**：`session_events` 仅追加日志（唯一真源），`appendEvent`/`getEvents`/`replayEvents`/`verifyProjection`；`appendMessage` 单点同事务双写（assistant 可携带 usage）
+- `src/memory/telemetry.ts` — 遥测导出：`TelemetrySink` seam + `TelemetryJsonlSink`（data/telemetry/<id>.jsonl）+ `TelemetryCoordinator`（onTelemetryRecord 脱敏瀑布、`(session.id, seq)` 幂等、emit 错误隔离 fail-closed）；turnLogger 轮次结算后批量 capture
 - 三层记忆：工作（消息历史）/ 情景（FTS5 + `Intl.Segmenter` 分词 + 每天 15% 时间衰减）/ 语义（MEMORY.md ≈2200 字 + USER.md ≈1375 字，段落安全截断 + 互斥锁防 lost-update）
 - **FTS5 MATCH 查询前清洗特殊字符**（`*` `AND` `OR` 等）防注入
 - token 估算统一 `Math.ceil(chars / 3.5)`
 
 ### Hook 与安全
-- `src/hooks/hook-manager.ts` — 5 事件：onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError；`config/hooks.json` 注册 14 handlers，支持 `enabled: false`
-- `permissionCheck` 仅 onToolCallPre 生效；`turnLogger` onMessage 记基线 + onTaskComplete 结算增量 + onError 清理防泄漏
+- `src/hooks/hook-manager.ts` — 6 事件：onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError / onTelemetryRecord；`config/hooks.json` 注册 14 handlers，支持 `enabled: false`
+- `permissionCheck` 仅 onToolCallPre 生效；`turnLogger` onMessage 记基线 + onTaskComplete 结算增量 + onError 标记（错误轮 token 置 0、reason=error）+ 发 `turn/start`·`turn/end` 事件
 - 权限三模式：ask（只读工具，写/高危被 permissionCheck 拦截产生红色告警）/ plan（每步确认）/ auto（自动，高危仍确认）；`danger-detector.ts` 正则拦截高危操作（含单文件删除 rm/del/Remove-Item）
 - `config/permissions.json` 是权限模型配置源（default_mode / modes / allowed_dirs / denied_patterns），CLI `--mode` 显式传入时覆盖 default_mode；加载时 strip UTF-8 BOM
 - 默认模式 auto；ask 模式放行只读工具 + 内置 MCP 工具（`mcp_builtin_*`，无副作用），外部 MCP 工具仍拦截
@@ -75,13 +84,13 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### HTTP Server 与 Web UI
 - `src/server.ts` — **所有 API 统一 `/api/v1` 前缀**（`API_PREFIX` 常量 + `apiUrl()` 辅助）；静态资源托管仅排除 `/api`，新增端点用 `apiUrl("/xxx")` 注册即自动生效
-- 端点：GET `/api/v1/agents` `/status` `/tools` `/sessions`(+/:id) `/context` `/logs` `/skills` `/diffs`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` SSE 流式；托管 `web/dist/`
+- 端点：GET `/api/v1/agents` `/status` `/tools` `/sessions`(+/:id) `/context` `/logs` `/skills` `/diffs` `/trace/:id` `/stats` `/telemetry/:id`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` SSE 流式；托管 `web/dist/`（静态托管路径穿越防护 + favicon 204 + Cache-Control 头）
 - `/plan` SSE 事件序列：plan → step_start → step_end → done；`/debate`：debate_start → done；两者均经 `deps.coordinator`（ServerDeps 依赖注入）
 - `pickDebateAgents` 在 `src/core/team-coordinator.ts` 导出，CLI 与 HTTP 共用
 - `/chat` 接受 `sessionId`：Web UI 用 chat id 作为 sessionId 持久化到 SQLite
 - `web/` — Svelte 5 + Vite 6，独立 package.json；API 常量在 `chat.svelte.ts` 导出 `API = "/api/v1"`（fetch 统一走该常量）；vite proxy 为 `/api → :3000`
 - `ChatPanel.handleSSE()` 直接 mutate `store.messages` 触发重渲染；`DOMPurify` 消毒 `marked.parse()` 输出防 XSS；`store.inputMode` 控制输入模式（chat/plan/debate），协作/辩论复用 `handleCollabSSE` 渲染步骤/工具/阶段提示
-- `SystemPanel.svelte`（context/logs/skills 管理面板，顶部导航弹窗）、`PlanStepsBlock.svelte`（/plan 步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`FileDiffPanel.svelte`（/diffs 左右分栏）
+- `SystemPanel.svelte`（context/logs/skills 管理面板，顶部导航弹窗）、`TracePanel.svelte`（轨迹两栏：左列表 + 右详情，弹窗固定 50% 宽）、`PlanStepsBlock.svelte`（/plan 步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`FileDiffPanel.svelte`（/diffs 左右分栏）
 - `/chat` 透传 `task.mode`（权限模式），BaseAgent.runStream 消费；`permissionCheck` 读请求级 `ctx.data.permissions`（Ask 拦截）；`captureDiff` 写磁盘快照（`data/snapshots/`，首行 `# path:` 记录原始路径）+ 审计，`/diffs` 读取展示
 - `runWithConfirm(write, fn)`：chat/plan/debate 三端点统一包装，hook 内 `requestConfirm` 走 SSE 挂起等待前端确认卡片
 - `/skills` 返回 `{name, version, description, expert, triggers, body, raw}`（raw 为完整 SKILL.md 原文）
@@ -101,6 +110,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 /new                     新会话
 /log                     监控日志（轮次/耗时/token）
 /context [查询]          上下文分层 token 占比 + MCP 工具列表
+/trace [序号]            会话轨迹时间线（事件级复盘，--json 输出）
 /status                  运行状态
 /config                  模型/温度/max-tokens/thinking/skill-evo（持久化 data/runtime-config.json）
 /sessions                浏览会话
