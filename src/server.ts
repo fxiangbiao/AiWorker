@@ -14,6 +14,7 @@ import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
 import { projectTrace, computeSessionStats } from "./core/trace.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
+import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -154,17 +155,23 @@ function decodeDiffPath(fileName: string): string {
   return fileName.replace(/\.diff$/, "").replace(/^D_/, "").replace(/_/g, "/");
 }
 
-/** 在确认通道上下文中执行异步操作（hook 内 requestConfirm 走 SSE 挂起） */
-async function runWithConfirm<T>(write: (data: object) => void, fn: () => Promise<T>): Promise<T> {
-  const previous = setConfirmProvider(
+/** 在确认+提问通道上下文中执行异步操作（hook 内 requestConfirm / ask_user 的 requestAsk 走 SSE 挂起） */
+async function runWithChannels<T>(write: (data: object) => void, fn: () => Promise<T>): Promise<T> {
+  const previousConfirm = setConfirmProvider(
     createHttpConfirmProvider((req) => {
       write({ type: "confirm_request", confirmId: req.id, title: req.title, message: req.message, options: req.options });
+    }),
+  );
+  const previousAsk = setAskProvider(
+    createHttpAskProvider((req) => {
+      write({ type: "ask_user", askId: req.id, question: req.question, options: req.options });
     }),
   );
   try {
     return await fn();
   } finally {
-    setConfirmProvider(previous);
+    setConfirmProvider(previousConfirm);
+    setAskProvider(previousAsk);
   }
 }
 
@@ -504,7 +511,7 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
         };
 
-        const result = await runWithConfirm(write, () =>
+        const result = await runWithChannels(write, () =>
           deps.coordinator.execute(
             planResult.plan,
             deps.workingDir,
@@ -581,7 +588,7 @@ export function startServer(deps: ServerDeps, port: number) {
             write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
         };
 
-        const result = await runWithConfirm(write, () =>
+        const result = await runWithChannels(write, () =>
           deps.coordinator.debate(
             debateReq.topic,
             agentA,
@@ -638,6 +645,33 @@ export function startServer(deps: ServerDeps, port: number) {
 
       const ok = confirmResponse(confirmReq.id, confirmReq.value ?? null);
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Unknown confirm id" });
+      return;
+    }
+
+    if (url === apiUrl("/ask") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+
+      let askReq: { id?: string; answer?: string | null };
+      try {
+        askReq = JSON.parse(body) as { id?: string; answer?: string | null };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+
+      if (!askReq.id || typeof askReq.id !== "string") {
+        sendJSON(res, 400, { error: "Missing 'id' field" });
+        return;
+      }
+
+      const ok = askResponse(askReq.id, askReq.answer ?? null);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Unknown ask id" });
       return;
     }
 
@@ -699,8 +733,8 @@ export function startServer(deps: ServerDeps, port: number) {
           deps.sessionStore.appendMessage(sessionId, { role: "user", content: chatReq.message });
         }
 
-        // 确认通道：hook 内 requestConfirm 时发 SSE 事件并挂起等待前端响应
-        await runWithConfirm(write, async () => {
+        // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
+        await runWithChannels(write, async () => {
           const callbacks: StreamCallbacks = {
             onTextDelta: (text) => write({ type: "text", content: text }),
             onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),

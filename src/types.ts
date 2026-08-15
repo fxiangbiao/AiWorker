@@ -57,6 +57,8 @@ export interface ToolContext {
   /** 工作目录（读写统一基准；--dir 指定，默认 ./ai_default_project） */
   workingDir: string;
   permissions: PermissionMode;
+  /** 数据目录（spill 落盘用：<dataDir>/spills/，缺省则不落盘） */
+  dataDir?: string;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;

@@ -37,8 +37,8 @@ export class PermissionModel {
     return this.config.modes[mode]?.readOnly ?? false;
   }
 
-  /** 只读工具白名单（ask 模式可执行） */
-  static READONLY_TOOLS: string[] = ["fs_read", "fs_list", "web_search", "web_fetch", "math_eval", "uuid_gen", "json_format", "timestamp_convert"];
+  /** 只读工具白名单（ask 模式可执行；ask_user 仅提问，无副作用） */
+  static READONLY_TOOLS: string[] = ["fs_read", "fs_list", "web_search", "web_fetch", "ask_user", "math_eval", "uuid_gen", "json_format", "timestamp_convert"];
 
   /** 内置 MCP 服务器前缀——其工具全部无副作用（计算/转换类），ask 模式放行 */
   static BUILTIN_MCP_PREFIX = "mcp_builtin_";

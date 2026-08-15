@@ -18,6 +18,25 @@ const MEMORY_MAX_CHARS = 2200; // 有界：~2200 字符
 const USER_MAX_CHARS = 1375; // 有界：~1375 字符
 const PROJECT_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.4);
 const HISTORY_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.6);
+const TOOL_MSG_MAX_CHARS = 20000; // 单条 tool 消息上限（超长截断；事件日志保留完整，replay-safe）
+
+/**
+ * 工具结果剪枝（对齐 DSH dsh-compaction-tool-result-pruner）：
+ * 组装上下文时截断超长 tool 消息，避免撑爆窗口；完整内容仍在 session_events 中
+ */
+function pruneOversizedToolMessages(messages: Message[]): Message[] {
+  return messages.map((m) => {
+    if (m.role === "tool" && m.content.length > TOOL_MSG_MAX_CHARS) {
+      return {
+        ...m,
+        content:
+          m.content.slice(0, TOOL_MSG_MAX_CHARS) +
+          `\n…[已截断，完整内容见事件日志/落盘文件（原文 ${m.content.length} 字符）]`,
+      };
+    }
+    return m;
+  });
+}
 
 function safeTruncate(content: string, maxChars: number): string {
   if (content.length <= maxChars) return content;
@@ -240,7 +259,7 @@ export class ContextManager {
     // 6. 当前用户消息
     messages.push({ role: "user", content: userMessage });
 
-    return messages;
+    return pruneOversizedToolMessages(messages);
   }
 
   /** 检查并执行压缩 */

@@ -21,6 +21,15 @@ function segmentChinese(text: string): string {
   return tokens.join(" ");
 }
 
+const TITLE_MAX_CHARS = 24;
+
+/** 会话自动标题：首条非空行，压缩空白，超长截断 */
+export function generateSessionTitle(content: string): string {
+  const line = content.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? content.trim();
+  const clean = line.replace(/\s+/g, " ");
+  return clean.length > TITLE_MAX_CHARS ? `${clean.slice(0, TITLE_MAX_CHARS)}…` : clean;
+}
+
 function getDecayFactor(timestamp: number): number {
   const daysAgo = (Date.now() - timestamp) / 86400000;
   return Math.max(0.1, 1 - daysAgo * 0.15);
@@ -211,6 +220,8 @@ export class SessionStore {
       // 事件日志（user/assistant 消息；assistant 携带 usage 由轨迹/遥测消费）
       if (message.role === "user") {
         this.appendEvent(sessionId, "user/message", message as unknown as Record<string, unknown>, "session-store");
+        // 自动标题：首条用户消息且未设置标题时（模板生成，不调 LLM）
+        this.maybeAutoTitle(sessionId, message.content);
       } else if (message.role === "assistant") {
         this.appendEvent(
           sessionId,
@@ -224,6 +235,17 @@ export class SessionStore {
       this.db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
     });
     tx();
+  }
+
+  /** 自动标题：会话无标题（summary 为空）时用首条用户消息首行截断生成；已重命名/已有标题则不覆盖 */
+  private maybeAutoTitle(sessionId: string, content: string): void {
+    const row = this.db.prepare("SELECT summary FROM sessions WHERE id = ?").get(sessionId) as
+      | { summary: string | null }
+      | undefined;
+    if (!row || row.summary) return;
+    const title = generateSessionTitle(content);
+    this.db.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run(title, sessionId);
+    this.appendEvent(sessionId, "title/set", { title, source: "auto" }, "session-store");
   }
 
   /** 获取会话消息历史 */

@@ -9,6 +9,9 @@ import { exec, type ExecOptions } from "node:child_process";
 import type { ToolDefinition, ToolHandler } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { DangerDetector } from "../security/danger-detector.js";
+import { spillOrTruncate } from "./spill.js";
+import { requestAsk } from "./ask-channel.js";
+import { terminalSessionPool } from "./terminal-session.js";
 
 const detector = new DangerDetector();
 
@@ -51,7 +54,7 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
   return {
     tool_call_id: "",
     success: true,
-    content,
+    content: spillOrTruncate(ctx.dataDir, ctx.sessionId, content, "txt"),
   };
 };
 
@@ -206,7 +209,8 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
         resolve({
           tool_call_id: "",
           success: true,
-          content: out || "(无输出)",
+          // 超长输出落盘，避免撑爆上下文
+          content: spillOrTruncate(ctx.dataDir, ctx.sessionId, out, "log"),
         });
       }
     });
@@ -356,6 +360,116 @@ const webFetchHandler: ToolHandler = async (args) => {
   }
 };
 
+// ===== 向用户提问 =====
+
+const askUserDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "ask_user",
+    description:
+      "向用户提出澄清问题。当任务信息不足、存在多种合理解释或需要用户决策时使用。options 提供候选选项（可选），用户可选项或输入自由文本。",
+    parameters: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "要问的问题" },
+        options: {
+          type: "array",
+          items: { type: "string" },
+          description: "候选选项（可选），用户可直接选择或输入自由文本",
+        },
+      },
+      required: ["question"],
+    },
+  },
+};
+
+const askUserHandler: ToolHandler = async (args) => {
+  const question = String(args.question ?? "");
+  const options = Array.isArray(args.options)
+    ? (args.options as unknown[]).map(String).filter(Boolean)
+    : [];
+  if (!question.trim()) {
+    return { tool_call_id: "", success: false, content: "", error: "问题不能为空" };
+  }
+  const answer = await requestAsk(question, options);
+  if (answer === null) {
+    return { tool_call_id: "", success: false, content: "", error: "用户未在限时内回答，请基于已有信息继续" };
+  }
+  return {
+    tool_call_id: "",
+    success: true,
+    content: `用户回答: ${answer}`,
+  };
+};
+
+// ===== 持久终端会话 =====
+
+const terminalSessionDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "terminal_session",
+    description:
+      "持久终端会话：跨调用保留工作目录与环境变量（cd/export 生效）。action=start 启动，exec 执行命令，end 关闭。适用于多步开发任务（安装依赖→构建→运行）。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["start", "exec", "end"],
+          description: "start 启动会话；exec 执行命令；end 关闭会话",
+        },
+        command: { type: "string", description: "action=exec 时要执行的命令" },
+        timeout: { type: "number", description: "单条命令超时毫秒数，默认 30000" },
+      },
+      required: ["action"],
+    },
+  },
+};
+
+const terminalSessionHandler: ToolHandler = async (args, ctx) => {
+  const action = String(args.action ?? "");
+  const command = String(args.command ?? "");
+  const timeout = (args.timeout as number) ?? 30000;
+
+  try {
+    if (action === "start") {
+      const started = terminalSessionPool.start(ctx.sessionId);
+      return {
+        tool_call_id: "",
+        success: true,
+        content: started ? "持久终端会话已启动（工作目录与环境变量跨调用保留）" : "持久终端会话已存在",
+      };
+    }
+    if (action === "end") {
+      terminalSessionPool.end(ctx.sessionId);
+      return { tool_call_id: "", success: true, content: "持久终端会话已关闭" };
+    }
+    if (action === "exec") {
+      const session = terminalSessionPool.get(ctx.sessionId);
+      if (!session) {
+        terminalSessionPool.start(ctx.sessionId);
+      }
+      const result = await terminalSessionPool.exec(ctx.sessionId, command, timeout);
+      if (!result.ok) {
+        return {
+          tool_call_id: "",
+          success: false,
+          content: spillOrTruncate(ctx.dataDir, ctx.sessionId, result.stdout, "log"),
+          error: result.stderr || "命令执行失败",
+        };
+      }
+      return {
+        tool_call_id: "",
+        success: true,
+        content: spillOrTruncate(ctx.dataDir, ctx.sessionId, result.stdout || "(无输出)", "log"),
+      };
+    }
+    return { tool_call_id: "", success: false, content: "", error: `未知 action: ${action}` };
+  } catch (err) {
+    return { tool_call_id: "", success: false, content: "", error: `终端会话失败: ${(err as Error).message}` };
+  }
+};
+
 // ===== 注册所有内置工具 =====
 
 export function registerBuiltinTools(): void {
@@ -365,4 +479,6 @@ export function registerBuiltinTools(): void {
   toolRegistry.register("terminal_exec", execCmdDef, execCmdHandler);
   toolRegistry.register("web_search", webSearchDef, webSearchHandler);
   toolRegistry.register("web_fetch", webFetchDef, webFetchHandler);
+  toolRegistry.register("ask_user", askUserDef, askUserHandler);
+  toolRegistry.register("terminal_session", terminalSessionDef, terminalSessionHandler);
 }

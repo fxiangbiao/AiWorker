@@ -20,6 +20,8 @@ import { registerBuiltinTools } from "./tools/builtin.js";
 import { initAuditLog } from "./core/audit-logger.js";
 import { DangerDetector } from "./security/danger-detector.js";
 import { PermissionModel } from "./security/permission-model.js";
+import { ApprovalService } from "./security/approval-service.js";
+import { requestConfirm } from "./hooks/confirm-channel.js";
 import { loadHooksFromConfig } from "./hooks/hook-config-loader.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
@@ -169,12 +171,20 @@ program
       allowedDirs: (permConfig.allowed_dirs && permConfig.allowed_dirs.length > 0) ? permConfig.allowed_dirs : [workingDir],
       deniedPatterns: permConfig.denied_patterns ?? [],
     });
+    // 审批服务：权限决策单点（hooks 内三个权限 handler 均委托于此，fail-closed）
+    const approval = new ApprovalService({
+      permissionModel,
+      dangerDetector,
+      workingDir,
+      confirm: (req) => requestConfirm(req.message, req.options, req.title),
+    });
 
     const hooksDir = resolve(process.cwd(), "config");
     const telemetry = new TelemetryCoordinator(dataDir);
     const hooksCount = loadHooksFromConfig(resolve(hooksDir, "hooks.json"), {
       dangerDetector,
       permissionModel,
+      approval,
       sessionStore,
       modelRouter,
       workingDir,
@@ -189,7 +199,7 @@ program
       stdout.write(chalk.green(`✓ 已加载 ${hooksCount} 个 Hook\n`));
     }
 
-    const deps = { modelRouter, contextManager, sessionStore };
+    const deps = { modelRouter, contextManager, sessionStore, dataDir };
     const agents: Record<
       string,
       DefaultAgent | ResearchAgent | CodingAgent | DataAnalysisAgent | ProductOpsAgent | FinancialAgent | GameDevAgent

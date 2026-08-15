@@ -12,6 +12,7 @@ import type { HookHandler, PermissionMode } from "../types.js";
 import type { Message } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
+import { ApprovalService, type ConfirmRequestLike } from "../security/approval-service.js";
 import { auditLogger } from "../core/audit-logger.js";
 import { requestConfirm } from "./confirm-channel.js";
 import type { SessionStore } from "../memory/session-store.js";
@@ -23,6 +24,8 @@ import type { TelemetryCoordinator } from "../memory/telemetry.js";
 export interface HandlerDependencies {
   dangerDetector?: DangerDetector;
   permissionModel?: PermissionModel;
+  /** 审批服务（统一权限决策单点；缺省时由各 handler 按 deps 自建） */
+  approval?: ApprovalService;
   sessionStore?: SessionStore;
   modelRouter?: ModelRouter;
   workingDir?: string;
@@ -31,45 +34,51 @@ export interface HandlerDependencies {
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
 }
 
+/** 获取审批服务：优先注入实例，否则按 deps 自建（确认走 requestConfirm，保证行为等价） */
+function getApproval(deps: HandlerDependencies): ApprovalService {
+  return (
+    deps.approval ??
+    new ApprovalService({
+      permissionModel: deps.permissionModel,
+      dangerDetector: deps.dangerDetector,
+      workingDir: deps.workingDir,
+      confirm: (req: ConfirmRequestLike) => requestConfirm(req.message, req.options, req.title),
+    })
+  );
+}
+
 /**
  * dangerousCommandBlock — 拦截 `rm -rf` 等危险命令
  * - ask: 直接拦截（只警告，不放行）
  * - plan/auto: 放行，由 confirmHighRisk 弹确认卡片让用户决定
+ * 委托 ApprovalService.checkCommandBlock（审批决策单点）
  */
 export function createDangerousCommandBlock(deps: HandlerDependencies): HookHandler {
-  const detector = deps.dangerDetector ?? new DangerDetector();
+  const approval = getApproval(deps);
   return async (ctx) => {
     const { args } = ctx.data;
     const input = typeof args === "string" ? args : JSON.stringify(args);
-    const check = detector.check(input);
-    if (!check.isDangerous) return;
-
     const mode = (ctx.data.permissions as PermissionMode) || deps.permissionModel?.getMode() || "auto";
-    // ask 模式：直接拦截；plan/auto：交给 confirmHighRisk 确认
-    if (mode === "ask") {
-      return { proceed: false, message: `高危操作被拦截（ask 模式不允许）：${check.message}` };
+    const decision = approval.checkCommandBlock(input, mode);
+    if (!decision.proceed) {
+      return { proceed: false, message: decision.message };
     }
-    return undefined;
   };
 }
 
 /**
- * permissionCheck — 基于 PermissionModel 检查是否允许工具调用
+ * permissionCheck — 基于 ApprovalService 检查是否允许工具调用
  */
 export function createPermissionCheck(deps: HandlerDependencies): HookHandler {
+  const approval = getApproval(deps);
   return async (ctx) => {
     if (ctx.event !== "onToolCallPre") return;
 
     const mode = (ctx.data.permissions as PermissionMode) || deps.permissionModel?.getMode() || "auto";
-    const model = deps.permissionModel;
-    if (!model) return;
-
     const toolName = ctx.data.toolName as string;
-    if (!model.allowsToolFor(mode, toolName)) {
-      const reason = model.isReadOnly(mode)
-        ? `当前权限模式(${mode})为只读，不允许执行工具 ${toolName}`
-        : `当前权限模式(${mode})不允许工具调用`;
-      return { proceed: false, message: reason };
+    const decision = approval.checkPermission(toolName, mode);
+    if (!decision.proceed) {
+      return { proceed: false, message: decision.message };
     }
   };
 }
@@ -151,7 +160,7 @@ export function createSensitiveDataFilter(): HookHandler {
 
     if (ctx.event === "onToolCallPre") {
       const toolName = ctx.data.toolName as string;
-      if (toolName === "terminal_exec" || toolName === "fs_write") {
+      if (toolName === "terminal_exec" || toolName === "terminal_session" || toolName === "fs_write") {
         input = typeof ctx.data.args === "string" ? ctx.data.args : JSON.stringify(ctx.data.args ?? {});
       }
     }
@@ -300,66 +309,20 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
 /**
  * confirmHighRisk — Auto 模式高危操作弹确认
  * 执行高危工具前通过确认通道（CLI stdin / HTTP 前端确认卡片）交互确认
+ * 委托 ApprovalService.checkConfirmation（决策单点）
  * Hook 事件: onToolCallPre
  */
 export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
+  const approval = getApproval(deps);
   return async (ctx) => {
     if (ctx.event !== "onToolCallPre") return;
 
     const toolName = ctx.data.toolName as string;
     const permissions = ctx.data.permissions as string;
 
-    // plan 模式：所有工具调用都需确认
-    if (permissions === "plan") {
-      // fs_write 展示目标路径，帮助用户判断
-      let detail = "";
-      if (toolName === "fs_write") {
-        const p = extractFilePath(ctx.data.args, deps.workingDir ? resolve(deps.workingDir) : process.cwd());
-        if (p) detail = `：${p}`;
-      }
-      const result = await requestConfirm(
-        `执行工具 ${toolName}${detail}？`,
-        [
-          { value: "allow", label: "允许" },
-          { value: "deny", label: "拒绝" },
-        ],
-        `${toolName} 调用确认`,
-      );
-      if (result !== "allow") {
-        return { proceed: false, message: "用户取消操作" };
-      }
-      return;
-    }
-
-    // auto 模式：仅高危工具需确认
-    if (permissions !== "auto") return;
-    if (toolName !== "terminal_exec" && toolName !== "fs_write") return;
-
-    const detector = deps.dangerDetector ?? new DangerDetector();
-    // fs_write 只检测目标路径（正则匹配的是命令文本，不能套用在 content 上）
-    const projectBase = deps.workingDir ? resolve(deps.workingDir) : process.cwd();
-    const input =
-      toolName === "fs_write"
-        ? extractFilePath(ctx.data.args, projectBase) ?? ""
-        : typeof ctx.data.args === "string"
-          ? ctx.data.args
-          : JSON.stringify(ctx.data.args ?? {});
-    const check = detector.check(input);
-
-    // 仅高危或警告级别需要确认
-    if (check.level === "safe") return;
-
-    const result = await requestConfirm(
-      `${check.isDangerous ? "高危" : "注意"}: ${check.message ?? toolName}。是否继续？`,
-      [
-        { value: "allow", label: "允许" },
-        { value: "deny", label: "拒绝" },
-      ],
-      `${toolName} 操作确认`,
-    );
-
-    if (result !== "allow") {
-      return { proceed: false, message: "用户取消操作" };
+    const decision = await approval.checkConfirmation(toolName, ctx.data.args, permissions as PermissionMode);
+    if (!decision.proceed) {
+      return { proceed: false, message: decision.message ?? "用户取消操作" };
     }
   };
 }

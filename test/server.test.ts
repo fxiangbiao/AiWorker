@@ -258,6 +258,33 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(400);
   });
 
+  it("POST /ask 未知 id 返回 404", async () => {
+    const resp = await fetch(`${base}${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "nonexistent", answer: "42" }),
+    });
+    expect(resp.status).toBe(404);
+  });
+
+  it("POST /ask 缺失 id 返回 400", async () => {
+    const resp = await fetch(`${base}${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer: "42" }),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("POST /ask 非法 JSON 返回 400", async () => {
+    const resp = await fetch(`${base}${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{bad",
+    });
+    expect(resp.status).toBe(400);
+  });
+
   it("GET / 返回 404（未构建 web/dist 时）", async () => {
     const resp = await fetch(`${base}/`);
     expect([200, 404]).toContain(resp.status);
