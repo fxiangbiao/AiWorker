@@ -536,6 +536,39 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(md).toContain("好的，这是代码");
   });
 
+  it("GET /sessions/:id 返回事件回放序列（含 assistant(tool_calls) 与 tool 结果）", async () => {
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "看下文件" });
+    // 中间轮 assistant(tool_calls)（agent-loop 持久化形态）
+    store.appendMessage(sess.id, {
+      role: "assistant",
+      content: "调用",
+      tool_calls: [
+        { id: "t1", type: "function", function: { name: "terminal_exec", arguments: '{"command":"dir"}' } },
+      ],
+    });
+    store.appendEvent(sess.id, "tool/call", { callId: "t1", name: "terminal_exec", arguments: "{}" }, "agent-loop");
+    store.appendEvent(
+      sess.id,
+      "tool/result",
+      { callId: "t1", success: true, content: "文件列表", durationMs: 5 },
+      "agent-loop",
+    );
+    store.appendMessage(sess.id, { role: "assistant", content: "完成" });
+
+    const resp = await fetch(`${base2}${API}/sessions/${sess.id}`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    const roles = (data.messages as Array<{ role: string }>).map((m) => m.role);
+    expect(roles).toEqual(["user", "assistant", "tool", "assistant"]);
+    const toolMsg = (data.messages as Array<{ tool_call_id?: string; content?: string }>)[2];
+    expect(toolMsg.tool_call_id).toBe("t1");
+    expect(toolMsg.content).toBe("文件列表");
+    // assistant(tool_calls) 消息带 tool_calls（Web 端重建工具卡）
+    const midAssistant = (data.messages as Array<{ tool_calls?: unknown[] }>)[1];
+    expect(midAssistant.tool_calls).toHaveLength(1);
+  });
+
   it("GET /mcp 返回服务器状态列表", async () => {
     const resp = await fetch(`${base2}${API}/mcp`);
     expect(resp.status).toBe(200);

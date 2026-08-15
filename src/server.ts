@@ -367,7 +367,10 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export")) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
-      const messages = deps.sessionStore.getMessages(sessionId);
+      // 事件回放（含 tool_calls + tool 结果，TUI/Web 会话完整消息序列）；
+      // 事件日志为空（Sprint 24 之前创建的旧会话）时回退投影表
+      let messages = deps.sessionStore.replayEvents(sessionId);
+      if (messages.length === 0) messages = deps.sessionStore.getMessages(sessionId);
       sendJSON(res, 200, { sessionId, messages });
       return;
     }

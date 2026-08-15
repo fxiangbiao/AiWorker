@@ -153,16 +153,57 @@ export async function syncServerSessions(): Promise<boolean> {
   }
 }
 
-/** 从服务器加载会话消息（本地无缓存时） */
+/** 从服务器加载会话消息（本地无缓存时）。
+ * 服务端返回事件回放序列（含 assistant(tool_calls) 与 tool 结果），
+ * 这里重建为 UIMessage：assistant 的 tool_calls → timeline 工具卡，tool 结果按 tool_call_id 归属
+ */
 export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
   try {
     const resp = await fetch(`${API}/sessions/${encodeURIComponent(id)}`);
     if (!resp.ok) return [];
     const data = await resp.json();
-    const msgs: UIMessage[] = (data.messages || []).map((m: { role: string; content: string }) => ({
-      role: m.role === "user" ? "user" : "assistant",
-      content: m.content,
-    }));
+    const msgs: UIMessage[] = [];
+    // 待归属的 tool_call_id → 所在 assistant 消息
+    const pendingTools: { id: string; msg: UIMessage }[] = [];
+
+    for (const m of data.messages || []) {
+      const role = m.role as string;
+      if (role === "user") {
+        msgs.push({ role: "user", content: m.content || "" });
+      } else if (role === "assistant") {
+        const um: UIMessage = { role: "assistant", content: m.content || "", timeline: [] };
+        const tcs = m.tool_calls as
+          | Array<{ id: string; type: string; function: { name: string; arguments: string } }>
+          | undefined;
+        if (tcs && tcs.length > 0) {
+          um.timeline = tcs.map((tc) => ({
+            type: "tool",
+            name: tc.function.name,
+            args: tc.function.arguments,
+            id: tc.id,
+            pending: true,
+          }));
+          for (const tc of tcs) pendingTools.push({ id: tc.id, msg: um });
+        }
+        msgs.push(um);
+      } else if (role === "tool") {
+        const target = pendingTools.find((p) => p.id === m.tool_call_id);
+        const item = target?.msg.timeline?.find((t) => t.type === "tool" && t.id === m.tool_call_id);
+        if (item) {
+          const content = String(m.content || "");
+          const failed = content.startsWith("Error:");
+          item.result = !failed;
+          item.error = failed ? content.slice(6, 300) : undefined;
+          item.resultPreview = failed ? undefined : content.slice(0, 300);
+          item.pending = false;
+          pendingTools.splice(pendingTools.indexOf(target), 1);
+        } else {
+          // 无对应 tool_call（异常数据）：作为独立错误消息展示
+          msgs.push({ role: "assistant", content: m.content || "", _kind: "error" });
+        }
+      }
+      // 其他角色（system 等）不展示
+    }
     saveMessages(id, msgs);
     return msgs;
   } catch {
