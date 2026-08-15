@@ -10,5 +10,3 @@ data-test/
 skills/pending/
 skills/default/
 ai_default_project/
-# 原始演示视频超平台限制（GitHub 单文件 100MB），保留本地不纳入仓库；压缩版（1080p HQ）正常提交
-docs/videos/AiWorker - Visual Studio Code - Game Demos.mp4
