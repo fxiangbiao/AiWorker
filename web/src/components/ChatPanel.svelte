@@ -16,6 +16,7 @@
     type PlanStep,
     type ConfirmItem,
     type AskItem,
+    toolArgsDisplay,
     API,
   } from "$lib/stores/chat.svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
@@ -329,7 +330,7 @@
         agent.timeline.push({
           type: "tool",
           name: data.name as string,
-          args: data.args as string,
+          args: toolArgsDisplay(data.name as string, data.args),
           id: data.id as string,
           result: false,
           pending: true,
@@ -337,6 +338,7 @@
         agent._thinkingActive = true;
         break;
       case "tool_result": {
+        if (data.name === "ask_user") store.asks = [];
         for (let i = (agent.timeline || []).length - 1; i >= 0; i--) {
           const t = agent.timeline![i];
           if (t.type === "tool" && !t.result) {
@@ -408,7 +410,7 @@
         agent.timeline.push({
           type: "tool",
           name: data.name as string,
-          args: data.args as string,
+          args: toolArgsDisplay(data.name as string, data.args),
           id: data.id as string,
           result: false,
           pending: true,
@@ -416,6 +418,8 @@
         tick().then(() => scrollToBottom());
         break;
       case "tool_result": {
+        // ask_user 已结算（回答/跳过/超时）→ 移除挂起的提问卡片
+        if (data.name === "ask_user") store.asks = [];
         for (let i = agent.timeline.length - 1; i >= 0; i--) {
           const t = agent.timeline[i];
           if (t.type === "tool" && !t.result) {

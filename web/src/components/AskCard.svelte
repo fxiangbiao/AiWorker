@@ -6,28 +6,39 @@
   }>();
   let text = $state("");
   let submitting = $state(false);
+  let inputEl: HTMLInputElement | undefined = $state();
 
-  function submit() {
+  // 自动聚焦输入框
+  $effect(() => {
+    inputEl?.focus();
+  });
+
+  function respond(value: string | null) {
     if (submitting) return;
-    const value = text.trim();
-    if (!value) return;
     submitting = true;
     onRespond(value);
+  }
+
+  function submit() {
+    const value = text.trim();
+    if (!value) return;
+    respond(value);
   }
 </script>
 
 <div class="ask-card">
-  <div class="ac-title">❓ 模型提问</div>
+  <div class="ac-title">❓ 模型提问 <span class="ac-hint">（30s 未作答将自动跳过）</span></div>
   <div class="ac-question">{ask.question}</div>
   {#if ask.options && ask.options.length > 0}
     <div class="ac-options">
       {#each ask.options as opt}
-        <button class="ac-btn" onclick={() => { submitting = true; onRespond(opt); }}>{opt}</button>
+        <button class="ac-btn" onclick={() => respond(opt)}>{opt}</button>
       {/each}
     </div>
   {/if}
   <div class="ac-input-row">
     <input
+      bind:this={inputEl}
       type="text"
       placeholder="输入回答，回车确认（或点上方选项）"
       value={text}
@@ -35,8 +46,10 @@
       onkeydown={(e) => {
         if (e.key === "Enter") submit();
       }}
+      disabled={submitting}
     />
     <button class="ac-submit" onclick={submit} disabled={submitting || !text.trim()}>提交</button>
+    <button class="ac-skip" onclick={() => respond(null)} disabled={submitting}>跳过</button>
   </div>
 </div>
 
@@ -49,6 +62,7 @@
     margin-bottom: 16px;
   }
   .ac-title { font-size: 12px; font-weight: 600; color: var(--primary); }
+  .ac-hint { font-size: 11px; font-weight: 400; color: var(--dim); margin-left: 4px; }
   .ac-question { font-size: 12px; color: var(--text); margin: 6px 0 10px; line-height: 1.6; word-break: break-all; }
   .ac-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
   .ac-btn {
@@ -87,4 +101,16 @@
     cursor: pointer;
   }
   .ac-submit:disabled { opacity: .5; cursor: not-allowed; }
+  .ac-skip {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--dim);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .ac-skip:hover { color: var(--error); border-color: var(--error); }
+  .ac-skip:disabled { opacity: .5; cursor: not-allowed; }
 </style>

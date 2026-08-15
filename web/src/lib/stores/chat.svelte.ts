@@ -60,6 +60,24 @@ export interface TimelineItem {
   pending?: boolean;
 }
 
+/** ask_user 等工具的 args 展示：解析 JSON 显示问题与选项数，避免原始 JSON 刷屏 */
+export function toolArgsDisplay(name: string, args: unknown): string {
+  if (name === "ask_user") {
+    try {
+      const parsed = (typeof args === "string" ? JSON.parse(args) : args) as {
+        question?: unknown;
+        options?: unknown;
+      } | null;
+      const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
+      const n = Array.isArray(parsed?.options) ? parsed.options.length : 0;
+      if (q) return n > 0 ? `${q}（${n} 个选项）` : q;
+    } catch {
+      /* 解析失败回退原始 args */
+    }
+  }
+  return typeof args === "string" ? args : JSON.stringify(args);
+}
+
 export const store = $state({
   mode: "auto" as string,
   agentId: "default" as string,
@@ -182,7 +200,7 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
           um.timeline = tcs.map((tc) => ({
             type: "tool",
             name: tc.function.name,
-            args: tc.function.arguments,
+            args: toolArgsDisplay(tc.function.name, tc.function.arguments),
             id: tc.id,
             pending: true,
           }));
