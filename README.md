@@ -2,7 +2,28 @@
 
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
+<!-- 版本徽章与 package.json 同步更新 -->
+![version](https://img.shields.io/badge/version-0.2.0-blue)
+![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
+![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
+![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
+![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
+
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP 协议、技能库自动匹配、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种交互界面。
+
+## 目录
+
+- [特性](#特性)
+- [界面预览](#界面预览)
+- [快速开始](#快速开始)
+- [交互界面](#交互界面)
+- [项目结构](#项目结构)
+- [配置](#配置)
+- [插件开发](#插件开发)
+- [测试与开发](#测试与开发)
+- [技术栈](#技术栈)
+- [相关文档](#相关文档)
+- [许可证](#许可证)
 
 ## 特性
 
@@ -16,6 +37,8 @@
 - 8 个内置工具：fs_read / fs_write / fs_list / terminal_exec（异步）/ **terminal_session（持久终端，cd/env 跨调用保留）** / web_search（Bing 零 key）/ web_fetch（15s 超时）/ **ask_user（模型主动向用户提问，CLI stdin / Web 提问卡片）**
 - MCP 协议：stdio/HTTP 双传输 + 内置工具服务器（math_eval/uuid_gen/json_format/timestamp_convert）+ 自动重连 + 健康检查
 - 38 个技能（7 大领域）：SKILL.md 正则触发 + 依赖缺失自动降级 + 复杂任务后自沉淀（可开关）
+- **轻量插件系统**：`config/plugins/` 即插即用——`setup(ctx)` 注册自定义工具/Hook（默认全局可见，可限定专家作用域），`/plugins` 查看状态；同名冲突 ⚠ 警告、Hook 错误隔离（fail-soft，插件 bug 不崩任务）
+- **scoped 工具注册**：工具按专家遮蔽（同名遮蔽全局），模型只见自己专家的工具（`mcp_`/插件工具豁免白名单）
 
 **安全与合规**
 - Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
@@ -40,6 +63,18 @@
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
 - **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
 - **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
+
+---
+
+## 界面预览
+
+> 📸 截图占位：自研 TUI（差分渲染 + CJK 对齐 + 流式 Markdown 表格）与 Web UI（Svelte 5 + SSE 流式 + 协作面板）演示图。
+> 将截图放到 `docs/screenshots/` 后取消下方注释：
+
+<!--
+![TUI 终端](docs/screenshots/tui.png)
+![Web UI](docs/screenshots/web.png)
+-->
 
 ---
 
@@ -110,7 +145,7 @@ npm run dev -- [选项]
 | `/trace [序号]` | 会话轨迹时间线（事件级复盘，--json 输出） |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
 | `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
-| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） | |
+| `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |
 | `/help` / `/exit` | 帮助 / 退出 |
@@ -358,3 +393,16 @@ npm run web:build   # Web UI 构建
 - **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
 - **设计依据**: 《docs/个人AI-Agent助手设计方案.md》
+
+---
+
+## 相关文档
+
+- [AGENTS.md](AGENTS.md) — AI 辅助开发指南（模块速览 / 关键约定 / 测试）
+- [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
+- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档
+- [docs/comparison-report.md](docs/comparison-report.md) — 与 DeepSeek Harness 的源码对比报告
+
+## 许可证
+
+[Mulan PSL v2](LICENSE)（木兰宽松许可证第二版）
