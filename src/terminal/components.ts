@@ -1,4 +1,4 @@
-﻿/**
+/**
  * components.ts — TUI 组件（参考 Pi TUI 组件协议）
  *
  * 每个组件实现 render(width): string[]，返回不超过宽度的行数组。
@@ -176,8 +176,11 @@ export class MessageList implements Component {
 }
 
 // ──────────────────────────────────────────────
-// InputLine — 单行输入编辑器
+// InputLine — 多行输入编辑器（支持 \n 与视觉换行，Shift+Enter 插入换行）
 // ──────────────────────────────────────────────
+
+/** 输入区最大可视行数（超出后滚动显示，光标行始终可见） */
+const INPUT_MAX_ROWS = 8;
 
 export class InputLine implements Component {
   private buffer = "";
@@ -188,6 +191,9 @@ export class InputLine implements Component {
   private completer: ((line: string) => string[]) | null = null;
   private prefix = "";
   private disabled = false;
+  /** 输入区滚动偏移（视觉行），光标跟随 */
+  private scrollRows = 0;
+  private lastWidth = 80;
 
   setCompleter(fn: ((line: string) => string[]) | null): void {
     this.completer = fn;
@@ -213,7 +219,7 @@ export class InputLine implements Component {
     return this.buffer;
   }
 
-  /** 插入字符（raw-mode 输入） */
+  /** 插入字符（raw-mode 输入；\n 表示换行） */
   type(char: string): void {
     if (this.disabled) return;
     this.buffer = this.buffer.slice(0, this.cursor) + char + this.buffer.slice(this.cursor);
@@ -248,7 +254,60 @@ export class InputLine implements Component {
     this.buffer = this.buffer.slice(0, this.cursor) + this.buffer.slice(this.cursor + 1);
   }
 
-  /** 历史上翻（不含当前输入） */
+  /** 光标所在视觉行是否有多行内容（用于 Up/Down 分流：多行编辑 vs 输入历史） */
+  isMultiLine(): boolean {
+    return this.buffer.includes("\n");
+  }
+
+  /**
+   * 光标上移一行（同一列对齐）。仅在多行输入时使用。
+   */
+  moveLineUp(width = this.lastWidth): void {
+    const pos = this.wrapPositions(width);
+    const idx = this.prefix.length + this.cursor;
+    const { row } = pos[idx]!;
+    if (row <= 0) return;
+    // 本行起点（即目标行终点）
+    let rowStart = idx;
+    while (rowStart > 0 && pos[rowStart - 1]!.row === row) rowStart--;
+    // 目标行起点
+    let targetStart = rowStart;
+    while (targetStart > 0 && pos[targetStart - 1]!.row === row - 1) targetStart--;
+    const col = pos[idx]!.col;
+    // 目标行内取 ≤ col 的最右边界
+    let target = rowStart;
+    for (let i = targetStart; i < rowStart; i++) {
+      if (pos[i]!.col > col) break;
+      target = i;
+    }
+    this.cursor = Math.max(0, target - this.prefix.length);
+  }
+
+  /**
+   * 光标下移一行（同一列对齐）。仅在多行输入时使用。
+   */
+  moveLineDown(width = this.lastWidth): void {
+    const pos = this.wrapPositions(width);
+    const idx = this.prefix.length + this.cursor;
+    const { row, col } = pos[idx]!;
+    // 本行终点（下一行起点）
+    let rowEnd = idx;
+    while (rowEnd < pos.length - 1 && pos[rowEnd]!.row === row) rowEnd++;
+    if (rowEnd >= pos.length - 1) return; // 已在最后一行
+    // 下一行终点
+    let nextEnd = rowEnd;
+    while (nextEnd < pos.length - 1 && pos[nextEnd]!.row === row + 1) nextEnd++;
+    let target = rowEnd;
+    for (let i = rowEnd; i < nextEnd; i++) {
+      if (pos[i]!.col > col) break;
+      target = i;
+    }
+    this.cursor = Math.min(this.buffer.length, target - this.prefix.length);
+  }
+
+  /**
+   * 历史上翻（不含当前输入）
+   */
   historyUp(): void {
     if (this.history.length === 0) return;
     if (this.historyIdx === -1) {
@@ -305,19 +364,99 @@ export class InputLine implements Component {
     this.cursor = 0;
     this.historyIdx = -1;
     this.historySave = "";
+    this.scrollRows = 0;
+  }
+
+  /** 文本每个字符边界处的视觉位置（含前缀；wrap 规则与渲染一致） */
+  private wrapPositions(width: number): { row: number; col: number }[] {
+    const text = `${this.prefix}${this.buffer}`;
+    const pos: { row: number; col: number }[] = [{ row: 0, col: 0 }];
+    let row = 0;
+    let col = 0;
+    let rowHas = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i]!;
+      if (ch === "\n") {
+        row++;
+        col = 0;
+        rowHas = false;
+      } else {
+        const cw = charWidth(ch);
+        if (col + cw > width && rowHas) {
+          row++;
+          col = 0;
+        }
+        col += cw;
+        rowHas = true;
+      }
+      pos.push({ row, col });
+    }
+    return pos;
+  }
+
+  /** 全部视觉行（按 \n 与宽度拆行；换行符本身不进行尾） */
+  private layoutRows(width: number): string[] {
+    const text = `${this.prefix}${this.buffer}`;
+    const rows: string[] = [];
+    let row = "";
+    let w = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i]!;
+      if (ch === "\n") {
+        rows.push(row);
+        row = "";
+        w = 0;
+        continue;
+      }
+      const cw = charWidth(ch);
+      if (w + cw > width && row) {
+        rows.push(row);
+        row = "";
+        w = 0;
+      }
+      row += ch;
+      w += cw;
+    }
+    rows.push(row);
+    return rows;
+  }
+
+  /** 光标所在视觉行（0 基）与行内显示列 */
+  cursorPosition(width = this.lastWidth): { row: number; col: number } {
+    const pos = this.wrapPositions(width);
+    const idx = this.prefix.length + this.cursor;
+    return pos[idx] ?? { row: 0, col: displayWidth(this.prefix) };
+  }
+
+  /** 光标在输入区可视窗口内的行号（0 基） */
+  cursorRowInWindow(): number {
+    return Math.max(0, this.cursorPosition().row - this.scrollRows);
   }
 
   /** 光标所在显示列（考虑前缀宽度） */
   cursorCol(): number {
-    return displayWidth(this.prefix) + displayWidth(this.buffer.slice(0, this.cursor));
+    return this.cursorPosition().col;
+  }
+
+  /** 当前输入区占用的可视行数（渲染用） */
+  getTotalRows(): number {
+    return this.layoutRows(this.lastWidth).length;
   }
 
   render(width: number): string[] {
+    this.lastWidth = width;
     if (this.disabled) {
       return [fit(`${this.prefix}${chalk.dim("思考中...")}`, width)];
     }
-    const text = `${this.prefix}${this.buffer}`;
-    return [fit(safeLine(text), width)];
+    const rows = this.layoutRows(width);
+    const { row } = this.cursorPosition(width);
+    // 光标跟随：确保光标行在可视窗口内；缓冲缩减后回退
+    const maxScroll = Math.max(0, rows.length - INPUT_MAX_ROWS);
+    this.scrollRows = Math.max(0, Math.min(this.scrollRows, maxScroll));
+    if (row < this.scrollRows) this.scrollRows = row;
+    if (row > this.scrollRows + INPUT_MAX_ROWS - 1) this.scrollRows = row - INPUT_MAX_ROWS + 1;
+    const visible = rows.slice(this.scrollRows, this.scrollRows + INPUT_MAX_ROWS);
+    return visible.map((l) => safeLine(l));
   }
 
   invalidate(): void {

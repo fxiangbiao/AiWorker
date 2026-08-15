@@ -15,6 +15,7 @@ import { stdin } from "node:process";
 export type KeyEvent =
   | { type: "char"; char: string }
   | { type: "enter" }
+  | { type: "altEnter" }
   | { type: "tab" }
   | { type: "backspace" }
   | { type: "delete" }
@@ -122,6 +123,12 @@ export function parseKeys(input: string, pending = ""): { events: KeyEvent[]; re
         i++;
         continue;
       }
+      // Alt+Enter（ESC + \r/\n）：插入换行
+      if (seq[1] === "\r" || seq[1] === "\n") {
+        events.push({ type: "altEnter" });
+        i += 2;
+        continue;
+      }
       // 其他 Esc 组合（如 Alt+字符）
       events.push({ type: "escape" });
       i++;
@@ -166,6 +173,12 @@ function parseCsi(seq: string): { events: KeyEvent[]; consumed: number } | null 
   if (final === "F") return { events: [{ type: "end" }], consumed };
   if (final === "Z") return { events: [{ type: "tab" }], consumed }; // Shift+Tab
 
+  // CSI-u 修饰键：13=Enter；;2=Shift, ;3=Alt, ;5=Ctrl（如 Shift+Enter=\x1b[13;2u）
+  if (final === "u") {
+    if (/^13;([235])$/.test(params)) return { events: [{ type: "altEnter" }], consumed };
+    return { events: [{ type: "unknown", raw: seq.slice(0, consumed) }], consumed };
+  }
+
   if (final === "~") {
     if (params === "3") return { events: [{ type: "delete" }], consumed };
     if (params === "5") return { events: [{ type: "pageup" }], consumed };
@@ -183,7 +196,6 @@ export function keyLabel(ev: KeyEvent): string {
   if (ev.type === "char") return `char(${ev.char})`;
   return ev.type;
 }
-
 export class Terminal {
   private listening = false;
   private handler: ((data: Buffer) => void) | null = null;

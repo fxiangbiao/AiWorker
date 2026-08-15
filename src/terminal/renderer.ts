@@ -1,4 +1,4 @@
-﻿/**
+/**
  * renderer.ts — TerminalRenderer（Tui 薄封装）
  *
  * 保留对外兼容 API（printStatus/updateLiveStatus/write/prompt 等），
@@ -120,8 +120,10 @@ export class TerminalRenderer {
 
   recordHistory(line: string): void {
     if (!this.historyFile || !line.trim()) return;
-    this.historyLines.push(line.trim());
-    if (this.historyLines.length > 1 && this.historyLines[this.historyLines.length - 2] === line.trim()) {
+    // 多行输入扁平化后入库（历史文件按行存储，内嵌换行会破坏条目）
+    const flat = line.trim().replace(/\s*\n\s*/g, " ");
+    this.historyLines.push(flat);
+    if (this.historyLines.length > 1 && this.historyLines[this.historyLines.length - 2] === flat) {
       this.historyLines.pop();
     }
     this.historyLines = this.historyLines.slice(-500);

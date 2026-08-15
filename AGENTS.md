@@ -81,7 +81,8 @@ npm run web:build      # Web UI 构建 → web/dist/
 - Windows 下 terminal_exec / terminal_session 前缀 `chcp 65001` 强制 UTF-8 防 cmd 中文乱码
 
 ### 终端 TUI `src/terminal/`
-- **帧缓冲引擎**：`screen.ts`（差分渲染 + CJK 宽 + SGR reset 防泄漏）/ `term.ts`（raw-mode 键解析，10ms 超时防 Esc 歧义，parseKeys 纯函数可测）/ `components.ts`（MessageList/InputLine/StatusBar）/ `tui.ts`（组合三组件 + 16ms 节流 + 接管 stdout）
+- **帧缓冲引擎**：`screen.ts`（差分渲染 + CJK 宽 + SGR reset 防泄漏）/ `term.ts`（raw-mode 键解析，10ms 超时防 Esc 歧义，parseKeys 纯函数可测；`\x1b[13;2u` 等 CSI-u 与 Alt+Enter 解析为 `altEnter` 换行键）/ `components.ts`（MessageList/InputLine/StatusBar）/ `tui.ts`（组合三组件 + 16ms 节流 + 接管 stdout）
+- **InputLine 多行输入**：buffer 支持 `\n`，`layoutRows`/`wrapPositions` 按宽度 CJK 安全换行（不截断）；`Shift+Enter`/`Alt+Enter`/`Ctrl+Enter` 插入换行，`Enter` 提交；多行时 `↑`/`↓` 走 `moveLineUp/Down`（按列对齐），单行时切历史；输入区高度动态（≤8 行，超出滚动且光标行始终可见），`cursorRowInWindow`/`cursorCol` 供硬件光标定位；历史记录多行条目扁平化为单行
 - `renderer.ts` 薄封装保留兼容导出；`markdown.ts` 行级渲染 + 表格块对齐 + OSC 8 超链接；`highlight.ts` 自研 tokenizer 零依赖
 - `--server` 模式跳过 TUI；CJK 用 `displayWidth()`/`padToWidth()` 对齐
 

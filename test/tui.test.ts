@@ -1,4 +1,4 @@
-﻿/**
+/**
  * TUI 引擎测试 — 帧合成 / 流式半行 / 滚动 / 输入解析
  * 不依赖真实 TTY：直接测组件与键解析纯逻辑。
  */
@@ -136,6 +136,85 @@ describe("InputLine 输入编辑", () => {
     il.type("/s");
     il.complete();
     expect(il.getValue()).toBe("/s");
+  });
+});
+
+describe("InputLine 多行输入（Sprint 26）", () => {
+  // eslint-disable-next-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+
+  it("type 插入换行，isMultiLine 判定", () => {
+    const il = new InputLine();
+    il.type("a");
+    il.type("\n");
+    il.type("b");
+    expect(il.getValue()).toBe("a\nb");
+    expect(il.isMultiLine()).toBe(true);
+    expect(new InputLine().isMultiLine()).toBe(false);
+  });
+
+  it("超长单行按宽度 wrap 为多视觉行，不再截断", () => {
+    const il = new InputLine();
+    il.type("这是一条很长的输入".repeat(8));
+    const out = il.render(20);
+    expect(out.length).toBeGreaterThan(1);
+    for (const row of out) {
+      expect(strip(row).length).toBeLessThanOrEqual(20);
+    }
+    // 内容完整（无省略号截断）
+    const joined = out.map(strip).join("");
+    expect(joined).toContain("这是一条很长的输入");
+  });
+
+  it("显式换行渲染为多行，前缀仅首行", () => {
+    const il = new InputLine();
+    il.setPrefix("你> ");
+    il.type("第一行");
+    il.type("\n");
+    il.type("第二行");
+    const out = il.render(40);
+    expect(out).toHaveLength(2);
+    expect(strip(out[0]!)).toBe("你> 第一行");
+    expect(strip(out[1]!)).toBe("第二行");
+  });
+
+  it("cursorPosition/cursorCol 按视觉行计算", () => {
+    const il = new InputLine();
+    il.setPrefix("你> ");
+    il.type("ab");
+    expect(il.cursorPosition(40)).toEqual({ row: 0, col: 6 }); // 前缀 4 列 + ab
+    il.type("\ncd");
+    expect(il.cursorPosition(40)).toEqual({ row: 1, col: 2 });
+    expect(il.cursorCol()).toBe(2);
+  });
+
+  it("moveLineUp/Down 按列对齐跨行移动光标", () => {
+    const il = new InputLine();
+    il.type("abc\ndef\nghi");
+    il.moveHome();
+    // 光标在 (0,0)：上移无效果
+    il.moveLineUp(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 0, col: 0 });
+    // 移到末尾（第 2 行 col 3）→ 上移到第 1 行 col 3
+    il.moveEnd();
+    expect(il.cursorPosition(20)).toEqual({ row: 2, col: 3 });
+    il.moveLineUp(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 1, col: 3 });
+    il.moveLineUp(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 0, col: 3 });
+    il.moveLineDown(20);
+    expect(il.cursorPosition(20)).toEqual({ row: 1, col: 3 });
+  });
+
+  it("超过 8 视觉行时滚动窗口，光标行始终可见", () => {
+    const il = new InputLine();
+    for (let i = 1; i <= 12; i++) il.type(`行${i}\n`);
+    il.type("末尾");
+    const out = il.render(40);
+    expect(out.length).toBeLessThanOrEqual(8);
+    // 末尾行（光标所在）在可视窗口内
+    expect(strip(out[out.length - 1]!)).toBe("末尾");
+    expect(il.cursorRowInWindow()).toBe(out.length - 1);
   });
 });
 
@@ -300,6 +379,16 @@ describe("键解析 parseKeys", () => {
     const { events } = parseKeys("\x1b[<64;10;20M\x1b[<65;10;20M");
     expect(events.map((e) => e.type)).toEqual(["wheelup", "wheeldown"]);
   });
+
+  it("Shift/Alt/Ctrl+Enter 解析为 altEnter（插入换行），普通 Enter 仍是 enter", () => {
+    // CSI-u Shift+Enter、Alt+Enter（ESC+CR）、Ctrl+Enter
+    expect(parseKeys("\x1b[13;2u").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b[13;3u").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b[13;5u").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b\r").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\x1b\n").events.map((e) => e.type)).toEqual(["altEnter"]);
+    expect(parseKeys("\r").events.map((e) => e.type)).toEqual(["enter"]);
+  });
 });
 
 describe("Tui 帧合成", () => {
@@ -329,6 +418,47 @@ describe("Tui 帧合成", () => {
     t.simulateKey({ type: "enter" });
     const value = await p;
     expect(value).toBe("hello");
+    t.destroy();
+  });
+
+  it("altEnter 插入换行，Enter 提交多行输入", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.prompt();
+    for (const ch of "第一行") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "altEnter" });
+    for (const ch of "第二行") t.simulateKey({ type: "char", char: ch });
+    expect(t.input.getValue()).toBe("第一行\n第二行");
+    expect(t.input.isMultiLine()).toBe(true);
+    t.simulateKey({ type: "enter" });
+    const value = await p;
+    expect(value).toBe("第一行\n第二行");
+    // 消息历史按多行展示（首行带前缀）
+    const rendered = t.messages.renderViewport(80, 5);
+    // eslint-disable-next-line no-control-regex
+    const clean = rendered.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, "")).join("\n");
+    expect(clean).toContain("你> 第一行");
+    expect(clean).toContain("第二行");
+    t.destroy();
+  });
+
+  it("多行输入时 Up/Down 移动光标行，而非切历史", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    t.prompt();
+    t.input.setHistory(["cmd1"]);
+    for (const ch of "a\nb") t.simulateKey({ type: "char", char: ch });
+    // 光标在最后一行
+    expect(t.input.cursorPosition(80).row).toBe(1);
+    t.simulateKey({ type: "up" });
+    expect(t.input.cursorPosition(80).row).toBe(0);
+    expect(t.input.getValue()).toBe("a\nb"); // 未被历史替换
+    t.simulateKey({ type: "down" });
+    expect(t.input.cursorPosition(80).row).toBe(1);
     t.destroy();
   });
 

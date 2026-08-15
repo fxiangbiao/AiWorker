@@ -1,4 +1,4 @@
-﻿/**
+/**
  * tui.ts — TUI 主控制器
  *
  * 组合 MessageList + InputLine + StatusBar，用 Screen 差分渲染。
@@ -31,6 +31,8 @@ export class Tui {
   private realWrite: ((s: string) => void) | null = null;
   private capturedWrite: typeof process.stdout.write | null = null;
   private completionHints: string[] = [];
+  /** 输入区当前可视行数（renderNow 更新，消息区高度计算用） */
+  private inputHeight = 1;
 
   init(): void {
     if (this.active) return;
@@ -127,22 +129,26 @@ export class Tui {
       this.screen.render([this.status.render(cols)[0]!]);
       return;
     }
-    // 布局：消息区 + [hint] + 分隔线 + 输入行 + 状态栏
+    // 布局：消息区 + [hint] + 分隔线 + 输入区（动态多行）+ 状态栏
     const hintActive = this.completionHints.length > 0;
-    const fixedRows = 3 + (hintActive ? 1 : 0); // 分隔线 + 输入行 + 状态栏 [+ hint]
+    const inputLines = this.input.render(cols);
+    this.inputHeight = inputLines.length;
+    const fixedRows = 2 + this.inputHeight + (hintActive ? 1 : 0); // 分隔线 + 输入区 + 状态栏 [+ hint]
     const contentHeight = rows - fixedRows;
     const msgLines = this.messages.renderViewport(cols, contentHeight);
     const hintLines = hintActive ? [this.renderHints(cols)] : [];
     const dividerLines = [this.renderDivider(cols)];
-    const inputLines = this.input.render(cols);
     const statusLines = this.status.render(cols);
     this.screen.render([...msgLines, ...hintLines, ...dividerLines, ...inputLines, ...statusLines]);
-    // 光标：agent 运行期间隐藏；prompt 期间显示在输入行
-    const inputRow = rows - 1;
+    // 光标：agent 运行期间隐藏；prompt 期间显示在输入区当前行
+    const statusRow = rows - 1;
+    const inputStart = statusRow - this.inputHeight;
+    const cursorRow = inputStart + this.input.cursorRowInWindow();
+    const cursorCol = this.input.cursorCol() + 1;
     if (this.agentRunning) {
       this.screen.hideCursor();
     } else {
-      this.screen.positionCursor(inputRow, this.input.cursorCol() + 1);
+      this.screen.positionCursor(cursorRow, cursorCol);
       this.screen.showCursor();
     }
   }
@@ -161,9 +167,9 @@ export class Tui {
     return `${chalk.dim("▸")} ${line}`;
   }
 
-  /** 当前消息区可视高度（分隔线/输入行/状态栏固定，含提示行占用） */
+  /** 当前消息区可视高度（分隔线/输入区/状态栏固定，输入区按当前可视行数计，含提示行占用） */
   private messageViewport(): number {
-    return Math.max(1, this.screen.getRows() - 3 - (this.completionHints.length > 0 ? 1 : 0));
+    return Math.max(1, this.screen.getRows() - 2 - this.inputHeight - (this.completionHints.length > 0 ? 1 : 0));
   }
 
   private onResize(): void {
@@ -291,9 +297,9 @@ export class Tui {
         this.promptActive = false;
         this.input.clear();
         this.completionHints = [];
-        // 用户提问追加为消息（显示在对话历史中）
+        // 用户提问追加为消息（显示在对话历史中；多行输入去除首尾换行）
         if (value.trim()) {
-          this.messages.append(`${this.input.getPrefix()}${value}`);
+          this.messages.append(`${this.input.getPrefix()}${value.trim()}`);
         }
         this.requestRender();
         const resolve = this.promptResolve;
@@ -301,6 +307,11 @@ export class Tui {
         resolve?.(value);
         return;
       }
+      case "altEnter":
+        // Shift/Alt/Ctrl+Enter：插入换行（Enter 提交）
+        this.input.type("\n");
+        this.completionHints = [];
+        break;
       case "backspace":
         this.input.backspace();
         this.completionHints = [];
@@ -322,8 +333,10 @@ export class Tui {
         this.input.moveEnd();
         break;
       case "up":
-        // 输入框有内容 → 切历史；为空 → 滚动消息列表（滚轮亦然）
-        if (this.input.getValue()) {
+        // 多行输入 → 光标上移一行；单行有内容 → 切历史；为空 → 滚动消息列表（滚轮亦然）
+        if (this.input.isMultiLine()) {
+          this.input.moveLineUp(this.screen.getCols());
+        } else if (this.input.getValue()) {
           this.input.historyUp();
         } else {
           this.messages.scroll(3, this.messageViewport());
@@ -331,7 +344,9 @@ export class Tui {
         this.completionHints = [];
         break;
       case "down":
-        if (this.input.getValue()) {
+        if (this.input.isMultiLine()) {
+          this.input.moveLineDown(this.screen.getCols());
+        } else if (this.input.getValue()) {
           this.input.historyDown();
         } else {
           this.messages.scroll(-3, this.messageViewport());
