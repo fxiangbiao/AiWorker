@@ -5,12 +5,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
+import { projectTrace, computeSessionStats } from "./core/trace.js";
+import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
@@ -19,7 +21,6 @@ interface DelegateAgent {
   runStream(
     task: Task,
     workingDir: string,
-    projectDir: string,
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<AgentRunResult>;
@@ -28,7 +29,6 @@ interface DelegateAgent {
 interface ServerDeps {
   modelRouter: ModelRouter;
   workingDir: string;
-  projectDir: string;
   coordinator: TeamCoordinator;
   createAgent: (agentId: string) => DelegateAgent | undefined;
   getAgentList: () => { id: string; name: string }[];
@@ -254,7 +254,11 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === "/" && req.method === "GET") {
       try {
         const html = readFileSync(resolve(distDir, "index.html"), "utf-8");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "no-cache", // index.html 每次校验，确保拿到最新 hash 的 bundle
+        });
         res.end(html);
       } catch {
         try {
@@ -271,11 +275,24 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (req.method === "GET" && !url.startsWith(API_PREFIX)) {
       const distPath = resolve(distDir, url.slice(1));
-      if (existsSync(distPath)) {
+      // 路径穿越防护：解析结果必须仍在 distDir 内（防 GET /../../config/hooks.json）
+      const rel = relative(distDir, distPath);
+      if (!rel.startsWith("..") && !isAbsolute(rel) && existsSync(distPath)) {
         const ext = url.split(".").pop() || "";
         const mime: Record<string, string> = { js: "application/javascript", css: "text/css", svg: "image/svg+xml", png: "image/png", ico: "image/x-icon", woff2: "font/woff2" };
-        res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream", "Access-Control-Allow-Origin": "*" });
+        // 缓存策略：html no-cache（拿最新 hash）；assets（hash 文件名）强缓存 immutable
+        const isHtml = url.endsWith(".html");
+        res.writeHead(200, {
+          "Content-Type": mime[ext] || "application/octet-stream",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": isHtml ? "no-cache" : "public, max-age=31536000, immutable",
+        });
         res.end(readFileSync(distPath));
+        return;
+      } else if (url === "/favicon.ico") {
+        // 无 favicon：返回 204，消除浏览器自动请求 /favicon.ico 的 404 告警
+        res.writeHead(204);
+        res.end();
         return;
       }
     }
@@ -296,7 +313,6 @@ export function startServer(deps: ServerDeps, port: number) {
           completion: deps.modelRouter.getCompletionTokens(),
         },
         workingDir: deps.workingDir,
-        projectDir: deps.projectDir,
         skills: deps.skillNames,
       });
       return;
@@ -390,6 +406,42 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    if (url.startsWith(apiUrl("/trace/")) && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice(apiUrl("/trace/").length);
+      const events = deps.sessionStore.getEvents(sessionId);
+      if (events.length === 0) { sendJSON(res, 404, { error: "No events for session" }); return; }
+      sendJSON(res, 200, {
+        sessionId,
+        items: projectTrace(events),
+        stats: computeSessionStats(sessionId, events),
+      });
+      return;
+    }
+
+    if (url === apiUrl("/stats") && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessions = deps.sessionStore.listSessions(20);
+      const stats = sessions.map((s) => {
+        const events = deps.sessionStore!.getEvents(s.id);
+        return computeSessionStats(s.id, events);
+      });
+      sendJSON(res, 200, { stats });
+      return;
+    }
+
+    if (url.startsWith(apiUrl("/telemetry/")) && req.method === "GET") {
+      if (!deps.dataDir) { sendJSON(res, 500, { error: "Data dir not available" }); return; }
+      const sessionId = url.slice(apiUrl("/telemetry/").length);
+      // 路径穿越防护：sessionId 仅允许安全字符（UUID / http-xxx 等），禁止路径分隔符与 ..
+      if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+        sendJSON(res, 400, { error: "Invalid session id" });
+        return;
+      }
+      sendJSON(res, 200, { sessionId, records: readTelemetryFile(deps.dataDir, sessionId) });
+      return;
+    }
+
     if (url === apiUrl("/skills") && req.method === "GET") {
       const skills = deps.getSkills?.() ?? deps.skillNames.map((n) => ({ name: n, description: "", expert: "" }));
       sendJSON(res, 200, { skills });
@@ -456,7 +508,6 @@ export function startServer(deps: ServerDeps, port: number) {
           deps.coordinator.execute(
             planResult.plan,
             deps.workingDir,
-            deps.projectDir,
             callbacks,
             abort.signal,
           ),
@@ -536,7 +587,6 @@ export function startServer(deps: ServerDeps, port: number) {
             agentA,
             agentB,
             deps.workingDir,
-            deps.projectDir,
             callbacks,
             abort.signal,
           ),
@@ -671,12 +721,8 @@ export function startServer(deps: ServerDeps, port: number) {
             mode: chatReq.mode as PermissionMode | undefined,
           };
 
-          await agent.runStream(task, deps.workingDir, deps.projectDir, callbacks, abort.signal);
+          await agent.runStream(task, deps.workingDir, callbacks, abort.signal);
         });
-
-        if (deps.sessionStore && sessionId) {
-          deps.sessionStore.appendMessage(sessionId, { role: "assistant", content: "" });
-        }
 
         write({
           type: "done",

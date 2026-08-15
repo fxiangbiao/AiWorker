@@ -54,8 +54,8 @@ export interface ToolDefinition {
 export interface ToolContext {
   agentId: string;
   sessionId: string;
+  /** 工作目录（读写统一基准；--dir 指定，默认 ./ai_default_project） */
   workingDir: string;
-  projectDir: string;
   permissions: PermissionMode;
 }
 
@@ -165,6 +165,8 @@ export interface AgentRunResult {
   truncated: boolean;
   toolCallsExecuted: number;
   sessionId?: string;
+  /** 本轮最后一次主请求的 usage（assistant/message 事件携带，避免被压缩请求覆盖） */
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
 // ===== 任务 =====
@@ -267,7 +269,13 @@ export interface EpisodicEntry {
 
 // ===== Hooks =====
 
-export type HookEvent = "onMessage" | "onToolCallPre" | "onToolCallPost" | "onTaskComplete" | "onError";
+export type HookEvent =
+  | "onMessage"
+  | "onToolCallPre"
+  | "onToolCallPost"
+  | "onTaskComplete"
+  | "onError"
+  | "onTelemetryRecord";
 
 export interface HookContext {
   event: HookEvent;
@@ -359,4 +367,78 @@ export interface CoordinatorResult {
   stepResults: Map<string, string>;
   failedSteps: string[];
   source: "template" | "llm";
+}
+
+// ===== 会话事件溯源（Sprint 24） =====
+
+/**
+ * 事件词汇 — 可声明合并扩展（对齐 DSH SessionEventMap）：
+ * 会话是仅追加事件日志（session_events）的唯一真源，消息/轮次/工具/记忆均为投影。
+ */
+export interface SessionEventMap {
+  "session/created": { agentId: string };
+  "turn/start": { turn: number };
+  "turn/end": { turn: number; reason: "stop" | "error" | "aborted" | "length" };
+  "step/start": { step: number };
+  "step/end": { step: number };
+  "user/message": Message;
+  "assistant/message": {
+    message: Message;
+    usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  };
+  "tool/call": { callId: string; name: string; arguments: string };
+  "tool/result": { callId: string; success: boolean; content: string; error?: string; durationMs?: number };
+  "memory/update": { kind: "episodic" | "semantic"; summary?: string };
+  "title/set": { title: string };
+}
+
+export type SessionEventType = keyof SessionEventMap;
+
+/** 一条不可变会话事件（seq 每会话内连续递增） */
+export interface SessionEvent {
+  seq: number;
+  sessionId: string;
+  type: SessionEventType;
+  data: Record<string, unknown>;
+  createdAt: number;
+  /** 可选来源标记（hook / agent / server），便于溯源 */
+  source?: string;
+}
+
+// ===== 轨迹观测（Sprint 25） =====
+
+export interface TraceItem {
+  seq: number;
+  type: "turn" | "step" | "user" | "assistant" | "tool" | "memory" | "title";
+  label: string;
+  detail?: string;
+  /** 完整内容（未截断），供轨迹项点击展开查看详情 */
+  full?: string;
+  at: number;
+  durationMs?: number;
+  status?: "ok" | "fail" | "running";
+  tokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+export interface SessionStats {
+  sessionId: string;
+  turnCount: number;
+  stepCount: number;
+  toolCallsTotal: number;
+  toolCallsFailed: number;
+  toolCallsSuccessRate: number;
+  tokensPrompt: number;
+  tokensCompletion: number;
+  tokensTotal: number;
+  wallMs: number;
+  finishReason: string;
+  errorCount: number;
+}
+
+export interface SessionTelemetryRecord {
+  channel: "ledger" | "ops";
+  time: number;
+  severity: "info" | "warn" | "error";
+  attributes: Record<string, string | number>;
+  body: unknown;
 }

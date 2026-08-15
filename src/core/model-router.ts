@@ -51,6 +51,8 @@ export class ModelRouter {
   private totalPromptTokens = 0;
   private totalCompletionTokens = 0;
   private currentProfile = "";
+  /** 最近一次请求的 usage（assistant/message 事件携带，供轨迹/遥测消费） */
+  private lastUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
   /** 运行时覆盖（/config 命令设置，持久化到文件） */
   private runtimeProfileKey = "";
   private runtimeModel = "";
@@ -131,6 +133,30 @@ export class ModelRouter {
 
   async complete(options: ModelCompleteOptions): Promise<ModelResponse> {
     const profile = this.getProfile(undefined);
+    return this.dispatch(profile, options);
+  }
+
+  async completeWithProfile(
+    preference: string,
+    messages: Message[],
+    tools?: ToolDefinition[],
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
+  ): Promise<ModelResponse> {
+    const profile = this.getProfile(preference);
+    // 用 preference profile 的完整连接（provider/baseURL/apiKey 等）执行，
+    // 避免 lite 等异源 profile 的 model 错发到 default 的连接
+    return this.dispatch(profile, {
+      model: profile.model,
+      messages,
+      tools,
+      temperature: options?.temperature ?? profile.temperature,
+      maxTokens: options?.maxTokens ?? profile.maxTokens,
+      signal: options?.signal,
+    });
+  }
+
+  /** 共享执行：适配器路由 + 计量 */
+  private async dispatch(profile: ModelProfile, options: ModelCompleteOptions): Promise<ModelResponse> {
     const adapter = adapterRegistry.resolve(profile.adapter);
 
     const response = await adapter.complete(this.toConnection(profile), {
@@ -142,6 +168,7 @@ export class ModelRouter {
       signal: options.signal,
     });
 
+    this.lastUsage = response.usage;
     this.totalTokensUsed += response.usage.totalTokens;
     this.totalPromptTokens += response.usage.promptTokens;
     this.totalCompletionTokens += response.usage.completionTokens;
@@ -149,21 +176,9 @@ export class ModelRouter {
     return response;
   }
 
-  async completeWithProfile(
-    preference: string,
-    messages: Message[],
-    tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
-  ): Promise<ModelResponse> {
-    const profile = this.getProfile(preference);
-    return this.complete({
-      model: profile.model,
-      messages,
-      tools,
-      temperature: options?.temperature ?? profile.temperature,
-      maxTokens: options?.maxTokens ?? profile.maxTokens,
-      signal: options?.signal,
-    });
+  /** 最近一次请求的 usage（供 appendMessage 写入 assistant/message 事件） */
+  getLastUsage(): { promptTokens: number; completionTokens: number; totalTokens: number } | undefined {
+    return this.lastUsage ?? undefined;
   }
 
   getTokenUsage(): number {
@@ -199,6 +214,15 @@ export class ModelRouter {
       return this.runtimeModel || rp?.model || this.config.default.model;
     }
     return this.runtimeModel || this.currentProfile || this.config.default.model;
+  }
+
+  /** 状态栏展示：当前生效模型 + profile 上下文（/config model 切换 profile 后可感知） */
+  getDisplayModel(): string {
+    const model = this.getCurrentModel();
+    if (this.runtimeProfileKey && this.runtimeProfileKey !== "default") {
+      return `${model} (${this.runtimeProfileKey})`;
+    }
+    return model;
   }
 
   // ── 运行时配置（/config 命令支持）──
@@ -259,7 +283,7 @@ export class ModelRouter {
     preference: string,
     messages: Message[],
     tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void },
   ): AsyncGenerator<StreamChunk> {
     const profile = this.getProfile(preference);
     this.currentProfile = profile.model;
@@ -274,9 +298,12 @@ export class ModelRouter {
       signal: options?.signal,
       onUsage: (usage) => {
         // 流式 usage 只在流结束时一次性回调（防多 chunk 计数膨胀）
+        this.lastUsage = usage;
         this.totalPromptTokens += usage.promptTokens;
         this.totalCompletionTokens += usage.completionTokens;
         this.totalTokensUsed += usage.totalTokens;
+        // 透传调用方回调（agent-loop 用其收集"本轮主请求"usage，避开压缩请求污染单槽）
+        options?.onUsage?.(usage);
       },
     });
 

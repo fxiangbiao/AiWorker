@@ -20,6 +20,7 @@ import {
   createEvaluateSkillCreation,
   createTurnLogger,
   createToolCallLogger,
+  createTelemetryRedact,
   type HandlerDependencies,
 } from "./handlers.js";
 
@@ -36,6 +37,7 @@ interface HooksConfig {
   onToolCallPost?: HookEntry[];
   onTaskComplete?: HookEntry[];
   onError?: HookEntry[];
+  onTelemetryRecord?: HookEntry[];
 }
 
 const handlerFactories: Record<string, (deps: HandlerDependencies) => import("../types.js").HookHandler | null> = {
@@ -52,6 +54,7 @@ const handlerFactories: Record<string, (deps: HandlerDependencies) => import("..
   evaluateSkillCreation: (deps) => createEvaluateSkillCreation(deps),
   turnLogger: (deps) => createTurnLogger(deps),
   toolCallLogger: (deps) => createToolCallLogger(deps),
+  redactTelemetry: () => createTelemetryRedact(),
 };
 
 export function loadHooksFromConfig(configPath: string, deps: HandlerDependencies): number {
@@ -71,6 +74,7 @@ export function loadHooksFromConfig(configPath: string, deps: HandlerDependencie
     ["onToolCallPost", config.onToolCallPost],
     ["onTaskComplete", config.onTaskComplete],
     ["onError", config.onError],
+    ["onTelemetryRecord", config.onTelemetryRecord],
   ];
 
   for (const [event, entries] of eventEntries) {

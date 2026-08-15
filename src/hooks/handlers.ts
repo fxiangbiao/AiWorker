@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Hooks 处理器实现
  * 设计依据：Section 3.5 — 11 个 lifecycle handler
  */
@@ -18,6 +18,7 @@ import type { SessionStore } from "../memory/session-store.js";
 import type { ModelRouter } from "../core/model-router.js";
 import { skillEvolution } from "../core/skill-evolution.js";
 import type { SkillEvolutionResult } from "../core/skill-evolution.js";
+import type { TelemetryCoordinator } from "../memory/telemetry.js";
 
 export interface HandlerDependencies {
   dangerDetector?: DangerDetector;
@@ -25,8 +26,8 @@ export interface HandlerDependencies {
   sessionStore?: SessionStore;
   modelRouter?: ModelRouter;
   workingDir?: string;
-  projectDir?: string;
   dataDir?: string;
+  telemetry?: TelemetryCoordinator;
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
 }
 
@@ -176,6 +177,49 @@ export function createSensitiveDataFilter(): HookHandler {
 }
 
 /**
+ * redactTelemetry — 遥测导出脱敏（onTelemetryRecord）
+ * 只作用于导出副本（SessionTelemetryRecord），权威 session_events 日志永不改写
+ */
+export function createTelemetryRedact(): HookHandler {
+  const mask = (s: string): string =>
+    s
+      .replace(/sk-[a-zA-Z0-9]{20,}/g, "sk-****")
+      .replace(
+        /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
+        "-----BEGIN PRIVATE KEY-----*****-----END PRIVATE KEY-----",
+      )
+      .replace(/(api[_-]?key|apikey|password|passwd|pwd)\s*[:=]\s*["']?[^\s"']+/gi, "$1=****");
+
+  const redactDeep = (value: unknown): unknown => {
+    if (typeof value === "string") return mask(value);
+    if (Array.isArray(value)) return value.map((v) => redactDeep(v));
+    if (typeof value === "object" && value !== null) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = redactDeep(v);
+      }
+      return out;
+    }
+    return value;
+  };
+
+  return async (ctx) => {
+    if (ctx.event !== "onTelemetryRecord") return;
+    const record = ctx.data.record as import("../types.js").SessionTelemetryRecord | undefined;
+    if (!record) return;
+
+    const redacted: import("../types.js").SessionTelemetryRecord = {
+      ...record,
+      attributes: Object.fromEntries(
+        Object.entries(record.attributes).map(([k, v]) => [k, typeof v === "string" ? mask(v) : v]),
+      ),
+      body: redactDeep(record.body),
+    };
+    return { proceed: true, modifiedData: { record: redacted } };
+  };
+}
+
+/**
  * autoLoadProjectMemory — 自动加载项目记忆
  * 会话开始时自动扫描项目关键文件注入上下文
  * Hook 事件: onMessage
@@ -208,10 +252,13 @@ export function createAutoLoadProjectMemory(deps: HandlerDependencies): HookHand
     ];
 
     const loaded: string[] = [];
+    // 项目文件基准 = 工作目录（--dir），而非进程 cwd（与本批目录合并语义一致）
+    const projectBase = deps.workingDir ? resolve(deps.workingDir) : process.cwd();
     for (const file of projectFiles) {
       try {
-        if (!existsSync(file)) continue;
-        const content = readFileSync(file, "utf-8");
+        const full = resolve(projectBase, file);
+        if (!existsSync(full)) continue;
+        const content = readFileSync(full, "utf-8");
         loaded.push(`--- ${file} ---\n${content.slice(0, 2000)}`);
       } catch {
         // skip
@@ -267,7 +314,7 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
       // fs_write 展示目标路径，帮助用户判断
       let detail = "";
       if (toolName === "fs_write") {
-        const p = extractFilePath(ctx.data.args, deps.projectDir ? resolve(deps.projectDir) : process.cwd());
+        const p = extractFilePath(ctx.data.args, deps.workingDir ? resolve(deps.workingDir) : process.cwd());
         if (p) detail = `：${p}`;
       }
       const result = await requestConfirm(
@@ -290,7 +337,7 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
 
     const detector = deps.dangerDetector ?? new DangerDetector();
     // fs_write 只检测目标路径（正则匹配的是命令文本，不能套用在 content 上）
-    const projectBase = deps.projectDir ? resolve(deps.projectDir) : process.cwd();
+    const projectBase = deps.workingDir ? resolve(deps.workingDir) : process.cwd();
     const input =
       toolName === "fs_write"
         ? extractFilePath(ctx.data.args, projectBase) ?? ""
@@ -326,11 +373,11 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
 export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
   // session -> (filePath -> oldContent)
   const snapshots = new Map<string, Map<string, string>>();
-  // session -> (filePath -> {mtimeMs, size}) 输出目录指纹（覆盖 terminal_exec/MCP 等任意写入）
+  // session -> (filePath -> {mtimeMs, size}) 工作目录指纹（覆盖 terminal_exec/MCP 等任意写入）
   const dirSnapshots = new Map<string, Map<string, { mtimeMs: number; size: number }>>();
   // session -> Set<filePath> 已由 fs_write 精确逻辑处理的路径（目录指纹对比时跳过，防重复）
   const fsWritePaths = new Map<string, Set<string>>();
-  const projectBase = deps.projectDir ? resolve(deps.projectDir) : process.cwd();
+  const projectBase = deps.workingDir ? resolve(deps.workingDir) : process.cwd();
   const dataBase = deps.dataDir ? resolve(deps.dataDir) : resolve(process.cwd(), "data");
 
   return async (ctx) => {
@@ -374,7 +421,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
     if (ctx.event === "onToolCallPost") {
       const toolName = ctx.data.toolName as string;
 
-      // ── 输出目录指纹监控：捕获任意工具（terminal_exec/MCP 等）对 projectDir 的写入 ──
+      // ── 工作目录指纹监控：捕获任意工具（terminal_exec/MCP 等）对工作目录的写入 ──
       if (projectBase !== process.cwd()) {
         const current = scanDirFingerprint(projectBase);
         const prev = dirSnapshots.get(ctx.sessionId);
@@ -616,6 +663,8 @@ export function createEvaluateSkillCreation(deps: HandlerDependencies): HookHand
 const turnSeq = new Map<string, number>();
 /** per-session turn start time + token baseline（onMessage 记录，onTaskComplete 结算） */
 const turnStart = new Map<string, { at: number; prompt: number; completion: number }>();
+/** per-session 错误标记：onError 置位，onTaskComplete 结算时避免 token 虚增与 reason 错标 */
+const turnError = new Map<string, boolean>();
 
 export function createTurnLogger(deps: HandlerDependencies): HookHandler {
   const store = deps.sessionStore;
@@ -632,30 +681,45 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
         prompt: deps.modelRouter?.getPromptTokens() ?? 0,
         completion: deps.modelRouter?.getCompletionTokens() ?? 0,
       });
+      turnError.delete(ctx.sessionId);
+      const turn = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
+      try {
+        store.appendEvent(ctx.sessionId, "turn/start", { turn }, "hooks");
+      } catch {
+        /* 事件失败不阻塞主流程 */
+      }
       return;
     }
-    // 出错时清理未结算的轮次起点，防泄漏
+    // 出错时清理未结算的轮次起点，并标记该轮为错误（防 onTaskComplete 虚增 token / 错标 reason）
     if (ctx.event === "onError") {
       turnStart.delete(ctx.sessionId);
+      turnError.set(ctx.sessionId, true);
       return;
     }
     if (ctx.event !== "onTaskComplete") return;
 
     const start = turnStart.get(ctx.sessionId);
+    const hadError = turnError.get(ctx.sessionId) ?? false;
+    turnError.delete(ctx.sessionId);
     const startedAt = start?.at ?? Date.now();
     const finishedAt = Date.now();
     const tokensPromptNow = deps.modelRouter?.getPromptTokens() ?? 0;
     const tokensCompletionNow = deps.modelRouter?.getCompletionTokens() ?? 0;
-    // 当轮 token = 本次完成时刻 − 轮开始时刻基线（避免累计值直接入库）
-    const tokensPrompt = Math.max(0, tokensPromptNow - (start?.prompt ?? 0));
-    const tokensCompletion = Math.max(0, tokensCompletionNow - (start?.completion ?? 0));
+    // 当轮 token = 本次完成时刻 − 轮开始时刻基线（避免累计值直接入库）；
+    // 错误轮次（onError 已删基线）无法差分，置 0 防把全会话 token 记到本轮
+    const tokensPrompt = hadError ? 0 : Math.max(0, tokensPromptNow - (start?.prompt ?? 0));
+    const tokensCompletion = hadError ? 0 : Math.max(0, tokensCompletionNow - (start?.completion ?? 0));
     turnStart.delete(ctx.sessionId);
 
     const seq = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
     turnSeq.set(ctx.sessionId, seq);
 
     const messages = ctx.data.messages as Message[] | undefined;
-    const userInput = messages?.find((m) => m.role === "user")?.content.slice(0, 500) ?? "";
+    // 取本轮最后一条 user 消息（assembleContext 含历史，find 会取到最早一条）
+    const userInput = messages?.filter((m) => m.role === "user").at(-1)?.content.slice(0, 500) ?? "";
+
+    // 结束原因：截断 → length；错误轮 → error；否则 stop
+    const finishReason: string = ctx.data.truncated ? "length" : hadError ? "error" : "stop";
 
     // Count tool successes/failures from messages (assistant tool_calls vs. tool results)
     const toolCallsTotal = (ctx.data.toolCallsExecuted as number) ?? 0;
@@ -691,8 +755,19 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
         toolCallsFailed,
         tokensPrompt,
         tokensCompletion,
-        finishReason: ctx.data.truncated ? "length" : "stop",
+        finishReason,
       });
+      store.appendEvent(
+        ctx.sessionId,
+        "turn/end",
+        { turn: seq, reason: finishReason },
+        "hooks",
+      );
+      // 轮次结算后：捕获遥测（从事件流派生，非阻塞；失败不影响主流程）
+      if (deps.telemetry) {
+        const events = store.getEvents(ctx.sessionId);
+        await deps.telemetry.capture(ctx.sessionId, events).catch(() => {});
+      }
     } catch {
       /* ignore */
     }

@@ -50,7 +50,7 @@ export abstract class BaseAgent {
   /**
    * 执行任务
    */
-  async run(task: Task, workingDir: string, projectDir: string): Promise<AgentRunResult> {
+  async run(task: Task, workingDir: string): Promise<AgentRunResult> {
     const sessionId =
       task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
 
@@ -76,13 +76,17 @@ export abstract class BaseAgent {
     const result = await runAgentLoop(this.config, task.instruction, {
       modelRouter: this.modelRouter,
       contextManager: this.contextManager,
+      sessionStore: this.sessionStore,
       sessionId,
       workingDir: task.workingDir ?? workingDir,
-      projectDir,
     });
 
-    // 持久化助手回复
-    this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
+    // 持久化助手回复（携带本轮主请求 usage，供轨迹/遥测；来自 loop 显式返回，避免被压缩请求覆盖）
+    this.sessionStore.appendMessage(
+      sessionId,
+      { role: "assistant", content: result.text },
+      result.usage,
+    );
 
     // 总结会话并写入 MEMORY.md（有界 ≈2200 字符）
     this.contextManager.summarizeSession(result.messages, task.instruction, sessionId).catch(() => {
@@ -120,7 +124,6 @@ export abstract class BaseAgent {
   async runStream(
     task: Task,
     workingDir: string,
-    projectDir: string,
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<AgentRunResult> {
@@ -149,16 +152,20 @@ export abstract class BaseAgent {
       {
         modelRouter: this.modelRouter,
         contextManager: this.contextManager,
+        sessionStore: this.sessionStore,
         sessionId,
         workingDir: task.workingDir ?? workingDir,
-        projectDir,
       },
       callbacks,
       signal,
     );
 
     if (result.text) {
-      this.sessionStore.appendMessage(sessionId, { role: "assistant", content: result.text });
+      this.sessionStore.appendMessage(
+        sessionId,
+        { role: "assistant", content: result.text },
+        result.usage,
+      );
     }
 
     this.contextManager.summarizeSession(result.messages, task.instruction, sessionId).catch(() => {});
