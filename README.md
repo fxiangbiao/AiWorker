@@ -224,28 +224,98 @@ config/plugins/my-plugin/
 └── config.json      # 可选，注入 ctx.config
 ```
 
-契约即"默认导出一个 `setup(ctx)` 函数"（也可导出 `{ setup, version, description }` 对象）：
+契约即"默认导出一个 `setup(ctx)` 函数"（也可导出 `{ setup, version, description }` 对象）。下面是**完整示例**（可复制到 `config/plugins/my-plugin/` 直接运行），覆盖：对象导出、类型导入、带 Schema 的工具、错误处理、scope 注册、Hook 写日志：
 
 ```ts
-// config/plugins/hello/plugin.ts
-export default async function setup(ctx) {
-  // 注册工具（scope 可选：注册到指定专家作用域，同名遮蔽全局）
-  ctx.registerTool(
-    "hello",
-    {
-      type: "function",
-      function: { name: "hello", description: "打个招呼", parameters: { type: "object", properties: {} } },
-    },
-    async (_args, toolCtx) => ({ tool_call_id: "", success: true, content: `你好，${toolCtx.agentId}！` }),
-    // { scope: "coding" }  ← 仅 coding 专家可见
-  );
+// config/plugins/my-plugin/plugin.ts
+import { appendFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import type { PluginContext, HookContext, ToolResult } from "../../../src/types.js";
 
-  // 注册 Hook（委托 hookManager，返回 id 可注销）
-  ctx.registerHook("onMessage", async (hc) => {
-    /* ... */
-  });
+export default {
+  version: "0.1.0",
+  description: "完整示例：weather（枚举参数）+ hello（scope 注册）+ 工具调用日志 Hook",
+  async setup(ctx: PluginContext) {
+    // dataDir 可能尚未创建，日志目录自建更健壮
+    mkdirSync(ctx.dataDir, { recursive: true });
+    const defaultCity = typeof ctx.config.defaultCity === "string" ? ctx.config.defaultCity : "北京";
+
+    // ── 1) 带完整参数 Schema 的工具（string / enum / required）──
+    ctx.registerTool(
+      "weather",
+      {
+        type: "function",
+        function: {
+          name: "weather",
+          description: "查询指定城市当前天气（演示数据）",
+          parameters: {
+            type: "object",
+            properties: {
+              city: { type: "string", description: "城市名，缺省用 config 的 defaultCity" },
+              unit: { type: "string", enum: ["celsius", "fahrenheit"], description: "温度单位（默认 celsius）" },
+            },
+          },
+        },
+      },
+      async (args): Promise<ToolResult> => {
+        try {
+          const city = args.city ? String(args.city) : defaultCity;
+          const unit = String(args.unit ?? "celsius");
+          const temp = unit === "celsius" ? 26 : 79; // 演示值
+          return {
+            tool_call_id: "",
+            success: true,
+            content: `${city}：${temp}°${unit === "celsius" ? "C" : "F"}（演示数据）`,
+          };
+        } catch (err) {
+          // handler 出错请返回 success:false，不要抛异常
+          return { tool_call_id: "", success: false, content: "", error: (err as Error).message };
+        }
+      },
+    );
+
+    // ── 2) scope 注册：仅 coding 专家的模型可见（缺省全局可见）──
+    ctx.registerTool(
+      "hello",
+      {
+        type: "function",
+        function: { name: "hello", description: "打个招呼", parameters: { type: "object", properties: {} } },
+      },
+      async (_args, toolCtx) => ({ tool_call_id: "", success: true, content: `你好，${toolCtx.agentId}！` }),
+      { scope: "coding" },
+    );
+
+    // ── 3) Hook：记录每次工具调用（写文件而非 console.log，避免破坏 TUI 界面）──
+    ctx.registerHook("onToolCallPost", async (hc: HookContext) => {
+      const d = hc.data as { toolName?: string; result?: { success?: boolean } };
+      appendFileSync(
+        resolve(ctx.dataDir, "my-plugin-tools.log"),
+        `${new Date().toISOString()} ${hc.agentId} ${d.toolName ?? "?"} ${d.result?.success ? "ok" : "fail"}\n`,
+        "utf-8",
+      );
+    });
+  },
+};
+```
+
+配套的 `config.json`（可选，自动解析后注入 `ctx.config`）：
+
+```json
+{
+  "defaultCity": "北京"
 }
 ```
+
+**各部分说明**：
+
+| 片段 | 要点 |
+|---|---|
+| `export default { version, description, setup }` | 对象导出带元数据（`/plugins` 显示）；也可直接导出 `setup(ctx)` 函数 |
+| `import type { PluginContext, HookContext, ToolResult }` | 相对根目录 `../../../src/types.js` 引用类型（可选，JS 插件可省） |
+| `parameters.properties[].enum` / `required` | 完整参数 Schema，模型会按定义生成参数 |
+| `try/catch` 返回 `success:false` | handler 出错**返回错误结果**而非抛异常（抛异常会被当作工具超时/失败处理） |
+| `{ scope: "coding" }` | 第 4 参：限定专家可见；缺省全局可见（豁免 agent `tools:` 白名单） |
+| `ctx.registerHook("onToolCallPost", ...)` | 6 个 Hook 事件任选；抛错不崩任务（fail-soft，记审计） |
 
 **PluginContext**：
 
