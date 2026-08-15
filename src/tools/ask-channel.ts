@@ -13,6 +13,14 @@ export type AskProvider = (req: AskRequest) => Promise<string | null>;
 
 let provider: AskProvider | null = null;
 
+/** 提问挂起状态（供 TUI 状态栏显示"等待你的回答"） */
+let askWaiting = false;
+
+/** 当前是否有提问正在等待用户回答 */
+export function isAskWaiting(): boolean {
+  return askWaiting;
+}
+
 /** 注册提问提供者（HTTP server 每请求设置，CLI 用 stdin 实现），返回旧提供者 */
 export function setAskProvider(fn: AskProvider | null): AskProvider | null {
   const prev = provider;
@@ -56,10 +64,15 @@ export function askResponse(id: string, answer: string | null): boolean {
 
 /** 发起提问，返回用户回答（自由文本或选中选项）；取消/超时返回 null */
 export async function requestAsk(question: string, options: string[] = []): Promise<string | null> {
-  if (provider) {
-    return provider({ id: `ask-${Date.now().toString(36)}`, question, options });
+  askWaiting = true;
+  try {
+    if (provider) {
+      return await provider({ id: `ask-${Date.now().toString(36)}`, question, options });
+    }
+    return await stdinAsk(question, options);
+  } finally {
+    askWaiting = false;
   }
-  return stdinAsk(question, options);
 }
 
 async function stdinAsk(question: string, options: string[]): Promise<string | null> {

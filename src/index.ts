@@ -40,6 +40,7 @@ import { StreamOutputRenderer } from "./terminal/output.js";
 import { buildCliCommands } from "./commands/registry.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
+import { isAskWaiting } from "./tools/ask-channel.js";
 import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider } from "./types.js";
 
 const program = new Command();
@@ -431,7 +432,8 @@ program
             queueSize: prefillQueue.length,
             iteration: undefined,
             maxIter: agents[expertId]?.getConfig().maxIterations,
-            status: "思考中",
+            // ask_user 挂起等待回答时，状态栏提示用户输入
+            status: isAskWaiting() ? "等待你的回答" : "思考中",
           });
         }, 500);
       };

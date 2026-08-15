@@ -4,7 +4,13 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { setAskProvider, createHttpAskProvider, askResponse, requestAsk } from "../src/tools/ask-channel.js";
+import {
+  setAskProvider,
+  createHttpAskProvider,
+  askResponse,
+  requestAsk,
+  isAskWaiting,
+} from "../src/tools/ask-channel.js";
 
 afterEach(() => {
   setAskProvider(null);
@@ -56,5 +62,26 @@ describe("ask-channel", () => {
     expect(askResponse("ask-d", "ok")).toBe(true);
     expect(askResponse("ask-d", "again")).toBe(false);
     expect(await p).toBe("ok");
+  });
+
+  it("isAskWaiting：提问挂起期间 true，结束后 false（TUI 状态栏用）", async () => {
+    let resolveAsk: (v: string | null) => void = () => {};
+    setAskProvider(() => new Promise<string | null>((r) => { resolveAsk = r; }));
+    expect(isAskWaiting()).toBe(false);
+
+    const p = requestAsk("继续吗？");
+    // 让 requestAsk 内的置位逻辑执行
+    await new Promise((r) => setTimeout(r, 10));
+    expect(isAskWaiting()).toBe(true);
+
+    resolveAsk("是");
+    await p;
+    expect(isAskWaiting()).toBe(false);
+  });
+
+  it("isAskWaiting：超时/异常后复位为 false", async () => {
+    setAskProvider(async () => null); // 立即返回
+    await requestAsk("q");
+    expect(isAskWaiting()).toBe(false);
   });
 });
