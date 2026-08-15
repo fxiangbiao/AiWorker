@@ -1,6 +1,7 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * AiWorker CLI 入口 — 流式交互版本
+ * 命令处理采用注册表分发（src/commands/）：命令零闭包捕获，经 CommandContext 注入，可独立单测
  */
 
 import { Command } from "commander";
@@ -8,20 +9,18 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { stdout } from "node:process";
-import { spawn } from "node:child_process";
 
 import { ModelRouter } from "./core/model-router.js";
 import { ContextManager } from "./core/context-manager.js";
 import { ProjectProfiler } from "./core/project-profiler.js";
 import { SessionStore } from "./memory/session-store.js";
+import { TelemetryCoordinator } from "./memory/telemetry.js";
 import { ContextCompressor } from "./memory/compressor.js";
 import { registerBuiltinTools } from "./tools/builtin.js";
 import { initAuditLog } from "./core/audit-logger.js";
 import { DangerDetector } from "./security/danger-detector.js";
 import { PermissionModel } from "./security/permission-model.js";
 import { loadHooksFromConfig } from "./hooks/hook-config-loader.js";
-import { hookManager } from "./hooks/hook-manager.js";
-import { createEvaluateSkillCreation } from "./hooks/handlers.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
@@ -31,12 +30,13 @@ import { FinancialAgent } from "./agents/financial-agent.js";
 import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
-import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
+import { TeamCoordinator } from "./core/team-coordinator.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
-import { renderMarkdown } from "./terminal/markdown.js";
 import { StreamOutputRenderer } from "./terminal/output.js";
+import { buildCliCommands } from "./commands/registry.js";
+import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
 import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider } from "./types.js";
 
@@ -46,21 +46,19 @@ program.name("aiworker").description("AiWorker — 个人 AI Agent 助手").vers
 
 program
   .option("-m, --mode <mode>", "权限模式: ask | plan | auto", "auto")
-  .option("-d, --dir <directory>", "工作目录", process.cwd())
+  .option("-d, --dir <directory>", "工作目录（读写统一基准，默认 ./ai_default_project）", resolve(process.cwd(), "ai_default_project"))
   .option("--data-dir <directory>", "数据目录", resolve(process.cwd(), "data"))
-  .option("-p, --project-dir <directory>", "项目输出目录", resolve(process.cwd(), "ai_default_project"))
   .option("--show-thinking", "显示模型思考过程（默认折叠）")
   .option("--server", "启动 HTTP API 服务")
   .option("--port <port>", "HTTP Server 端口", "3000")
   .action(async (options) => {
     const workingDir = resolve(options.dir);
     const dataDir = resolve(options.dataDir);
-    const projectDir = resolve(options.projectDir);
 
+    mkdirSync(workingDir, { recursive: true });
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(resolve(dataDir, "memory"), { recursive: true });
     mkdirSync(resolve(dataDir, "audit"), { recursive: true });
-    mkdirSync(projectDir, { recursive: true });
 
     // 非 server 模式初始化 TUI（交互模式）；server 模式走普通 stdout
     const isServer = !!options.server;
@@ -70,15 +68,17 @@ program
 
     const outputRenderer = new StreamOutputRenderer();
 
-    // TUI 输入配置：历史持久化 + Tab 补全
-    const commands = ["/plan", "/debate", "/mode", "/new", "/log", "/context", "/skill", "/skills", "/skill-evo", "/status", "/config", "/thinking", "/copy", "/help", "/exit", "/sessions", "/switch", "/mcps"];
+    // CLI 命令注册表（模块化拆分，顺序即匹配优先级与 /help 展示顺序）
+    const cliCommands = buildCliCommands();
+
+    // TUI 输入配置：历史持久化 + Tab 补全（命令列表由注册表派生）
     const completer = (line: string): [string[], string] => {
       if (!line.startsWith("/")) return [[], line];
-      // 技能可直接用 /技能名 激活（无需 /skill 前缀）
-      const skillNames = skillRegistry.getAll().map((s) => `/${s.name}`);
-      const all = [...commands, ...skillNames];
-      const hits = all.filter((c) => c.toLowerCase().startsWith(line.toLowerCase()));
-      return [hits.length ? hits.slice(0, 10) : [], line];
+      const commandNames = cliCommands.flatMap((c) => [`/${c.name}`, ...(c.aliases ?? []).map((a) => `/${a}`)]);
+      const hits = [...commandNames, ...skillRegistry.getAll().map((s) => `/${s.name}`)]
+        .filter((c) => c.toLowerCase().startsWith(line.toLowerCase()))
+        .slice(0, 10);
+      return [hits.length ? hits : [], line];
     };
     renderer.configureInput(resolve(dataDir, ".aiworker_history"), completer);
 
@@ -87,7 +87,6 @@ program
     stdout.write(chalk.cyan("║        AiWorker v0.1.0               ║\n"));
     stdout.write(chalk.cyan("╚══════════════════════════════════════╝\n\n"));
     stdout.write(chalk.gray(`工作目录: ${workingDir}\n`));
-    stdout.write(chalk.gray(`输出目录: ${projectDir}\n`));
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
     stdout.write(chalk.gray(`权限模式: ${options.mode ?? "auto（config/permissions.json 或默认）"}\n\n`));
 
@@ -172,14 +171,15 @@ program
     });
 
     const hooksDir = resolve(process.cwd(), "config");
+    const telemetry = new TelemetryCoordinator(dataDir);
     const hooksCount = loadHooksFromConfig(resolve(hooksDir, "hooks.json"), {
       dangerDetector,
       permissionModel,
       sessionStore,
       modelRouter,
       workingDir,
-      projectDir,
       dataDir,
+      telemetry,
       onFileDiff: (filePath, added, removed, _diffText) => {
         // 终端只展示单行摘要，完整 diff 由 Web /diffs 查看
         outputRenderer.fileDiff(filePath, added, removed);
@@ -230,7 +230,6 @@ program
         {
           modelRouter,
           workingDir,
-          projectDir,
           coordinator,
           createAgent: (agentId: string) => agents[agentId] ?? agents["default"],
           getAgentList: () =>
@@ -265,7 +264,7 @@ program
     }
 
     stdout.write(chalk.green("✓ 核心引擎就绪\n"));
-    stdout.write(chalk.green(`✓ 模型: ${modelRouter.getCurrentModel()}\n`));
+    stdout.write(chalk.green(`✓ 模型: ${modelRouter.getDisplayModel()}\n`));
     stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
     stdout.write(
       chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"),
@@ -277,15 +276,15 @@ program
     if (!isServer) {
       renderer.printStatus({
         mode: currentMode,
-        model: modelRouter.getCurrentModel(),
+        model: modelRouter.getDisplayModel(),
         tokensUsed: 0,
         queueSize: 0,
       });
     }
 
-    // ─── 交互循环 ───
+    // ─── 会话内可变状态 ───
     const prefillQueue: string[] = [];
-    let lastAnswerRaw = "";
+    const lastAnswer = { value: "" };
     let currentSessionId: string | undefined;
 
     // 计算当前上下文窗口占用百分比（低频调用：仅 printStatus / 命令后）
@@ -303,6 +302,55 @@ program
       }
     };
 
+    // ─── 命令上下文（显式注入，命令模块零闭包捕获） ───
+    const commandCtx: CommandContext = {
+      mode: () => currentMode,
+      setMode: (m) => {
+        currentMode = m;
+        for (const a of Object.values(agents)) a.setMode(m);
+      },
+      showThinking: () => showThinking,
+      toggleThinking: () => {
+        showThinking = !showThinking;
+      },
+      currentSessionId: () => currentSessionId,
+      setCurrentSessionId: (id) => {
+        currentSessionId = id;
+      },
+      prefillQueue,
+      lastAnswer,
+      agents,
+      coordinator,
+      modelRouter,
+      sessionStore,
+      skillCount,
+      workingDir,
+      runtimeConfigPath,
+      persistRuntimeConfig: () => {
+        try {
+          writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
+        } catch {
+          /* 持久化失败静默 */
+        }
+      },
+      getContextBreakdown: (query: string) => {
+        const agent = agents[routeToExpert("")]!;
+        return contextManager.getContextBreakdown(agent.getConfig().systemPrompt, currentSessionId ?? "", query);
+      },
+      listCommands: () => cliCommands,
+      write: (text) => stdout.write(text),
+      writeLine: (line) => renderer.writeLine(line),
+      printStatus: () =>
+        renderer.printStatus({
+          mode: currentMode,
+          model: modelRouter.getDisplayModel(),
+          tokensUsed: modelRouter.getTokenUsage(),
+          windowPct: statusWindowPct(),
+          queueSize: prefillQueue.length,
+        }),
+    };
+
+    // ─── 交互循环 ───
     while (true) {
       let input: string;
       if (prefillQueue.length > 0) {
@@ -319,645 +367,22 @@ program
 
       let trimmed = input ? input.trim() : "";
       if (!trimmed) {
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
+        commandCtx.printStatus();
         // Defensive: prevent busy-loop if stdin is broken on Windows
         await new Promise<void>((r) => setTimeout(r, 50));
         continue;
       }
 
-      // ─── 命令处理 ───
-      if (trimmed === "/exit" || trimmed === "/quit") {
-        stdout.write(chalk.gray("\n再见！\n"));
-        break;
-      }
-
-      if (trimmed === "/new") {
-        currentSessionId = undefined;
-        modelRouter.resetTokenUsage();
-        stdout.write(chalk.green("✓ 新会话已开始，上下文已清空\n"));
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: 0,
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/log") {
-        const sessionId = currentSessionId;
-        const turns = sessionId
-          ? sessionStore.getTurnLogs(sessionId)
-          : sessionStore.getRecentTurnLogs(20);
-        if (turns.length === 0) {
-          stdout.write(chalk.gray("暂无监控日志\n"));
-        } else {
-          let totalDur = 0;
-          let totalTools = 0;
-          let totalPrompt = 0;
-          let totalCompletion = 0;
-          const rows: string[][] = [];
-          for (const t of turns) {
-            const dur = t.finishedAt - t.startedAt;
-            totalDur += dur;
-            totalTools += t.toolCallsTotal;
-            totalPrompt += t.tokensPrompt;
-            totalCompletion += t.tokensCompletion;
-            const status = t.finishReason === "stop" ? "✅" : "⚠️";
-            rows.push([
-              String(t.seq),
-              String(t.iterations),
-              String(t.toolCallsTotal),
-              formatDuration(dur),
-              fmtK(t.tokensPrompt),
-              fmtK(t.tokensCompletion),
-              status,
-            ]);
-          }
-          const headers = ["轮次", "迭代", "工具", "耗时", "输入tok", "输出tok", "状态"];
-          const widths = headers.map((h, i) => Math.max(displayWidth(h), ...rows.map((r) => displayWidth(r[i]!))));
-          const border = `┌${widths.map((w) => "─".repeat(w + 2)).join("┬")}┐`;
-          const sep = `├${widths.map((w) => "─".repeat(w + 2)).join("┼")}┤`;
-          const bottom = `└${widths.map((w) => "─".repeat(w + 2)).join("┴")}┘`;
-          stdout.write(`\n${border}\n`);
-          stdout.write(
-            `│ ${headers.map((h, i) => padToWidth(h, widths[i]!)).join(" │ ")} │\n`,
-          );
-          stdout.write(`${sep}\n`);
-          for (const r of rows) {
-            stdout.write(`│ ${r.map((c, i) => padToWidth(c, widths[i]!)).join(" │ ")} │\n`);
-          }
-          stdout.write(`${bottom}\n`);
-          stdout.write(
-            chalk.gray(
-              `累计: ${turns.length} 轮, ${(totalDur / 1000).toFixed(1)}s, ${totalTools} 次工具调用, ` +
-                `输入 ${fmtK(totalPrompt)} tok, 输出 ${fmtK(totalCompletion)} tok`,
-            ),
-          );
-          if (!sessionId) {
-            stdout.write(chalk.gray(`（最近会话，/sessions 或 /switch 切换）\n`));
-          } else {
-            stdout.write("\n");
-          }
-        }
-        continue;
-      }
-
-      if (trimmed === "/sessions") {
-        const sessions = sessionStore.listSessions(20);
-        if (sessions.length === 0) {
-          stdout.write(chalk.gray("暂无历史会话\n"));
-        } else {
-          stdout.write("\n┌──────┬────────────┬────────────┬──────────────┬──────────────────────┐\n");
-          stdout.write(
-            `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
-          );
-          stdout.write("├──────┼────────────┼────────────┼──────────────┼──────────────────────┤\n");
-          sessions.forEach((s, i) => {
-            const time = new Date(s.updatedAt).toLocaleDateString();
-            const agentLabel = s.agentId.length > 12 ? s.agentId.slice(0, 12) : s.agentId;
-            let summary = s.firstUserMsg ?? s.summary ?? "(无)";
-            // CJK 安全截断（displayWidth 计 2 列/字，列宽 20）
-            while (displayWidth(summary) > 20) summary = summary.slice(0, -1);
-            stdout.write(
-              `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
-            );
-          });
-          stdout.write(`└──────┴────────────┴────────────┴──────────────┴──────────────────────┘\n`);
-          stdout.write(chalk.gray(`共 ${sessions.length} 个会话，/switch <序号> 切换\n`));
-        }
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed.startsWith("/switch ")) {
-        const arg = trimmed.slice(8).trim();
-        const sessions = sessionStore.listSessions(20);
-        const idx = parseInt(arg, 10);
-        let target: { id: string } | undefined;
-        if (!Number.isNaN(idx) && idx >= 1 && idx <= sessions.length) {
-          target = sessions[idx - 1];
-        } else {
-          target = sessions.find((s) => s.id.startsWith(arg));
-        }
-        if (target) {
-          currentSessionId = target.id;
-          stdout.write(chalk.green(`✓ 已切换到会话 (${arg})\n`));
-        } else {
-          stdout.write(chalk.red("未找到该会话，/sessions 查看列表\n"));
-        }
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/copy") {
-        if (!lastAnswerRaw) {
-          stdout.write(chalk.gray("暂无回答可复制（先发送一条消息）\n"));
-        } else {
-          await copyToClipboard(lastAnswerRaw);
-          stdout.write(chalk.green(`✓ 已复制原始 Markdown 到剪贴板 (${lastAnswerRaw.length} 字符)\n`));
-        }
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/context" || trimmed.startsWith("/context ")) {
-        const agent = agents[routeToExpert("")];
-        const bd = contextManager.getContextBreakdown(
-          agent.getConfig().systemPrompt,
-          currentSessionId ?? "",
-          trimmed === "/context" ? "" : trimmed.slice(9),
-        );
-        const ws = bd.windowSize;
-        const bar = (v: number) => {
-          const pct = ws > 0 ? (v / ws) * 100 : 0;
-          const w = Math.round(pct / 5);
-          const color = pct > 80 ? chalk.red : pct > 60 ? chalk.yellow : chalk.green;
-          return `${color("█".repeat(w))}${chalk.gray("░".repeat(Math.max(0, 20 - w)))}`;
-        };
-        const fmtN = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-
-        stdout.write(`\n${chalk.bold("── 上下文占用 ──")}\n`);
-        const fmt = (label: string, tok: number, extra?: string) => {
-          const pct = ws > 0 ? `(${((tok / ws) * 100).toFixed(0)}%)` : "";
-          const ext = extra ? ` ${chalk.dim(extra)}` : "";
-          stdout.write(
-            `│ ${chalk.dim(padToWidth(label, 10))} ${bar(tok)} ${chalk.white(fmtN(tok))}/${chalk.white(fmtN(ws))} ${pct}${ext}\n`,
-          );
-        };
-
-        fmt("系统提示词", bd.systemPromptBase);
-        fmt("项目记忆", bd.projectMemory);
-        fmt("用户画像", bd.userProfile);
-        fmt("情景记忆", bd.episodicMemory);
-        const skillExtra = bd.skillsMatched.length > 0 ? `(${bd.skillsMatched.length}/${bd.skillsTotal})` : "";
-        fmt("注入技能", bd.injectedSkills, skillExtra);
-        fmt("会话历史", bd.conversationHistory);
-        fmt("当前消息", bd.currentTurn);
-        // 合计行需手动对齐：标签 "合计" = 2 CJK = 4 display cols, pad to 10 + 2 extra spaces = 12
-        const totalLabel = padToWidth("合计", 12);
-        stdout.write(
-          `│ ${totalLabel}${" ".repeat(20)} ${chalk.bold(fmtN(bd.total))}/${chalk.bold(fmtN(ws))} (${((bd.total / ws) * 100).toFixed(0)}%)\n`,
-        );
-
-        const mcpStatuses = mcpManager.getStatuses();
-        const mcpServers = Object.values(mcpStatuses);
-        if (mcpServers.length > 0) {
-          stdout.write(`\n${chalk.dim("── MCP 工具 ──")}\n`);
-          for (const s of mcpServers) {
-            const icon = s.connected ? chalk.green("✓") : chalk.red("✗");
-            stdout.write(`│ ${icon} ${s.name}: ${s.toolCount} 工具\n`);
-          }
-        }
-
-        stdout.write("\n");
-        continue;
-      }
-
-      if (trimmed.startsWith("/mode ")) {
-        const newMode = trimmed.slice(6).trim() as PermissionMode;
-        if (["ask", "plan", "auto"].includes(newMode)) {
-          currentMode = newMode;
-          for (const a of Object.values(agents)) a.setMode(newMode);
-          stdout.write(chalk.green(`✓ 已切换到 ${newMode} 模式\n`));
-        } else {
-          stdout.write(chalk.red("无效模式，可选: ask, plan, auto\n"));
-        }
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/help") {
-        // 用 Markdown 表格渲染（块级对齐 + 窄终端自动换行）
-        const rows: [string, string, string][] = [
-          ["/plan <描述>", "多专家 DAG 协作", "自动分解任务，拓扑序执行"],
-          ["/debate <话题>", "双专家辩论", "两专家独立分析+互审+综合报告"],
-          ["/mode <模式>", "切换权限模式", "ask(只读) / plan(确认后执行) / auto(自动执行)"],
-          ["/new", "开启新会话", "清空上下文和 token 计数，重新开始"],
-          ["/log", "查看监控日志", "当前 session 的轮次摘要表"],
-          ["/context", "上下文占用分析", "分层 token 占比 + MCP 工具列表"],
-          ["/mcps", "查看 MCP 服务器", "列出已加载的 MCP 服务、连接状态与工具"],
-          ["/skill <名称>", "手动激活技能", "如 /code-review, /debug, /data-cleaning"],
-          ["/skills", "查看全部技能", "分组展示技能名称与描述"],
-          ["/status", "显示运行状态", "模式/模型/token/排队"],
-          ["/config", "查看/配置模型与系统参数", "model/temperature/max-tokens/thinking/skill-evo/reset"],
-          ["/sessions", "浏览历史会话", "列出最近会话，/switch <序号> 切换"],
-          ["/switch <序号>", "切换会话", "恢复指定会话上下文继续对话"],
-          ["/copy", "复制回答", "复制上次回答的原始 Markdown 到剪贴板"],
-          ["/help", "帮助信息", "显示此表"],
-          ["/exit", "退出", ""],
-        ];
-        const mdRows = [
-          "| 命令 | 功能 | 说明 |",
-          "|---|---|---|",
-          ...rows.map(([a, b, c]) => `| ${a} | ${b} | ${c} |`),
-        ];
-        const rendered = renderMarkdown(mdRows.join("\n"));
-        renderer.writeLine("");
-        for (const line of rendered) renderer.writeLine(line);
-        renderer.writeLine("");
-        renderer.writeLine(chalk.dim(`💡 已加载 ${skillCount} 个技能，可直接输入 /技能名 激活（如 /code-review）`));
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/skills") {
-        const all = skillRegistry.getAll();
-        if (all.length === 0) {
-          stdout.write(chalk.gray("暂无技能\n"));
-        } else {
-          // 按专家分组，名称对齐 + 描述
-          const byExpert = new Map<string, typeof all>();
-          for (const s of all) {
-            const list = byExpert.get(s.expert) ?? [];
-            list.push(s);
-            byExpert.set(s.expert, list);
-          }
-          const nameWidth = Math.min(
-            24,
-            Math.max(8, ...all.map((s) => displayWidth(s.name))) + 2,
-          );
-          renderer.writeLine("");
-          for (const [expert, skills] of byExpert) {
-            renderer.writeLine(`  ${chalk.cyan(expert)}`);
-            for (const s of skills) {
-              const namePad = padToWidth(chalk.white(s.name), nameWidth);
-              const desc = s.description ? chalk.dim(s.description) : "";
-              renderer.writeLine(`    ${namePad}${desc}`);
-            }
-          }
-          renderer.writeLine("");
-          renderer.writeLine(
-            chalk.dim(`💡 共 ${all.length} 个技能，直接输入 /技能名 激活（如 /code-review），/help 查看命令`),
-          );
-        }
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/mcps") {
-        const statuses = mcpManager.getStatuses();
-        const servers = Object.values(statuses);
-        if (servers.length === 0) {
-          stdout.write(chalk.gray("未加载任何 MCP 服务器（检查 config/mcp.json）\n"));
-        } else {
-          renderer.writeLine("");
-          for (const s of servers) {
-            const icon = s.connected ? chalk.green("✓") : s.state === "connecting" || s.state === "reconnecting" ? chalk.yellow("⏳") : chalk.red("✗");
-            const stateLabel = s.connected ? "已连接" : s.state === "connecting" ? "连接中" : s.state === "reconnecting" ? "重连中" : s.state === "dead" ? "已失效" : "未连接";
-            renderer.writeLine(`  ${icon} ${chalk.white(padToWidth(s.name, 16))}${chalk.dim(s.transport)} ${chalk.dim("·")} ${stateLabel} ${chalk.dim(`· ${s.toolCount} 工具`)}${s.error ? chalk.red(` · ${s.error}`) : ""}`);
-            for (const t of s.tools ?? []) {
-              const toolName = t.name.replace(`mcp_${s.name}_`, "");
-              renderer.writeLine(`      ${chalk.dim("└")} ${chalk.cyan(padToWidth(toolName, 24))}${t.description ? chalk.dim(t.description) : ""}`);
-            }
-          }
-          renderer.writeLine("");
-          renderer.writeLine(chalk.dim(`💡 共 ${servers.length} 个 MCP 服务器，可在系统弹窗 MCP Tab 查看详情`));
-        }
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/status") {
-        const cost = modelRouter.getCost();
-        stdout.write(chalk.gray(`模式: ${currentMode} | 模型: ${modelRouter.getCurrentModel()}\n`));
-        stdout.write(
-          chalk.gray(
-            `Token: ${modelRouter.getTokenUsage()} (提示: ${modelRouter.getPromptTokens()}, 生成: ${modelRouter.getCompletionTokens()})`,
-          ),
-        );
-        if (cost > 0) stdout.write(chalk.gray(` | 成本: ¥${cost.toFixed(4)}`));
-        stdout.write(chalk.gray(`\n技能: ${skillCount} | 排队: ${prefillQueue.length}\n`));
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/thinking") {
-        // 向后兼容：已并入 /config thinking
-        showThinking = !showThinking;
-        stdout.write(chalk.green(`✓ 思考展示: ${showThinking ? "展开" : "折叠"}（可用 /config thinking 切换）\n`));
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      if (trimmed === "/config" || trimmed.startsWith("/config ")) {
-        const parts = trimmed.split(/\s+/).slice(1);
-        const sub = parts[0] ?? "";
-        const arg = parts[1] ?? "";
-        const persist = () => {
-          try {
-            writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
-          } catch {
-            /* 持久化失败静默 */
-          }
-        };
-
-        if (sub === "model") {
-          if (!arg) {
-            stdout.write(chalk.gray(`用法: /config model <名称>  可选: ${modelRouter.getAvailableModels().map((m) => m.key).join(", ")}\n`));
-          } else {
-            const valid = modelRouter.getAvailableModels().find((m) => m.key === arg.toLowerCase());
-            if (!valid) {
-              stdout.write(chalk.red(`✗ 未知模型: ${arg}，可用: ${modelRouter.getAvailableModels().map((m) => m.key).join(", ")}\n`));
-            } else {
-              modelRouter.setDefaultModel(valid.key);
-              persist();
-              stdout.write(chalk.green(`✓ 默认模型 → ${valid.model} (${valid.provider})`));
-              if (valid.key !== "default") stdout.write(chalk.dim(` via ${valid.key} profile`));
-              stdout.write("\n");
-              stdout.write(chalk.gray(`  该设置持久化到 ${runtimeConfigPath}，重启后仍生效。\n`));
-            }
-          }
-        } else if (sub === "temperature" || sub === "temp") {
-          if (!arg) {
-            stdout.write(chalk.gray(`用法: /config temperature <0-2>  当前: ${modelRouter.getRuntimeConfig().temperature ?? "默认"}\n`));
-          } else {
-            const t = parseFloat(arg);
-            if (isNaN(t) || t < 0 || t > 2) {
-              stdout.write(chalk.red("✗ 温度需在 0-2 之间\n"));
-            } else {
-              modelRouter.setTemperature(t);
-              persist();
-              stdout.write(chalk.green(`✓ 温度 → ${t}\n`));
-            }
-          }
-        } else if (sub === "max-tokens" || sub === "tokens") {
-          if (!arg) {
-            stdout.write(chalk.gray(`用法: /config max-tokens <数量>  当前: ${modelRouter.getRuntimeConfig().maxTokens ?? "默认"}\n`));
-          } else {
-            const n = parseInt(arg, 10);
-            if (isNaN(n) || n < 100) {
-              stdout.write(chalk.red("✗ max-tokens 需 ≥ 100\n"));
-            } else {
-              modelRouter.setMaxTokens(n);
-              persist();
-              stdout.write(chalk.green(`✓ max-tokens → ${n}\n`));
-            }
-          }
-        } else if (sub === "skill-evo" || sub === "skill-evolution") {
-          const id = "onTaskComplete:evaluateSkillCreation";
-          if (hookManager.has(id)) {
-            hookManager.off(id);
-            stdout.write(chalk.yellow("✓ 技能自动沉淀: 关闭\n"));
-          } else {
-            const handler = createEvaluateSkillCreation({ sessionStore, modelRouter });
-            hookManager.on("onTaskComplete", handler, { id, priority: 10 });
-            stdout.write(chalk.green("✓ 技能自动沉淀: 开启\n"));
-          }
-        } else if (sub === "thinking" || sub === "thought") {
-          showThinking = !showThinking;
-          stdout.write(chalk.green(`✓ 思考展示: ${showThinking ? "展开" : "折叠"}\n`));
-        } else if (sub === "reset") {
-          modelRouter.setDefaultModel("");
-          modelRouter.setTemperature(null);
-          modelRouter.setMaxTokens(null);
-          persist();
-          stdout.write(chalk.green("✓ 已恢复配置文件默认（models.json）\n"));
-        } else {
-          // 默认：显示当前配置
-          const rt = modelRouter.getRuntimeConfig();
-          const cost = modelRouter.getCost();
-          stdout.write(chalk.bold("\n── 模型配置 ──\n"));
-          stdout.write(chalk.gray(`当前模型: ${modelRouter.getCurrentModel()}`));
-          if (rt.profileKey) stdout.write(chalk.yellow(` (profile: ${rt.profileKey})`));
-          stdout.write("\n");
-          stdout.write(chalk.gray(`温度: ${rt.temperature ?? "默认"} | max-tokens: ${rt.maxTokens ?? "默认"}\n`));
-          stdout.write(chalk.gray(`成本: ¥${cost.toFixed(4)}\n`));
-          stdout.write(chalk.bold("\n── 可用模型 ──\n"));
-          for (const m of modelRouter.getAvailableModels()) {
-            const active = m.key === (rt.profileKey || "default") ? chalk.green(" ●") : "";
-            stdout.write(chalk.gray(`  ${padToWidth(m.key, 10)} ${m.model} (${m.provider})${active}\n`));
-          }
-          stdout.write(chalk.bold("\n── 系统参数 ──\n"));
-          stdout.write(chalk.gray(`  权限模式: ${currentMode} (用 /mode 切换)\n`));
-          stdout.write(chalk.gray(`  思考展示: ${showThinking ? "展开" : "折叠"} (用 /config thinking 切换)\n`));
-          stdout.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /config skill-evo 切换)\n\n`));
-          stdout.write(
-            chalk.dim(
-              `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config thinking | /config skill-evo | /config reset\n`,
-            ),
-          );
-        }
-        continue;
-      }
-
-      if (trimmed === "/skill-evo") {
-        // 向后兼容：已并入 /config skill-evo
-        const id = "onTaskComplete:evaluateSkillCreation";
-        if (hookManager.has(id)) {
-          hookManager.off(id);
-          stdout.write(chalk.yellow("✓ 技能自动沉淀: 关闭（可用 /config skill-evo 切换）\n"));
-        } else {
-          const handler = createEvaluateSkillCreation({ sessionStore, modelRouter });
-          hookManager.on("onTaskComplete", handler, { id, priority: 10 });
-          stdout.write(chalk.green("✓ 技能自动沉淀: 开启（可用 /config skill-evo 切换）\n"));
-        }
-        continue;
-      }
-
-      // ─── 多专家辩论（/debate 命令） ───
-      if (trimmed.startsWith("/debate ")) {
-        const topic = trimmed.slice(8).trim();
-        if (!topic) {
-          stdout.write(chalk.red("请输入辩论话题，例如: /debate React vs Vue 技术选型\n"));
-          renderer.printStatus({
-            mode: currentMode,
-            model: modelRouter.getCurrentModel(),
-            tokensUsed: modelRouter.getTokenUsage(),
-            windowPct: statusWindowPct(),
-            queueSize: prefillQueue.length,
-          });
-          continue;
-        }
-
-        const { agentA, agentB } = pickDebateAgents(topic, coordinator.getAvailableAgents());
-        stdout.write(chalk.cyan(`\n⚔  辩论模式: ${agentA} vs ${agentB}\n`));
-        stdout.write(chalk.gray(`话题: ${topic}\n\n`));
-
-        const debateCallbacks: StreamCallbacks = {
-          onToolCall: (expertId, desc) => {
-            stdout.write(`${chalk.blue(`🔧 ${expertId}`)}: ${desc}\n`);
-          },
-          onToolResult: (_name, success, summary) => {
-            const icon = success ? chalk.green("✓") : chalk.red("✗");
-            stdout.write(`  ${icon} ${summary.slice(0, 80)}\n`);
-          },
-        };
-
-        try {
-          const result = await coordinator.debate(topic, agentA, agentB, workingDir, projectDir, debateCallbacks);
-          stdout.write(chalk.cyan("\n📋 辩论报告:\n"));
-          stdout.write(result.text);
-          stdout.write(`\n`);
-        } catch (err) {
-          stdout.write(chalk.red(`\n✗ 辩论失败: ${(err as Error).message}\n`));
-        }
-
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
-        continue;
-      }
-
-      // ─── 多专家协作（/plan 命令，必须在 /skill 之前） ───
-      if (trimmed.startsWith("/plan ")) {
-        const planDesc = trimmed.slice(6).trim();
-        if (!planDesc) {
-          stdout.write(chalk.red("请输入任务描述，例如: /plan 开发一款放置类手游\n"));
-          renderer.printStatus({
-            mode: currentMode,
-            model: modelRouter.getCurrentModel(),
-            tokensUsed: modelRouter.getTokenUsage(),
-            windowPct: statusWindowPct(),
-            queueSize: prefillQueue.length,
-          });
-          continue;
-        }
-
-        stdout.write(chalk.cyan(`\n🔗 Team 协调器正在规划...\n`));
-        stdout.write(chalk.gray("分析任务 → 生成执行计划\n"));
-
-        let planResult;
-        try {
-          planResult = await coordinator.plan(planDesc);
-        } catch (err) {
-          stdout.write(chalk.red(`\n✗ 规划失败: ${(err as Error).message}\n`));
-          renderer.printStatus({
-            mode: currentMode,
-            model: modelRouter.getCurrentModel(),
-            tokensUsed: modelRouter.getTokenUsage(),
-            windowPct: statusWindowPct(),
-            queueSize: prefillQueue.length,
-          });
-          continue;
-        }
-
-        const plan = planResult.plan;
-        stdout.write(chalk.green(`✓ 计划已生成 (${plan.steps.length} 步, ${planResult.source})\n\n`));
-
-        // 打印步骤列表作为进度模板
-        const stepStatus: Record<string, string> = {};
-        for (const step of plan.steps) {
-          const deps = step.dependsOn.length > 0 ? chalk.gray(` ← ${step.dependsOn.join(", ")}`) : "";
-          stdout.write(
-            `  ${chalk.cyan("⚪")} ${chalk.cyan(step.id)}: ${chalk.yellow(step.expertId)} — ${step.description}${deps}\n`,
-          );
-          stepStatus[step.id] = "⚪";
-        }
-
-        stdout.write("\n");
-
-        const callbacks: StreamCallbacks = {
-          onStepStart: (stepId, expertId) => {
-            const step = plan.steps.find((s) => s.id === stepId);
-            if (step) {
-              stepStatus[stepId] = "🔵";
-              stdout.write(
-                `  ${chalk.cyan("🔵")} ${chalk.cyan(stepId)}: ${chalk.yellow(expertId)} — ${step.description} ${chalk.dim("(进行中...)")}\n`,
-              );
-            }
-          },
-          onStepEnd: (stepId, success) => {
-            const step = plan.steps.find((s) => s.id === stepId);
-            if (step) {
-              const icon = success ? chalk.green("✅") : chalk.red("❌");
-              const status = success ? "" : chalk.gray(" (已跳过)");
-              stepStatus[stepId] = success ? "✅" : "❌";
-              stdout.write(
-                `  ${icon} ${chalk.cyan(stepId)}: ${chalk.yellow(step.expertId)} — ${step.description}${status}\n`,
-              );
-            }
-          },
-          onToolCall: (expertId, desc) => {
-            stdout.write(`    ${chalk.blue(`🔧 ${expertId}`)}: ${desc}\n`);
-          },
-          onToolResult: (_name, success, summary) => {
-            const icon = success ? chalk.green("  ✓") : chalk.red("  ✗");
-            stdout.write(`    ${icon} ${summary.slice(0, 80)}\n`);
-          },
-        };
-
-        try {
-          const result = await coordinator.execute(plan, workingDir, projectDir, callbacks);
-          stdout.write(chalk.cyan("\n📋 汇总报告:\n"));
-          stdout.write(result.text);
-          stdout.write(`\n`);
-        } catch (err) {
-          stdout.write(chalk.red(`\n✗ 执行失败: ${(err as Error).message}\n`));
-        }
-
-        renderer.printStatus({
-          mode: currentMode,
-          model: modelRouter.getCurrentModel(),
-          tokensUsed: modelRouter.getTokenUsage(),
-          windowPct: statusWindowPct(),
-          queueSize: prefillQueue.length,
-        });
+      // ─── 命令分发（注册表，按 cliCommands 顺序匹配） ───
+      const matched = cliCommands.find((c) => {
+        const names = [c.name, ...(c.aliases ?? [])];
+        return names.some((n) => trimmed === `/${n}` || trimmed.startsWith(`/${n} `));
+      });
+      if (matched) {
+        const spaceIdx = trimmed.indexOf(" ");
+        const arg = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
+        const action = await matched.handler(commandCtx, arg, trimmed);
+        if (action === "exit") break;
         continue;
       }
 
@@ -971,13 +396,7 @@ program
           stdout.write(chalk.yellow(`\n未找到技能 "${skillName}"\n`));
           const allSkills = skillRegistry.getAll().map((s) => chalk.cyan(s.name));
           stdout.write(chalk.gray(`可用技能: ${allSkills.join(", ")}\n\n`));
-          renderer.printStatus({
-            mode: currentMode,
-            model: modelRouter.getCurrentModel(),
-            tokensUsed: modelRouter.getTokenUsage(),
-            windowPct: statusWindowPct(),
-            queueSize: prefillQueue.length,
-          });
+          commandCtx.printStatus();
           continue;
         }
       }
@@ -997,7 +416,7 @@ program
         thinkingTimer = setInterval(() => {
           renderer.updateLiveStatus({
             mode: currentMode,
-            model: modelRouter.getCurrentModel(),
+            model: modelRouter.getDisplayModel(),
             tokensUsed: modelRouter.getTokenUsage(),
             queueSize: prefillQueue.length,
             iteration: undefined,
@@ -1086,12 +505,11 @@ program
         const result = await agent.runStream(
           { instruction: trimmed, mode: currentMode, workingDir, sessionId: currentSessionId },
           workingDir,
-          projectDir,
           streamCallbacks,
           abortController.signal,
         );
         currentSessionId = result.sessionId;
-        if (result.text) lastAnswerRaw = result.text;
+        if (result.text) lastAnswer.value = result.text;
 
         stopLiveStatus();
         outputRenderer.flush();
@@ -1120,70 +538,13 @@ program
       tui.setOnInterrupt(null);
 
       // 状态栏
-      renderer.printStatus({
-        mode: currentMode,
-        model: modelRouter.getCurrentModel(),
-        tokensUsed: modelRouter.getTokenUsage(),
-        windowPct: statusWindowPct(),
-        queueSize: prefillQueue.length,
-      });
+      commandCtx.printStatus();
     }
 
     // 清理
     renderer.destroy();
+    await telemetry.shutdown();
     sessionStore.close();
   });
-
-function displayWidth(s: string): number {
-  let w = 0;
-  // eslint-disable-next-line no-control-regex
-  const clean = s.replace(/\x1b\[\d+(;\d+)*m/g, "");
-  for (const ch of clean) {
-    // CJK + fullwidth chars take 2 columns
-    w += (ch.codePointAt(0) ?? 0) > 0x7f ? 2 : 1;
-  }
-  return w;
-}
-
-function padToWidth(s: string, targetWidth: number): string {
-  const w = displayWidth(s);
-  if (w >= targetWidth) return s;
-  return s + " ".repeat(targetWidth - w);
-}
-
-/** 毫秒 → 人类可读（<1s 显示 ms，否则 s） */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.floor(ms / 60000)}m${Math.round((ms % 60000) / 1000)}s`;
-}
-
-/** token 数 → 千分位缩写（≥1000 显示 k，≥1e6 显示 m） */
-function fmtK(n: number): string {
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}m`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-}
-
-/** 复制文本到系统剪贴板（Windows: clip.exe, macOS: pbcopy, Linux: xclip） */
-async function copyToClipboard(text: string): Promise<void> {
-  const platform = process.platform;
-  const cmd = platform === "win32" ? "clip" : platform === "darwin" ? "pbcopy" : "xclip";
-  const args = platform === "linux" ? ["-selection", "clipboard"] : [];
-
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(cmd, args, { shell: platform === "win32" });
-    let err = "";
-    child.on("error", (e) => {
-      err = e.message;
-    });
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(err || `clipboard command failed (code ${code})`));
-    });
-    child.stdin.write(text);
-    child.stdin.end();
-  });
-}
 
 program.parse();

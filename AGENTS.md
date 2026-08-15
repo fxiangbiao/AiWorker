@@ -45,7 +45,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `run()`/`runStream()` 的 `onTaskComplete` 传入 `data.messages`；完成后 `result.messages` 清空防内存膨胀
 
 ### 工具与 MCP
-- `src/tools/builtin.ts` — 6 内置工具。`fs_read`/`fs_list` 基准 `workingDir`；`fs_write` 基准 `projectDir` + 路径遍历防护（`path.relative` 检查）
+- `src/tools/builtin.ts` — 6 内置工具。`fs_read`/`fs_list`/`fs_write` 均基准 `workingDir`（读写统一目录）；`fs_write` 路径遍历防护（`path.relative` 检查）
 - `src/mcp/mcp-manager.ts` — stdio/HTTP 双传输，`config/mcp.json` 配置，工具命名 `mcp_{server}_{tool}`，连接失败优雅降级；`getStatuses()` 以连接池为数据源（含未连接服务器），内嵌 tools 列表（CLI `/mcps` 与 Web `/api/v1/mcp` 共用）；启动时在 server/CLI 分支之前 await loadConfig（5s 超时保护）
 - `builtin-server.ts` — 内置 4 工具：math_eval（沙箱 `new Function()` + Math 白名单）/ uuid_gen / json_format / timestamp_convert
 - **重连**：统一 `scheduleReconnect` 防风暴；指数退避 `min(1000*2^n, 30000)` 最多 5 次；Windows `spawn` 需 `shell: true`
@@ -109,4 +109,4 @@ npm run web:build      # Web UI 构建 → web/dist/
 /help                    帮助
 /exit                    退出
 ```
-CLI 参数：`--dir <工作目录>` `--data-dir` `--project-dir`（输出隔离）`--mode` `--show-thinking` `--server` `--port`
+CLI 参数：`--dir <工作目录>`（读写统一基准，默认 `./ai_default_project`）`--data-dir` `--mode` `--show-thinking` `--server` `--port`

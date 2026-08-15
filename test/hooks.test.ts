@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Hooks 系统测试：生命周期事件 + Phase 3 Hook Handlers
  */
 
@@ -225,16 +225,16 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(content).toContain("+ line1");
   });
 
-  it("captureDiff 相对路径以 projectDir 为基准解析（与 fs_write 一致）", async () => {
+  it("captureDiff 相对路径以工作目录为基准解析（与 fs_write 一致）", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-diff");
-    const handler = createCaptureDiff({ projectDir: proj, dataDir: resolve(testDir, "snap") });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: resolve(testDir, "snap") });
 
     const relFile = resolve(proj, "sub", "rel-file.txt");
     mkdirSync(dirname(relFile), { recursive: true });
     writeFileSync(relFile, "old\n", "utf-8");
 
-    // Pre: 保存旧内容（相对路径应解析到 projectDir 下）
+    // Pre: 保存旧内容（相对路径应解析到工作目录下）
     const preCtx = makeCtx({
       event: "onToolCallPre",
       data: { toolName: "fs_write", args: JSON.stringify({ path: "sub/rel-file.txt", content: "new\n" }) },
@@ -265,12 +265,12 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(content).toContain("+ new");
   });
 
-  it("captureDiff 输出目录指纹监控捕获 terminal_exec 写入的新文件", async () => {
+  it("captureDiff 工作目录指纹监控捕获 terminal_exec 写入的新文件", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-monitor");
     const snap = resolve(testDir, "snap-monitor");
     const tracked = new Set<string>();
-    const handler = createCaptureDiff({ projectDir: proj, dataDir: snap, onFileDiff: (p) => tracked.add(p) });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap, onFileDiff: (p) => tracked.add(p) });
 
     const outFile = resolve(proj, "terminal-out.txt");
     rmSync(outFile, { force: true });
@@ -296,11 +296,11 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(content).toContain("2 行");
   });
 
-  it("captureDiff 输出目录指纹监控捕获 terminal_exec 对已存在文件的修改", async () => {
+  it("captureDiff 工作目录指纹监控捕获 terminal_exec 对已存在文件的修改", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-monitor-mod");
     const snap = resolve(testDir, "snap-monitor-mod");
-    const handler = createCaptureDiff({ projectDir: proj, dataDir: snap });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap });
 
     const modFile = resolve(proj, "mod-file.txt");
     mkdirSync(proj, { recursive: true });
@@ -326,7 +326,7 @@ describe("13. Phase 3 Hook Handlers", () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-dedup");
     const snap = resolve(testDir, "snap-dedup");
-    const handler = createCaptureDiff({ projectDir: proj, dataDir: snap });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap });
 
     const newFile = resolve(proj, "fs-new.txt");
     rmSync(newFile, { force: true });

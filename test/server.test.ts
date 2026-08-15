@@ -38,7 +38,7 @@ function mockCoordinator() {
       },
       source: "template" as const,
     });
-  const execute = (_plan: unknown, _wd: string, _pd: string, callbacks: {
+  const execute = (_plan: unknown, _wd: string, callbacks: {
     onStepStart?: (id: string, expert: string, desc: string) => void;
     onStepEnd?: (id: string, success: boolean) => void;
     onToolCall?: (name: string, args: string, id: string) => void;
@@ -79,7 +79,6 @@ function mockAgent() {
     runStream: async (
       task: { mode?: string },
       _wd: string,
-      _pd: string,
       callbacks: { onTextDelta?: (t: string) => void; onToolResult?: (n: string, s: boolean, m: string) => void },
     ) => {
       capturedTask = task;
@@ -98,7 +97,6 @@ function mockDeps() {
   return {
     modelRouter: mockModelRouter(),
     workingDir: testDir,
-    projectDir: testDir,
     coordinator: mockCoordinator(),
     createAgent: () => mockAgent() as never,
     getAgentList: () => [
@@ -435,7 +433,6 @@ describe("HTTP Server — 会话管理端点", () => {
     const deps = {
       modelRouter: mockModelRouter(),
       workingDir: testDir,
-      projectDir: testDir,
       coordinator: mockCoordinator(),
       createAgent: () => mockAgent() as never,
       getAgentList: () => [],

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 工具执行测试
  */
 
@@ -23,7 +23,6 @@ describe("7. 工具执行", () => {
     agentId: "test",
     sessionId: "test",
     workingDir: process.cwd(),
-    projectDir: process.cwd(),
     permissions: "auto",
   };
 

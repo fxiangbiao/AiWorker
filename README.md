@@ -18,7 +18,7 @@
 - 38 个技能（7 大领域）：SKILL.md 正则触发 + 依赖缺失自动降级 + 复杂任务后自沉淀（可开关）
 
 **安全与合规**
-- Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（`--project-dir` 隔离）
+- Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
 - Hooks 5 生命周期点 + 14 个 Handler：敏感数据过滤 / 高危确认 / 权限检查 / Diff 快照 / 审计日志 / 重试退避 / 模型降级
 
 **记忆与上下文**
@@ -64,12 +64,11 @@ npm run web:dev                             # 另开终端：Web UI 开发模式
 ```
 npm run dev -- [选项]
   -m, --mode <ask|plan|auto>  权限模式（默认 auto）
-  -d, --dir <目录>               工作目录（工具读写基准）
-      --data-dir <目录>          数据目录（默认 ./data）
-  -p, --project-dir <目录>       项目输出目录（默认 ./ai_default_project）
-      --show-thinking            显示思考过程（默认折叠）
-      --server                   启动 HTTP Server（REST API + 托管 Web UI）
-      --port <端口>              HTTP Server 端口（默认 3000）
+  -d, --dir <目录>             工作目录（读写统一基准，默认 ./ai_default_project）
+      --data-dir <目录>        数据目录（默认 ./data）
+      --show-thinking          显示思考过程（默认折叠）
+      --server                 启动 HTTP Server（REST API + 托管 Web UI）
+      --port <端口>            HTTP Server 端口（默认 3000）
 ```
 
 ### 权限模式
@@ -175,7 +174,7 @@ aiworker/
 ├── test/                 # 测试（模块化，独立 data 目录防并行冲突）
 ├── web/                  # Web UI（Svelte 5 + Vite，独立 package.json）
 ├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照
-├── ai_default_project/   # Agent 默认输出目录（gitignored）
+├── ai_default_project/   # Agent 默认工作目录（读写基准，gitignored）
 ├── AGENTS.md             # AI 辅助开发指南
 └── vitest.config.ts
 ```
