@@ -33,6 +33,11 @@ export class Tui {
   private completionHints: string[] = [];
   /** 输入区当前可视行数（renderNow 更新，消息区高度计算用） */
   private inputHeight = 1;
+  /** ask_user 等待回答状态（输入行「答> 」编辑，Enter 提交） */
+  private askPending = false;
+  private askResolve: ((v: string | null) => void) | null = null;
+  private askTimer: ReturnType<typeof setTimeout> | null = null;
+  private askOptions: string[] = [];
 
   init(): void {
     if (this.active) return;
@@ -140,13 +145,13 @@ export class Tui {
     const dividerLines = [this.renderDivider(cols)];
     const statusLines = this.status.render(cols);
     this.screen.render([...msgLines, ...hintLines, ...dividerLines, ...inputLines, ...statusLines]);
-    // 光标：agent 运行期间隐藏；prompt 期间显示在输入区当前行
+    // 光标：agent 运行期间隐藏（ask 等待回答除外）；prompt/ask 期间显示在输入区当前行
     // positionCursor 用 1 基行号：inputStart(0 基) + 1 换算
     const statusRow = rows - 1;
     const inputStart = statusRow - this.inputHeight;
     const cursorRow = inputStart + 1 + this.input.cursorRowInWindow();
     const cursorCol = this.input.cursorCol() + 1;
-    if (this.agentRunning) {
+    if (this.agentRunning && !this.askPending) {
       this.screen.hideCursor();
     } else {
       this.screen.positionCursor(cursorRow, cursorCol);
@@ -251,6 +256,102 @@ export class Tui {
     this.onInterrupt = fn;
   }
 
+  // ── ask_user 提问（TUI 输入行交互） ──
+
+  /**
+   * 发起提问（ask_user 工具）：渲染问题/选项到消息区，输入行前缀「答> 」，Enter 提交
+   * 输入序号自动解析为对应选项文本；超时（默认 30s）或 Ctrl+C 取消返回 null
+   */
+  ask(question: string, options: string[], timeoutMs = 30000): Promise<string | null> {
+    // 上次提问未决：先取消
+    if (this.askPending) this.resolveAsk(null);
+
+    this.messages.append("");
+    this.messages.append(`${chalk.cyan("❓")} ${question}`);
+    options.forEach((o, i) => {
+      this.messages.append(`   ${chalk.dim(`${i + 1})`)} ${o}`);
+    });
+    this.messages.append(chalk.dim("（直接输入回答，或输入选项序号后回车）"));
+
+    this.askOptions = options;
+    this.input.setPrefix("答> ");
+    this.input.setDisabled(false);
+    this.input.clear();
+    this.askPending = true;
+    this.requestRender();
+
+    return new Promise<string | null>((resolve) => {
+      this.askResolve = resolve;
+      this.askTimer = setTimeout(() => this.resolveAsk(null), timeoutMs);
+    });
+  }
+
+  /** 结算提问：复位输入态并 resolve */
+  private resolveAsk(value: string | null): void {
+    if (!this.askPending) return;
+    this.askPending = false;
+    if (this.askTimer) {
+      clearTimeout(this.askTimer);
+      this.askTimer = null;
+    }
+    this.input.clear();
+    this.input.setDisabled(true);
+    this.input.setPrefix("你> ");
+    this.askOptions = [];
+    const resolve = this.askResolve;
+    this.askResolve = null;
+    this.requestRender();
+    resolve?.(value);
+  }
+
+  /** ask 等待回答期间的按键处理 */
+  private handleAskKey(ev: KeyEvent): void {
+    switch (ev.type) {
+      case "char":
+        this.input.type(ev.char);
+        break;
+      case "paste":
+        for (const ch of ev.text) this.input.type(ch);
+        break;
+      case "enter": {
+        const value = this.input.getValue().trim();
+        if (!value) return; // 空输入忽略（等待继续输入）
+        const idx = parseInt(value, 10);
+        const answer =
+          !Number.isNaN(idx) && idx >= 1 && idx <= this.askOptions.length
+            ? this.askOptions[idx - 1]!
+            : value;
+        this.resolveAsk(answer);
+        return;
+      }
+      case "backspace":
+        this.input.backspace();
+        break;
+      case "delete":
+        this.input.deleteChar();
+        break;
+      case "left":
+        this.input.moveLeft();
+        break;
+      case "right":
+        this.input.moveRight();
+        break;
+      case "home":
+        this.input.moveHome();
+        break;
+      case "end":
+        this.input.moveEnd();
+        break;
+      case "ctrlC":
+      case "ctrlD":
+        this.resolveAsk(null); // 取消提问
+        return;
+      default:
+        return; // ↑/↓/Tab/altEnter 等忽略（答案保持单行）
+    }
+    this.requestRender();
+  }
+
   /** 测试/工具用：模拟注入键事件 */
   simulateKey(ev: KeyEvent): void {
     this.handleKey(ev);
@@ -259,6 +360,12 @@ export class Tui {
   // ── 键处理 ──
 
   private handleKey(ev: KeyEvent): void {
+    // ask_user 等待回答：输入行编辑优先（agent 运行期间也响应）
+    if (this.askPending) {
+      this.handleAskKey(ev);
+      return;
+    }
+
     // 粘贴：插入文本
     if (ev.type === "paste") {
       if (this.promptActive && !this.agentRunning) {

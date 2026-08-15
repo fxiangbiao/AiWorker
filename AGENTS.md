@@ -54,7 +54,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### 工具与 MCP
 - `src/tools/builtin.ts` — 8 内置工具。`fs_read`/`fs_list`/`fs_write` 均基准 `workingDir`（读写统一目录）；`fs_write` 路径遍历防护（`path.relative` 检查）；**超长结果落盘**：fs_read/terminal 输出 >8000 字符经 `spillOrTruncate` 写入 `data/spills/`（需 `ToolContext.dataDir`，由 agent-loop 从 `deps.dataDir` 透传）
-- `src/tools/ask-channel.ts` — **ask_user 提问通道**：`AskProvider` 全局分发（对齐 confirm-channel），CLI 走 stdin（问题独立成行 + 选项逐行编号），HTTP 走 SSE `ask_user` 挂起 + POST `/api/v1/ask`；`isAskWaiting()` 供 TUI 状态栏显示"等待你的回答"；`ask_user` 已加入只读白名单（`PermissionModel.READONLY_TOOLS`）
+- `src/tools/ask-channel.ts` — **ask_user 提问通道**：`AskProvider` 全局分发（对齐 confirm-channel）；**TUI 模式走输入行**（`tui.ask`：答> 前缀 + Enter 提交、序号自动解析选项、超时/Ctrl+C 取消），无 TUI 时回退 stdin（问题独立成行 + 选项逐行编号）；HTTP 走 SSE `ask_user` 挂起 + POST `/api/v1/ask`；`isAskWaiting()` 供 TUI 状态栏显示"等待你的回答"；`ask_user` 已加入只读白名单（`PermissionModel.READONLY_TOOLS`）
 - `src/tools/terminal-session.ts` — **持久终端会话**：`cmd.exe /Q` spawn + marker 分隔符解析；cd/env 跨调用保留；**超时销毁进程防缓冲区错位**（下次 exec 自动重启）；`process.on("exit")` 清理孤儿进程
 - `src/mcp/mcp-manager.ts` — stdio/HTTP 双传输，`config/mcp.json` 配置，工具命名 `mcp_{server}_{tool}`，连接失败优雅降级；`getStatuses()` 以连接池为数据源（含未连接服务器），内嵌 tools 列表（CLI `/mcps` 与 Web `/api/v1/mcp` 共用）；启动时在 server/CLI 分支之前 await loadConfig（5s 超时保护）
 - `builtin-server.ts` — 内置 4 工具：math_eval（沙箱 `new Function()` + Math 白名单）/ uuid_gen / json_format / timestamp_convert

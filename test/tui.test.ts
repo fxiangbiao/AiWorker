@@ -617,6 +617,65 @@ describe("Tui 帧合成", () => {
     t.destroy();
   });
 
+  it("ask 提问走 TUI 输入行：选项序号回车提交并复位输入态", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("你平时喜欢什么游戏？", ["竞技类", "单机大作", "休闲类"]);
+    // 问题与选项渲染进消息区
+    const rendered = t.messages.renderViewport(80, 10);
+    // eslint-disable-next-line no-control-regex
+    const clean = rendered.map((l) => l.replace(/\x1b\[\d+(;\d+)*m/g, "")).join("\n");
+    expect(clean).toContain("❓ 你平时喜欢什么游戏？");
+    expect(clean).toContain("1) 竞技类");
+    expect(clean).toContain("3) 休闲类");
+    // 输入行进入答> 编辑态
+    expect(t.input.getPrefix()).toBe("答> ");
+    // 输入序号 2 回车 → 解析为选项文本
+    t.simulateKey({ type: "char", char: "2" });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("单机大作");
+    // 状态复位：前缀恢复、缓冲区清空
+    expect(t.input.getPrefix()).toBe("你> ");
+    expect(t.input.getValue()).toBe("");
+    expect(t.input.isMultiLine()).toBe(false);
+    t.destroy();
+  });
+
+  it("ask 自由文本回车提交；空输入忽略不提交", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p = t.ask("问题", []);
+    t.simulateKey({ type: "enter" }); // 空输入 → 不提交
+    let resolved = false;
+    void p.then(() => {
+      resolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(false);
+    for (const ch of "自由回答") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("自由回答");
+    t.destroy();
+  });
+
+  it("ask 超时返回 null；Ctrl+C 取消返回 null", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    const p1 = t.ask("q", [], 50);
+    expect(await p1).toBeNull();
+    const p2 = t.ask("q", []);
+    t.simulateKey({ type: "ctrlC" });
+    expect(await p2).toBeNull();
+    expect(t.input.getPrefix()).toBe("你> ");
+    t.destroy();
+  });
+
   it("Enter 后提问内容追加到消息历史（你> 前缀）", async () => {
     const { Tui } = await import("../src/terminal/tui.js");
     const t = new Tui();

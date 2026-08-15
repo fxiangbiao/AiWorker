@@ -40,7 +40,7 @@ import { StreamOutputRenderer } from "./terminal/output.js";
 import { buildCliCommands } from "./commands/registry.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
-import { isAskWaiting } from "./tools/ask-channel.js";
+import { setAskProvider, isAskWaiting } from "./tools/ask-channel.js";
 import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider } from "./types.js";
 
 const program = new Command();
@@ -67,6 +67,11 @@ program
     const isServer = !!options.server;
     if (!isServer) {
       renderer.init();
+    }
+
+    // TUI 激活时：ask_user 提问走 TUI 输入行（答> 前缀 + Enter 提交），而非 cooked-mode stdin
+    if (!isServer && tui.isActive()) {
+      setAskProvider((req) => tui.ask(req.question, req.options));
     }
 
     const outputRenderer = new StreamOutputRenderer();
