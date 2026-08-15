@@ -11,8 +11,8 @@ export default {
   version: "0.1.0",
   description: "示例插件：now（当前时间）+ greeting（问候，读 config.json）+ 工具调用日志 Hook",
   setup(ctx: PluginContext) {
-    // dataDir 可能尚未创建（异常启动/测试），日志目录自建更健壮
-    mkdirSync(ctx.dataDir, { recursive: true });
+    // 日志目录自建更健壮（dataDir/logs/plugin 可能尚未创建）
+    mkdirSync(resolve(ctx.dataDir, "logs/plugin"), { recursive: true });
     const greeting = typeof ctx.config.greeting === "string" ? ctx.config.greeting : "你好";
 
     // 1) 全局工具：所有专家可见（受权限模型约束，ask 模式默认拦截非只读白名单工具）
@@ -74,7 +74,7 @@ export default {
       const d = hc.data as { toolName?: string; result?: { success?: boolean; content?: string } };
       const status = d.result?.success ? "ok" : "fail";
       appendFileSync(
-        resolve(ctx.dataDir, "plugin-example-tools.log"),
+        resolve(ctx.dataDir, "logs/plugin/plugin-example-tools.log"),
         `${new Date().toISOString()} ${hc.agentId} ${d.toolName ?? "?"} ${status}\n`,
         "utf-8",
       );

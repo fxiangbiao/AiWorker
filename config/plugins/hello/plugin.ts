@@ -2,11 +2,14 @@
  * 最简插件示例
  * 目录名 hello = 插件名；入口默认导出 setup(ctx) 或 { setup, version, description }
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { PluginContext, HookContext } from "../../../src/types.js";
 
 export default async function setup(ctx: PluginContext) {
+  // 日志目录自建更健壮（dataDir/logs/plugin 可能尚未创建）
+  mkdirSync(resolve(ctx.dataDir, "logs/plugin"), { recursive: true });
+
   // 1) 注册工具（scope 可选：注册到指定专家作用域，同名遮蔽全局）
   ctx.registerTool(
     "hello",
@@ -23,6 +26,6 @@ export default async function setup(ctx: PluginContext) {
   //    注意：HookContext 没有 log 方法；TUI 接管 stdout，console.log 会破坏界面，写文件更安全
   ctx.registerHook("onMessage", async (hc: HookContext) => {
     const data = hc.data as { instruction?: string };
-    appendFileSync(resolve(ctx.dataDir, "hello-messages.log"), `${new Date().toISOString()} ${data.instruction}\n`, "utf-8");
+    appendFileSync(resolve(ctx.dataDir, "logs/plugin/hello-messages.log"), `${new Date().toISOString()} ${data.instruction}\n`, "utf-8");
   });
 }
