@@ -31,8 +31,11 @@
   <div class="ac-question">{ask.question}</div>
   {#if ask.options && ask.options.length > 0}
     <div class="ac-options">
-      {#each ask.options as opt}
-        <button class="ac-btn" onclick={() => respond(opt)}>{opt}</button>
+      {#each ask.options as opt, i}
+        <button class="ac-btn" onclick={() => respond(opt)}>
+          <span class="ac-num">{i + 1}</span>
+          <span class="ac-opt-text">{opt}</span>
+        </button>
       {/each}
     </div>
   {/if}
@@ -64,19 +67,37 @@
   .ac-title { font-size: 12px; font-weight: 600; color: var(--primary); }
   .ac-hint { font-size: 11px; font-weight: 400; color: var(--dim); margin-left: 4px; }
   .ac-question { font-size: 12px; color: var(--text); margin: 6px 0 10px; line-height: 1.6; word-break: break-all; }
-  .ac-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+  .ac-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
   .ac-btn {
-    padding: 6px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 12px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--surface);
     color: var(--text);
     font-family: var(--font-ui);
     font-size: 12px;
+    text-align: left;
     cursor: pointer;
     transition: all .15s;
   }
   .ac-btn:hover { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+  .ac-num {
+    flex: none;
+    min-width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    border-radius: 4px;
+    background: var(--primary-light);
+    color: var(--primary);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .ac-opt-text { word-break: break-all; }
   .ac-input-row { display: flex; gap: 8px; }
   .ac-input-row input {
     flex: 1;
