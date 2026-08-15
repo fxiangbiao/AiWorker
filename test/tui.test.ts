@@ -623,6 +623,8 @@ describe("Tui 帧合成", () => {
     t.init();
     t.screen.setOut(() => {});
     const p = t.ask("你平时喜欢什么游戏？", ["竞技类", "单机大作", "休闲类"]);
+    // 挂起期间状态栏显示"等待你的回答"（不依赖已被工具调用停掉的定时器）
+    expect(t.status.getData().status).toBe("等待你的回答");
     // 问题与选项渲染进消息区
     const rendered = t.messages.renderViewport(80, 10);
     // eslint-disable-next-line no-control-regex
@@ -636,10 +638,11 @@ describe("Tui 帧合成", () => {
     t.simulateKey({ type: "char", char: "2" });
     t.simulateKey({ type: "enter" });
     expect(await p).toBe("单机大作");
-    // 状态复位：前缀恢复、缓冲区清空
+    // 状态复位：前缀恢复、缓冲区清空、状态栏回到思考中
     expect(t.input.getPrefix()).toBe("你> ");
     expect(t.input.getValue()).toBe("");
     expect(t.input.isMultiLine()).toBe(false);
+    expect(t.status.getData().status).toBe("思考中");
     t.destroy();
   });
 

@@ -278,6 +278,9 @@ export class Tui {
     this.input.setDisabled(false);
     this.input.clear();
     this.askPending = true;
+    // 直接更新状态栏：实时定时器在首个工具调用时已停止（onToolCall 内 stopLiveStatus），
+    // 不能依赖定时器轮询 isAskWaiting()
+    this.status.setData({ ...this.status.getData(), status: "等待你的回答" });
     this.requestRender();
 
     return new Promise<string | null>((resolve) => {
@@ -300,6 +303,8 @@ export class Tui {
     this.askOptions = [];
     const resolve = this.askResolve;
     this.askResolve = null;
+    // 恢复"思考中"（agent 仍在运行；定时器若已恢复会继续接管）
+    this.status.setData({ ...this.status.getData(), status: "思考中" });
     this.requestRender();
     resolve?.(value);
   }
