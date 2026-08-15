@@ -157,6 +157,7 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/diffs` | GET | 会话文件变更（快照 diff 结构化，按会话分组） |
 | `/api/v1/confirm` | POST | 确认卡片响应（JSON：`id` / `value`） |
 | `/api/v1/ask` | POST | 提问卡片回答（JSON：`id` / `answer`，ask_user 工具用） |
+| `/api/v1/plugins` | GET | 已加载插件列表（名称/版本/状态/注册工具） |
 
 ---
 
@@ -169,12 +170,14 @@ aiworker/
 │   ├── agents/           # 6 个 Agent YAML（覆盖 TS 默认配置）
 │   ├── mcp.json          # MCP 服务器
 │   ├── permissions.json  # 权限规则
-│   └── hooks.json        # Hook 注册（14 handlers / 5 events）
+│   ├── hooks.json        # Hook 注册（14 handlers / 5 events）
+│   └── plugins/          # 插件（每目录一个，plugin.ts|js 入口 + 可选 config.json）
 ├── skills/               # 技能库（38 个 SKILL.md，7 领域 + pending）
 ├── plans/                # Sprint 设计文档
 ├── src/
 │   ├── core/             # agent-loop / model-router / context-manager /
-│   │                     # team-coordinator / skill-registry / trace（轨迹投影）...
+│   │                     # team-coordinator / skill-registry / trace（轨迹投影）/
+│   │                     # tool-registry（作用域视图）/ plugin-manager（插件加载）...
 │   ├── commands/         # CLI 命令注册表（CliCommand/CommandContext 模块化）
 │   ├── agents/           # BaseAgent + 7 专家实现 + 路由
 │   ├── hooks/            # Hook 管理器 + 配置加载 + 14 个 handler
@@ -206,7 +209,58 @@ aiworker/
 | MCP 服务器 | `config/mcp.json` | stdio/HTTP 传输，`enabled: false` 禁用 |
 | 权限规则 | `config/permissions.json` | 工具级权限 |
 | Hook 注册 | `config/hooks.json` | 14 handlers，支持 `enabled: false` |
+| 插件 | `config/plugins/` | 每目录一个插件，默认导出 `setup(ctx)`（见下） |
 | 运行时覆盖 | `data/runtime-config.json` | `/config` 命令持久化，启动自动恢复 |
+
+---
+
+## 插件开发
+
+轻量插件契约（对齐 DSH "seam" 思想，不上 Cordis）：`config/plugins/<name>/` 下每个子目录一个插件，启动时自动加载（`/plugins` 查看状态）。
+
+```
+config/plugins/my-plugin/
+├── plugin.ts        # 入口（也支持 plugin.js / index.ts / index.js，.ts 优先）
+└── config.json      # 可选，注入 ctx.config
+```
+
+契约即"默认导出一个 `setup(ctx)` 函数"（也可导出 `{ setup, version, description }` 对象）：
+
+```ts
+// config/plugins/hello/plugin.ts
+export default async function setup(ctx) {
+  // 注册工具（scope 可选：注册到指定专家作用域，同名遮蔽全局）
+  ctx.registerTool(
+    "hello",
+    {
+      type: "function",
+      function: { name: "hello", description: "打个招呼", parameters: { type: "object", properties: {} } },
+    },
+    async (_args, toolCtx) => ({ tool_call_id: "", success: true, content: `你好，${toolCtx.agentId}！` }),
+    // { scope: "coding" }  ← 仅 coding 专家可见
+  );
+
+  // 注册 Hook（委托 hookManager，返回 id 可注销）
+  ctx.registerHook("onMessage", async (hc) => {
+    /* ... */
+  });
+}
+```
+
+**PluginContext**：
+
+| 成员 | 说明 |
+|------|------|
+| `name` / `dataDir` | 插件名 / 数据目录 |
+| `config` | `config.json` 内容（存在则解析） |
+| `registerTool(name, definition, handler, options?)` | 注册工具；`options.scope` 指定专家作用域（缺省全局） |
+| `registerHook(event, handler, options?)` | 注册 Hook（6 事件见 AGENTS.md） |
+
+**要点**：
+- **fail-soft**：单个插件加载失败记录 error 并在启动横幅 ⚠ 告警，不阻断启动（`/plugins` 可查）。
+- **安全**：插件是任意进程权限代码，仅加载可信插件。
+- **工具作用域**：插件工具注册到 `scope: "coding"` 后仅 coding 专家的模型可见（专家工具可见性 = 各 agent YAML 的 `tools:` 白名单，`mcp_` 前缀工具始终全局可见）。
+- dev（tsx）下 `.ts`/`.js` 均可；编译后（node dist）仅 `.js` 可用。
 
 ---
 

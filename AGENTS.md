@@ -43,7 +43,8 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `trace.ts` — 轨迹投影：`projectTrace`（事件 → 时间线，含 full 完整内容）+ `computeSessionStats`
 - `skill-registry.ts` / `skill-evolution.ts` — 递归加载 SKILL.md；自进化阈值 `iterations>=3 && toolCalls>=3`，Jaccard 0.5 去重，评分 >=3★ 注册，默认关闭（`skills/pending/` 存候选）
 - `project-profiler.ts` — 启动扫描工作目录，注入 system prompt
-- `tool-registry.ts` — 工具注册 + 运行时可用性检查
+- `tool-registry.ts` — 工具注册 + 运行时可用性检查；**作用域视图**（`getScope(scopeId)` 返回 `ToolScopeView`：scope 注册 + 全局回退，同名遮蔽全局；agent-loop 传 `toolScope: agentId`，模型可见性与执行解析共用同一 view）；agent 工具可见性白名单（`config.tools` 非空时仅保留白名单 + `mcp_` 前缀工具）
+- `plugin-manager.ts` — **轻量插件契约**：`config/plugins/<name>/` 每目录一插件（`plugin.ts|js`/`index.ts|js` 默认导出 `setup(ctx)`，可选 `config.json`）；`PluginContext.registerTool(..., {scope?})` / `registerHook`；fail-soft（单个失败记录 error 不阻断启动）；幂等加载（loadedEntries 缓存）；dev(tsx) 支持 .ts/.js，编译后仅 .js
 - `llm/` — LLM Provider Seam：`llm-adapter.ts`（LlmConnection/LlmAdapter 契约）、`llm-error.ts`（稳定错误码 + classifyError/isRetryable）、`adapter-registry.ts`（单例，未知 id 降级 openai-compatible）、`openai-compatible.ts`（唯一接触 openai SDK 的模块；流式已产出 chunk 后失败**不重试**防重复）
 
 ### 智能体与路由 `src/agents/`
@@ -76,7 +77,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - 默认模式 auto；ask 模式放行只读工具（含 ask_user）+ 内置 MCP 工具（`mcp_builtin_*`，无副作用），外部 MCP 工具仍拦截
 - 确认通道 `confirm-channel.ts`（高危确认）+ `tools/ask-channel.ts`（ask_user 提问）：均为 provider 分发——CLI 走 stdin，HTTP 走 SSE（`confirm_request` / `ask_user`）挂起 + POST `/api/v1/confirm` / `/api/v1/ask` 响应（30s 超时自动拒绝）；server 端 `runWithChannels(write, fn)` 同时注册两个 provider，统一 chat/plan/debate
 - `dangerousCommandBlock` 按模式分流：ask 直接拦截，plan/auto 放行给 confirmHighRisk 弹确认卡片
-- ask 模式 agent-loop 传全部工具定义（模型可尝试调用），非只读工具由 `permissionCheck`（`allowsToolFor`）拦截
+- ask 模式传白名单内工具定义（模型可尝试调用，非只读工具由 `permissionCheck`（`allowsToolFor`）拦截）
 - 拦截失败时 server 发 `tool_blocked` SSE 事件，前端显示红色告警横幅（errors 数组，切会话清空）
 - Windows 下 terminal_exec / terminal_session 前缀 `chcp 65001` 强制 UTF-8 防 cmd 中文乱码
 
@@ -88,7 +89,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### HTTP Server 与 Web UI
 - `src/server.ts` — **所有 API 统一 `/api/v1` 前缀**（`API_PREFIX` 常量 + `apiUrl()` 辅助）；静态资源托管仅排除 `/api`，新增端点用 `apiUrl("/xxx")` 注册即自动生效
-- 端点：GET `/api/v1/agents` `/status` `/tools` `/sessions`(+/:id) `/context` `/logs` `/skills` `/diffs` `/trace/:id` `/stats` `/telemetry/:id`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` `/ask` SSE 流式；托管 `web/dist/`（静态托管路径穿越防护 + favicon 204 + Cache-Control 头）
+- 端点：GET `/api/v1/agents` `/status` `/tools` `/sessions`(+/:id) `/context` `/logs` `/skills` `/diffs` `/trace/:id` `/stats` `/telemetry/:id` `/plugins`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` `/ask` SSE 流式；托管 `web/dist/`（静态托管路径穿越防护 + favicon 204 + Cache-Control 头）
 - `/plan` SSE 事件序列：plan → step_start → step_end → done；`/debate`：debate_start → done；两者均经 `deps.coordinator`（ServerDeps 依赖注入）
 - `pickDebateAgents` 在 `src/core/team-coordinator.ts` 导出，CLI 与 HTTP 共用
 - `/chat` 接受 `sessionId`：Web UI 用 chat id 作为 sessionId 持久化到 SQLite
@@ -103,6 +104,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `test/` + `helpers.ts`：`makeTestDir(name)` 创建独立 `data-test/<name>/`（防并行 worker 冲突），`setupEnv` 注册内置工具 + 审计
 - `server.test.ts`：HTTP 端点覆盖（mock coordinator/agent + listen(0) 随机端口 + fetch，避免真实 LLM）
 - Sprint 26 新增：`agent-loop.test.ts`（超时/防循环，mock modelRouter + 真实 SessionStore/ContextManager）、`approval-service.test.ts`（决策矩阵 + fail-closed）、`spill.test.ts`、`ask-channel.test.ts`、`terminal-session.test.ts`（真实 spawn cmd，超时/重启/持久）
+- Sprint 27 新增：`tool-registry.test.ts`（作用域遮蔽/回退/过滤）、`plugin-manager.test.ts`（临时目录插件加载：setup/工具/hook/config.json/scope/fail-soft/幂等）；扩展 `agent-loop.test.ts`（白名单过滤 + mcp_ 保留 + toolScope 遮蔽）、`cli-commands.test.ts`（/plugins）、`server.test.ts`（/api/v1/plugins）
 - vitest 配置在 `vitest.config.ts`（include `test/**/*.test.ts`）
 
 ## CLI 交互命令
@@ -115,6 +117,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 /new                     新会话
 /log                     监控日志（轮次/耗时/token）
 /context [查询]          上下文分层 token 占比 + MCP 工具列表
+/plugins                 查看插件（config/plugins/ 状态与注册工具）
 /trace [序号]            会话轨迹时间线（事件级复盘，--json 输出）
 /status                  运行状态
 /config                  模型/温度/max-tokens/thinking/skill-evo（持久化 data/runtime-config.json）
