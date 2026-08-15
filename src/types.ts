@@ -423,6 +423,8 @@ export interface PluginInfo {
   /** 注册的工具（scope 注册带 "scope:name" 前缀） */
   registeredTools: string[];
   registeredHooks: number;
+  /** 注册期警告（如全局同名工具覆盖），/plugins 以 ⚠ 展示 */
+  warnings?: string[];
 }
 
 export interface PluginRegisterToolOptions {

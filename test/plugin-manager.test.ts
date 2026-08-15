@@ -165,3 +165,64 @@ describe("PluginManager", () => {
     expect(await manager.loadFromDir(resolve(dir, "nonexistent"))).toEqual({ loaded: 0, failed: 0 });
   });
 });
+
+describe("插件同名冲突警告", () => {
+  /** 生成注册单个工具的插件源码 */
+  function toolPluginSrc(tool: string, extra?: string): string {
+    const def = `{ type: "function", function: { name: ${JSON.stringify(tool)}, description: "x", parameters: { type: "object", properties: {} } } }`;
+    return `export default async function setup(ctx) { ctx.registerTool(${JSON.stringify(tool)}, ${def}, async () => ({ tool_call_id: "", success: true, content: "ok" }), ${extra ?? "undefined"}); }`;
+  }
+
+  /** 在指定父目录创建单插件目录并返回其 plugins 父目录 */
+  function mkPluginRoot(rootName: string, pluginName: string, source: string): string {
+    const base = makeTestDir(rootName);
+    const pDir = resolve(base, "plugins", pluginName);
+    mkdirSync(pDir, { recursive: true });
+    writeFileSync(resolve(pDir, "plugin.ts"), source, "utf-8");
+    return resolve(base, "plugins");
+  }
+
+  it("全局同名覆盖产生警告（后者覆盖前者）", async () => {
+    const root1 = mkPluginRoot("plugin-warn-g1", "one", toolPluginSrc("tool_x"));
+    const root2 = mkPluginRoot("plugin-warn-g2", "two", toolPluginSrc("tool_x"));
+    const manager = new PluginManager();
+    await manager.loadFromDir(root1); // one 先
+    await manager.loadFromDir(root2); // two 后
+    expect(manager.getPlugin("one")?.warnings ?? []).toHaveLength(0);
+    expect(manager.getPlugin("two")?.warnings).toHaveLength(1);
+    expect(manager.getPlugin("two")?.warnings?.[0]).toContain("tool_x");
+    expect(manager.getPlugin("two")?.warnings?.[0]).toContain("one");
+  });
+
+  it("scope 注册遮蔽全局不警告；scope 内同名覆盖警告", async () => {
+    toolRegistry.register("tool_y", {
+      type: "function",
+      function: { name: "tool_y", description: "y", parameters: { type: "object", properties: {} } },
+    }, async () => ({ tool_call_id: "", success: true, content: "global" }));
+    const root1 = mkPluginRoot("plugin-warn-s1", "scoper1", toolPluginSrc("tool_y", "{ scope: 'coding' }"));
+    const root2 = mkPluginRoot("plugin-warn-s2", "scoper2", toolPluginSrc("tool_y", "{ scope: 'coding' }"));
+    const manager = new PluginManager();
+    await manager.loadFromDir(root1); // scoper1 先
+    await manager.loadFromDir(root2); // scoper2 后
+    // scoper1 遮蔽全局 tool_y → 设计特性，不警告
+    expect(manager.getPlugin("scoper1")?.warnings ?? []).toHaveLength(0);
+    // scoper2 覆盖 scoper1 在 coding 作用域内的同名工具 → 警告
+    expect(manager.getPlugin("scoper2")?.warnings).toHaveLength(1);
+    expect(manager.getPlugin("scoper2")?.warnings?.[0]).toContain("coding");
+    expect(manager.getPlugin("scoper2")?.warnings?.[0]).toContain("scoper1");
+  });
+
+  it("插件自身重复注册同名工具不警告", async () => {
+    writePlugin(
+      "self",
+      `export default async function setup(ctx) {
+        const def = { type: "function", function: { name: "dup", description: "x", parameters: { type: "object", properties: {} } } };
+        ctx.registerTool("dup", def, async () => ({ tool_call_id: "", success: true, content: "1" }));
+        ctx.registerTool("dup", def, async () => ({ tool_call_id: "", success: true, content: "2" }));
+      }`,
+    );
+    const manager = new PluginManager();
+    await manager.loadFromDir(dir);
+    expect(manager.getPlugin("self")?.warnings ?? []).toHaveLength(0);
+  });
+});

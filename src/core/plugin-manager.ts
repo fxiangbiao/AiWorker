@@ -121,6 +121,7 @@ export class PluginManager {
 
     const registeredTools: string[] = [];
     const registeredHooks: string[] = [];
+    const warnings: string[] = [];
     const ctx: PluginContext = {
       name,
       dataDir,
@@ -133,9 +134,25 @@ export class PluginManager {
       ) => {
         const { scope, ...regOptions } = options ?? {};
         if (scope) {
+          // scope 内同名覆盖（其他来源）→ 警告；scope 遮蔽全局是设计特性，不警告
+          const scopedExisting = toolRegistry
+            .listScopeTools(scope)
+            .find((t) => t.definition.function.name === toolName);
+          if (scopedExisting && scopedExisting.plugin !== name) {
+            warnings.push(
+              `工具 ${toolName} 覆盖 ${scope} 作用域内已存在的同名工具${scopedExisting.plugin ? `（来自插件 ${scopedExisting.plugin}）` : ""}`,
+            );
+          }
           toolRegistry.getScope(scope).register(toolName, definition, handler, { ...regOptions, plugin: name });
           registeredTools.push(`${scope}:${toolName}`);
         } else {
+          const existing = toolRegistry
+            .getAll()
+            .find((t) => t.definition.function.name === toolName && t.enabled);
+          if (existing && existing.plugin !== name) {
+            const from = existing.plugin ? `插件 ${existing.plugin}` : "内置工具/MCP";
+            warnings.push(`工具 ${toolName} 覆盖${from}注册的全局同名工具`);
+          }
           toolRegistry.register(toolName, definition, handler, { ...regOptions, plugin: name });
           registeredTools.push(toolName);
         }
@@ -157,6 +174,7 @@ export class PluginManager {
       status: "loaded",
       registeredTools,
       registeredHooks: registeredHooks.length,
+      warnings,
     });
     this.loadedEntries.set(entryFile, name);
   }

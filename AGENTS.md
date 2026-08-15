@@ -44,7 +44,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `skill-registry.ts` / `skill-evolution.ts` — 递归加载 SKILL.md；自进化阈值 `iterations>=3 && toolCalls>=3`，Jaccard 0.5 去重，评分 >=3★ 注册，默认关闭（`skills/pending/` 存候选）
 - `project-profiler.ts` — 启动扫描工作目录，注入 system prompt
 - `tool-registry.ts` — 工具注册 + 运行时可用性检查；**作用域视图**（`getScope(scopeId)` 返回 `ToolScopeView`：scope 注册 + 全局回退，同名遮蔽全局；agent-loop 传 `toolScope: agentId`，模型可见性与执行解析共用同一 view）；agent 工具可见性白名单（`config.tools` 非空时仅保留白名单 + `mcp_` 前缀工具）
-- `plugin-manager.ts` — **轻量插件契约**：`config/plugins/<name>/` 每目录一插件（`plugin.ts|js`/`index.ts|js` 默认导出 `setup(ctx)`，可选 `config.json`）；`PluginContext.registerTool(..., {scope?})` / `registerHook`；fail-soft（单个失败记录 error 不阻断启动）；幂等加载（loadedEntries 缓存）；dev(tsx) 支持 .ts/.js，编译后仅 .js
+- `plugin-manager.ts` — **轻量插件契约**：`config/plugins/<name>/` 每目录一插件（`plugin.ts|js`/`index.ts|js` 默认导出 `setup(ctx)`，可选 `config.json`）；`PluginContext.registerTool(..., {scope?})` / `registerHook`；fail-soft（单个失败记录 error 不阻断启动）；幂等加载（loadedEntries 缓存）；**同名冲突警告**（全局/scope 内同名覆盖记录到 `PluginInfo.warnings`，`/plugins` 以 ⚠ 展示；scope 遮蔽全局是特性不警告）；dev(tsx) 支持 .ts/.js，编译后仅 .js
 - `llm/` — LLM Provider Seam：`llm-adapter.ts`（LlmConnection/LlmAdapter 契约）、`llm-error.ts`（稳定错误码 + classifyError/isRetryable）、`adapter-registry.ts`（单例，未知 id 降级 openai-compatible）、`openai-compatible.ts`（唯一接触 openai SDK 的模块；流式已产出 chunk 后失败**不重试**防重复）
 
 ### 智能体与路由 `src/agents/`

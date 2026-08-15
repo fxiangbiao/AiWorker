@@ -27,6 +27,9 @@ export const pluginsCommands: CliCommand[] = [
               ? chalk.dim(` · ${p.registeredTools.length} 工具, ${p.registeredHooks} hook`)
               : chalk.red(` · ${p.error ?? "加载失败"}`);
           ctx.writeLine(`  ${icon} ${chalk.white(padToWidth(p.name, 20))}${version}${loadedDetail}`);
+          for (const w of p.warnings ?? []) {
+            ctx.writeLine(`      ${chalk.yellow("⚠")} ${chalk.yellow(w)}`);
+          }
           for (const t of p.registeredTools) {
             ctx.writeLine(`      ${chalk.dim("└")} ${chalk.cyan(t)}`);
           }
