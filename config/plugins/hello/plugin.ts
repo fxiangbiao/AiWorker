@@ -2,6 +2,8 @@
  * 最简插件示例
  * 目录名 hello = 插件名；入口默认导出 setup(ctx) 或 { setup, version, description }
  */
+import { appendFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { PluginContext, HookContext } from "../../../src/types.js";
 
 export default async function setup(ctx: PluginContext) {
@@ -21,7 +23,6 @@ export default async function setup(ctx: PluginContext) {
   //    注意：HookContext 没有 log 方法；TUI 接管 stdout，console.log 会破坏界面，写文件更安全
   ctx.registerHook("onMessage", async (hc: HookContext) => {
     const data = hc.data as { instruction?: string };
-    // 例：仅读取，不拦截（空实现等价于放行）
-    void data;
+    appendFileSync(resolve(ctx.dataDir, "hello-messages.log"), `${new Date().toISOString()} ${data.instruction}\n`, "utf-8");
   });
 }
