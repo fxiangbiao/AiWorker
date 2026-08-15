@@ -348,6 +348,83 @@ describe("Markdown 块级渲染", () => {
   });
 });
 
+describe("StreamOutputRenderer 流式表格对齐（Sprint 26）", () => {
+  // eslint-disable-next-line no-control-regex
+  const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+  /** 捕获 stdout，返回写入的行数组（还原 write 后调用方再用） */
+  function captureStdout(fn: () => void): string[] {
+    const out: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    (process.stdout.write as unknown) = ((chunk: string | Uint8Array) => {
+      out.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      fn();
+    } finally {
+      process.stdout.write = orig;
+    }
+    return out;
+  }
+  /** 所有行 │ 分隔符的显示列位置一致 */
+  function assertAligned(lines: string[]): void {
+    const colPos = (l: string) => {
+      const idxs: number[] = [];
+      let w = 0;
+      for (const ch of l) {
+        if (ch === "│") idxs.push(w);
+        w += charWidth(ch);
+      }
+      return idxs.join(",");
+    };
+    const first = colPos(lines[0]!);
+    for (const l of lines) expect(colPos(l)).toBe(first);
+  }
+
+  it("流式表格整块对齐：表头/分隔线/数据行列宽一致", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| 维度 | 吴恩达 ML 专项 | fast.ai |\n|---|---|---|\n| 覆盖 | ML 全貌 | DL 实战 |\n| 数学门槛 | 低 | 极低 |\n\n");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    expect(lines.length).toBe(4); // 表头 + 分隔线 + 2 数据行
+    assertAligned(lines);
+    // 分隔线单元格与数据行同构（│ 对齐，─ 铺满列宽）
+    expect(lines[1]).toContain("─");
+  });
+
+  it("跨 chunk 到达的表格行仍整块对齐，非表格行触发冲刷", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| A | B |");
+      r.writeChunk("\n|--|--|");
+      r.writeChunk("\n| 1 | 2 |");
+      r.writeChunk("\n\n正文段落");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    // 3 行表格 + 1 行正文
+    expect(lines.length).toBe(4);
+    assertAligned(lines.slice(0, 3));
+    expect(lines[3]).toContain("正文段落");
+  });
+
+  it("末尾无空行的表格在 flush 时对齐输出", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| x | y |\n|---|---|\n| 1 | 2 |");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    expect(lines.length).toBe(3);
+    assertAligned(lines);
+  });
+});
+
 describe("键解析 parseKeys", () => {
   it("方向键经典 CSI", () => {
     const { events } = parseKeys("\x1b[A\x1b[B\x1b[C\x1b[D");

@@ -12,7 +12,13 @@
 
 import { stdout } from "node:process";
 import chalk from "chalk";
-import { renderLine, defaultTableState, type TableState } from "./markdown.js";
+import {
+  renderLine,
+  renderTableBlock,
+  isTableLine,
+  defaultTableState,
+  type TableState,
+} from "./markdown.js";
 import { highlightLine } from "./highlight.js";
 import { tui } from "./tui.js";
 
@@ -29,6 +35,8 @@ export class StreamOutputRenderer {
   private fenceLang = "";
   private tools = new Map<string, ToolRow>();
   private tableState: TableState = defaultTableState();
+  /** 表格块缓冲：流式表格按块对齐（跨行列宽一致）后整块输出 */
+  private tableBuf: string[] = [];
 
   /** 输出一行到消息区（TUI）或 stdout（普通） */
   private emitLineRaw(line: string): void {
@@ -69,12 +77,15 @@ export class StreamOutputRenderer {
       this.emitLineRaw(chalk.gray("─".repeat(44)));
       this.inFence = false;
     }
+    // 未闭合表格块（末尾无空行）→ 整块对齐输出
+    this.flushTable();
   }
 
   private emitLine(line: string): void {
     const result = renderLine(line, this.inFence, this.tableState);
 
     if (result.fenceStart) {
+      this.flushTable();
       this.inFence = true;
       this.fenceLang = result.lang ?? "";
       const header = this.fenceLang ? `${chalk.dim(this.fenceLang)} ` : "";
@@ -82,20 +93,39 @@ export class StreamOutputRenderer {
       return;
     }
     if (result.fenceEnd) {
+      this.flushTable();
       this.inFence = false;
       this.emitLineRaw(chalk.gray("─".repeat(44)));
       return;
     }
     if (this.inFence) {
+      this.flushTable();
       this.emitLineRaw(`${chalk.cyan("▍")} ${highlightLine(line, this.fenceLang)}`);
       return;
     }
+    // 表格行 → 累积，块结束时统一对齐渲染（跨行列宽一致）
+    if (isTableLine(line)) {
+      this.tableBuf.push(line);
+      this.tableState = { inTable: true, tableFirstRow: false };
+      return;
+    }
+    this.flushTable();
+
     if (result.tableState) this.tableState = result.tableState;
     if (result.rendered !== null) {
       this.emitLineRaw(result.rendered);
     } else {
       this.emitLineRaw(line);
     }
+  }
+
+  /** 表格块结束：按统一列宽对齐后整块输出 */
+  private flushTable(): void {
+    if (this.tableBuf.length === 0) return;
+    for (const l of renderTableBlock(this.tableBuf)) {
+      this.emitLineRaw(l);
+    }
+    this.tableBuf = [];
   }
 
   /** TUI 模式下实时追加半行（无换行） */

@@ -117,7 +117,7 @@ function renderHeading(line: string): string | null {
 }
 
 /** 判断是否为表格行（以 `|` 或 `│` 开头） */
-function isTableLine(line: string): boolean {
+export function isTableLine(line: string): boolean {
   return /^\s*[|│]/.test(line);
 }
 
@@ -308,9 +308,9 @@ export function renderMarkdown(text: string): string[] {
 /**
  * 表格块跨行对齐：两遍扫描。
  * 第一遍解析所有行得到列数、每列最大宽度、对齐方向；
- * 第二遍按统一列宽渲染。
+ * 第二遍按统一列宽渲染。供整块渲染（renderMarkdown）与流式渲染（StreamOutputRenderer）共用。
  */
-function renderTableBlock(lines: string[]): string[] {
+export function renderTableBlock(lines: string[]): string[] {
   // 分隔符行（|--|）用于判定对齐方向
   const alignRow = lines.find((l) => {
     const cellSep = l.includes("|") ? "|" : "│";
