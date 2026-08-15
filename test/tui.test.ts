@@ -539,6 +539,41 @@ describe("Tui 帧合成", () => {
     t.destroy();
   });
 
+  it("光标定位在输入区当前行而非分隔线（单行输入）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    const out: string[] = [];
+    t.screen.setOut((s) => out.push(s));
+    t.messages.append("你> hi");
+    t.prompt();
+    t.requestRender();
+    await new Promise((r) => setTimeout(r, 40));
+    // 最后一次光标定位：单行输入 1 基行号 = rows-1（分隔线在其上，状态栏在其下）
+    // eslint-disable-next-line no-control-regex
+    const last = [...out.join("").matchAll(/\x1b\[(\d+);(\d+)H/g)].at(-1);
+    expect(Number(last?.[1])).toBe(t.screen.getRows() - 1);
+    t.destroy();
+  });
+
+  it("光标跟随多行输入的光标行（非末尾行）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    const out: string[] = [];
+    t.screen.setOut((s) => out.push(s));
+    t.prompt();
+    for (const ch of "a\nb") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "home" }); // 光标到首行
+    t.requestRender();
+    await new Promise((r) => setTimeout(r, 40));
+    // 多行输入 2 行：输入区占 rows-3、rows-2（0 基）；光标在首行 → 1 基 rows-2
+    // eslint-disable-next-line no-control-regex
+    const last = [...out.join("").matchAll(/\x1b\[(\d+);(\d+)H/g)].at(-1);
+    expect(Number(last?.[1])).toBe(t.screen.getRows() - 2);
+    t.destroy();
+  });
+
   it("Enter 后提问内容追加到消息历史（你> 前缀）", async () => {
     const { Tui } = await import("../src/terminal/tui.js");
     const t = new Tui();

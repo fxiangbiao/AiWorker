@@ -141,9 +141,10 @@ export class Tui {
     const statusLines = this.status.render(cols);
     this.screen.render([...msgLines, ...hintLines, ...dividerLines, ...inputLines, ...statusLines]);
     // 光标：agent 运行期间隐藏；prompt 期间显示在输入区当前行
+    // positionCursor 用 1 基行号：inputStart(0 基) + 1 换算
     const statusRow = rows - 1;
     const inputStart = statusRow - this.inputHeight;
-    const cursorRow = inputStart + this.input.cursorRowInWindow();
+    const cursorRow = inputStart + 1 + this.input.cursorRowInWindow();
     const cursorCol = this.input.cursorCol() + 1;
     if (this.agentRunning) {
       this.screen.hideCursor();
