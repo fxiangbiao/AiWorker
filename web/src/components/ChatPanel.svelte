@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, onMount } from "svelte";
   import UserMessage from "./UserMessage.svelte";
   import AgentCard from "./AgentCard.svelte";
   import ConfirmCard from "./ConfirmCard.svelte";
@@ -31,17 +31,46 @@
     }
   });
 
+  // 自动滚动：消息条数或最后一条消息内容变化时，滚动到底部。
+  // 流式输出是同一消息 content 增量（length 不变），必须同时监听内容长度；
+  // 流式期间的实时滚动由 handleSSE 显式触发（scrollToBottom），此处为兜底。
   let _lastMsgCount = $state(0);
+  let _lastContentLen = $state(0);
   $effect(() => {
     const count = store.messages.length;
-    if (count !== _lastMsgCount) {
+    const last = store.messages.at(-1);
+    const contentLen = last ? last.content.length : 0;
+    if (count !== _lastMsgCount || contentLen !== _lastContentLen) {
       _lastMsgCount = count;
-      tick().then(() => {
-        const el = document.getElementById("msg-list");
-        if (el) el.scrollTop = el.scrollHeight;
-      });
+      _lastContentLen = contentLen;
+      tick().then(() => scrollToBottom());
     }
   });
+
+  /** 用户主动上翻标志：true 时流式跟随暂停（滚回底部或发送消息时恢复） */
+  let userScrolledUp = false;
+
+  onMount(() => {
+    const el = document.getElementById("msg-list");
+    if (!el) return;
+    const onScroll = () => {
+      userScrolledUp = el.scrollHeight - el.scrollTop - el.clientHeight > 100;
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  });
+
+  function scrollToBottom(force = false) {
+    const el = document.getElementById("msg-list");
+    if (!el) return;
+    // 用户主动上翻时暂停自动跟随；force=true 用于用户主动发送（明确要看新内容）
+    if (userScrolledUp && !force) return;
+    // 关闭 CSS smooth：程序化滚动用 instant，流式高频 delta 才不会互相打断
+    const prev = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    el.scrollTop = el.scrollHeight;
+    el.style.scrollBehavior = prev;
+  }
 
   function newChat() {
     setSending(false, null);
@@ -107,6 +136,8 @@
 
     const agentMsg: UIMessage = { role: "assistant", agentId: store.agentId, content: "", timeline: [] };
     store.messages.push(agentMsg);
+    // 用户主动发送：强制滚动到底部（不受 nearBottom 限制）
+    tick().then(() => scrollToBottom(true));
 
     fetch(`${API}/chat`, {
       method: "POST",
@@ -206,6 +237,8 @@
       _steps: [],
     };
     store.messages.push(agentMsg);
+    // 用户主动发送：强制滚动到底部
+    tick().then(() => scrollToBottom(true));
 
     try {
       const resp = await fetch(`${API}/${kind}`, {
@@ -320,7 +353,10 @@
         }
         agent._thinkingActive = false;
         agent._activeStep = undefined;
-        if (data.content) agent.content = (data.content as string) || "";
+        if (data.content) {
+          agent.content = (data.content as string) || "";
+          tick().then(() => scrollToBottom(true));
+        }
         store.diffVersion++;
         break;
       }
@@ -340,6 +376,8 @@
     switch (data.type) {
       case "text":
         agent.content += (data.content as string) || "";
+        // 流式输出：显式跟随滚动（不依赖响应式 effect，保证每段 delta 都滚动）
+        tick().then(() => scrollToBottom());
         break;
       case "thinking_start":
         agent._thinkingActive = true;
@@ -363,6 +401,7 @@
           result: false,
           pending: true,
         });
+        tick().then(() => scrollToBottom());
         break;
       case "tool_result": {
         for (let i = agent.timeline.length - 1; i >= 0; i--) {
@@ -375,6 +414,7 @@
             break;
           }
         }
+        tick().then(() => scrollToBottom());
         break;
       }
       case "done":
@@ -389,6 +429,7 @@
         }
         store.confirms = [];
         store.diffVersion++;
+        tick().then(() => scrollToBottom(true));
         break;
       case "confirm_request": {
         const confirm: ConfirmItem = {

@@ -1,4 +1,4 @@
-﻿export interface ChatItem {
+export interface ChatItem {
   id: string;
   title: string;
   agentId: string;
@@ -102,11 +102,11 @@ export function saveMessages(id: string, msgs: UIMessage[]) {
   if (id) save("aiworker_msgs_" + id, msgs);
 }
 
-/** 从服务器 /sessions 合并会话列表（服务器有而本地没有的补进来） */
-export async function syncServerSessions() {
+/** 从服务器 /sessions 合并会话列表（服务器有而本地没有的补进来，按创建时间最新在前） */
+export async function syncServerSessions(): Promise<boolean> {
   try {
     const resp = await fetch(`${API}/sessions`);
-    if (!resp.ok) return;
+    if (!resp.ok) return false;
     const data = await resp.json();
     const remote: ChatItem[] = (data.sessions || []).map((s: {
       id: string;
@@ -127,17 +127,22 @@ export async function syncServerSessions() {
       };
     });
     const localIds = new Set(store.chats.map((c) => c.id));
+    let hadNew = false;
     const merged = [...store.chats];
     for (const r of remote) {
       if (!localIds.has(r.id)) {
         merged.push(r);
         localIds.add(r.id);
+        hadNew = true;
       }
     }
-    store.chats = merged;
-    saveChats(merged);
+    // 统一按创建时间降序（最新在前）：TUI 等新产生的会话排到最前，重启后能正确选中
+    store.chats = merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    saveChats(store.chats);
+    return hadNew;
   } catch {
     /* 服务器离线时静默 */
+    return false;
   }
 }
 

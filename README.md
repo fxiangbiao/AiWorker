@@ -18,17 +18,22 @@
 - 38 个技能（7 大领域）：SKILL.md 正则触发 + 依赖缺失自动降级 + 复杂任务后自沉淀（可开关）
 
 **安全与合规**
-- Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（`--project-dir` 隔离）
+- Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
 - Hooks 5 生命周期点 + 14 个 Handler：敏感数据过滤 / 高危确认 / 权限检查 / Diff 快照 / 审计日志 / 重试退避 / 模型降级
 
 **记忆与上下文**
 - 三层记忆：工作记忆（SQLite）+ 情景记忆（FTS5 + 中文分词 + 时间衰减）+ 语义记忆（MEMORY.md/USER.md 有界管理）
+- **会话事件溯源**：`session_events` 仅追加日志作为唯一真源，消息/轮次/工具调用可回放派生（`/trace`、统计、遥测共用）
 - 上下文管理：冻结快照 + 自适应压缩 + 分层 token 占比统计（`/context`）+ 工作目录感知（ProjectProfiler）
 - 监控日志：轮次日志（TurnLog）+ 工具调用日志（ToolCallLog），`/log` 查看真实耗时与 token
 
+**轨迹与观测**
+- **轨迹时间线**（`/trace`）：事件级复盘——turn/step 边界、工具调用耗时/成败、token 消耗、错误高亮；支持完整内容查看
+- **遥测导出**：会话事件 → 脱敏瀑布 → JSONL 本地后端（零依赖），预留 OTel 接口；会话统计徽标
+
 **交互界面**
-- **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏
-- **Web UI**：Svelte 5 + Vite，SSE 流式，15 组件 + 3 store + DOMPurify XSS 防护，支持 `/plan` `/debate` 协作与系统管理面板
+- **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
+- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、系统管理弹窗与 favicon
 - **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
 
 ---
@@ -64,12 +69,11 @@ npm run web:dev                             # 另开终端：Web UI 开发模式
 ```
 npm run dev -- [选项]
   -m, --mode <ask|plan|auto>  权限模式（默认 auto）
-  -d, --dir <目录>               工作目录（工具读写基准）
-      --data-dir <目录>          数据目录（默认 ./data）
-  -p, --project-dir <目录>       项目输出目录（默认 ./ai_default_project）
-      --show-thinking            显示思考过程（默认折叠）
-      --server                   启动 HTTP Server（REST API + 托管 Web UI）
-      --port <端口>              HTTP Server 端口（默认 3000）
+  -d, --dir <目录>             工作目录（读写统一基准，默认 ./ai_default_project）
+      --data-dir <目录>        数据目录（默认 ./data）
+      --show-thinking          显示思考过程（默认折叠）
+      --server                 启动 HTTP Server（REST API + 托管 Web UI）
+      --port <端口>            HTTP Server 端口（默认 3000）
 ```
 
 ### 权限模式
@@ -98,6 +102,7 @@ npm run dev -- [选项]
 | `/new` | 开启新会话（清空上下文） |
 | `/log` | 监控日志（轮次/耗时/输入输出 token） |
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
+| `/trace [序号]` | 会话轨迹时间线（事件级复盘，--json 输出） |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
 | `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
 | `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） | |
@@ -140,6 +145,9 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/mcp` | GET | MCP 服务器状态 + 各服务器工具列表 |
 | `/api/v1/context` | GET | 上下文分层 token 占比 |
 | `/api/v1/logs` | GET | 最近 50 条轮次日志 |
+| `/api/v1/trace/:id` | GET | 会话轨迹投影（items + stats，含完整内容） |
+| `/api/v1/stats` | GET | 最近会话统计聚合（轮次/工具/token/错误） |
+| `/api/v1/telemetry/:id` | GET | 遥测记录（JSONL 后端读取） |
 | `/api/v1/skills` | GET | 已加载技能列表（含描述与分组） |
 | `/api/v1/diffs` | GET | 会话文件变更（快照 diff 结构化，按会话分组） |
 | `/api/v1/confirm` | POST | 确认卡片响应（JSON：`id` / `value`） |
@@ -160,22 +168,23 @@ aiworker/
 ├── plans/                # Sprint 设计文档
 ├── src/
 │   ├── core/             # agent-loop / model-router / context-manager /
-│   │                     # team-coordinator / skill-registry / skill-evolution ...
+│   │                     # team-coordinator / skill-registry / trace（轨迹投影）...
+│   ├── commands/         # CLI 命令注册表（CliCommand/CommandContext 模块化）
 │   ├── agents/           # BaseAgent + 7 专家实现 + 路由
 │   ├── hooks/            # Hook 管理器 + 配置加载 + 14 个 handler
-│   ├── memory/           # session-store（SQLite/FTS5）+ compressor
+│   ├── memory/           # session-store（SQLite/FTS5 + 事件溯源）+ telemetry（遥测）+ compressor
 │   ├── mcp/              # 协议客户端 + 内置服务器 + 重连/健康检查
 │   ├── security/         # 危险检测 / 权限模型 / 审计
 │   ├── terminal/         # TUI 引擎（screen 帧缓冲 / term 键解析 /
-│   │                     # components 组件 / tui 控制器 / markdown / highlight）
+│   │                     # components 组件 / tui 控制器 / markdown / highlight / trace-view）
 │   ├── tools/            # 内置工具
-│   ├── server.ts         # HTTP Server + SSE（/chat /plan /debate + 管理端点）
+│   ├── server.ts         # HTTP Server + SSE（/chat /plan /debate + trace/stats/telemetry 端点）
 │   ├── index.ts          # CLI 入口
 │   └── types.ts          # 核心类型定义
 ├── test/                 # 测试（模块化，独立 data 目录防并行冲突）
 ├── web/                  # Web UI（Svelte 5 + Vite，独立 package.json）
 ├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照
-├── ai_default_project/   # Agent 默认输出目录（gitignored）
+├── ai_default_project/   # Agent 默认工作目录（读写基准，gitignored）
 ├── AGENTS.md             # AI 辅助开发指南
 └── vitest.config.ts
 ```
@@ -216,4 +225,4 @@ npm run web:build   # Web UI 构建
 - **CLI/TUI**: Commander.js + 自研帧缓冲渲染引擎（零依赖）
 - **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
-- **设计依据**: 《个人AI-Agent助手设计方案.md》
+- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》

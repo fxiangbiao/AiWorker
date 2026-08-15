@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { store, deleteChat, renameChat, exportChat } from "$lib/stores/chat.svelte";
+  import { API, store, deleteChat, renameChat, exportChat } from "$lib/stores/chat.svelte";
   import { stream } from "$lib/stores/stream.svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
 
@@ -8,6 +8,28 @@
     onSwitch: (id: string) => void;
     onHide: () => void;
   }>();
+
+  interface SStats {
+    sessionId: string;
+    toolCallsFailed: number;
+    tokensTotal: number;
+    errorCount: number;
+  }
+  let statsMap = $state<Record<string, SStats>>({});
+
+  function loadStats() {
+    fetch(`${API}/stats`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const m: Record<string, SStats> = {};
+        for (const s of (d.stats || []) as SStats[]) m[s.sessionId] = s;
+        statsMap = m;
+      })
+      .catch(() => {});
+  }
+  $effect(() => {
+    loadStats();
+  });
 
   let menuFor = $state<string | null>(null);
   let modal: { type: "delete"; id: string } | { type: "rename"; id: string } | null = $state(null);
@@ -105,6 +127,12 @@
           <div class="s-meta">
             <span class="s-time">{fmtTime(c.createdAt)}</span>
             <span>{c.turns || 0} 轮 &middot; {c.agentId || "default"}</span>
+            {#if statsMap[c.id]}
+              <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
+                {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
+                {#if (statsMap[c.id].toolCallsFailed ?? 0) > 0}· 失败 {statsMap[c.id].toolCallsFailed}{/if}
+              </span>
+            {/if}
           </div>
           {#if menuFor === c.id}
             <div class="s-actions" onclick={(e) => e.stopPropagation()}>
@@ -204,6 +232,7 @@
   .s-item.active { background: var(--primary-light); border: 1px solid rgba(75, 117, 238, .15); }
   .s-title { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .s-meta { font-size: 11px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+  .s-meta .bad { color: #e5484d; }
   .s-time { color: var(--primary); font-weight: 500; }
   .s-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; }
   .s-item { position: relative; }

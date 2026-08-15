@@ -14,9 +14,11 @@ import type {
   AgentRunResult,
   AgentConfig,
   StreamCallbacks,
+  ModelResponse,
 } from "../types.js";
 import type { ModelRouter } from "./model-router.js";
 import type { ContextManager } from "./context-manager.js";
+import type { SessionStore } from "../memory/session-store.js";
 import { toolRegistry } from "./tool-registry.js";
 import { hookManager } from "../hooks/hook-manager.js";
 import { auditLogger } from "./audit-logger.js";
@@ -24,9 +26,9 @@ import { auditLogger } from "./audit-logger.js";
 export interface AgentLoopDeps {
   modelRouter: ModelRouter;
   contextManager: ContextManager;
+  sessionStore: SessionStore;
   sessionId: string;
   workingDir: string;
-  projectDir: string;
 }
 
 export async function runAgentLoop(
@@ -34,7 +36,7 @@ export async function runAgentLoop(
   userMessage: string,
   deps: AgentLoopDeps,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionId, workingDir, projectDir } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir } = deps;
 
   contextManager.freezeSnapshot();
 
@@ -46,17 +48,18 @@ export async function runAgentLoop(
   let consecutiveLength = 0;
   let emptyResponseCount = 0;
   const mode = config.permissions.defaultMode;
+  const endStep = () => sessionStore.appendEvent(sessionId, "step/end", { step: iterations }, "agent-loop");
 
   const toolCtx: ToolContext = {
     agentId: config.id,
     sessionId,
     workingDir,
-    projectDir,
     permissions: mode,
   };
 
   while (iterations < MAX_ITER) {
     try {
+      sessionStore.appendEvent(sessionId, "step/start", { step: iterations }, "agent-loop");
       const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages);
       if (didCompress) {
         messages = compressed;
@@ -75,6 +78,7 @@ export async function runAgentLoop(
       if (response.finishReason === "length" && !response.hasToolCalls) {
         consecutiveLength++;
         if (consecutiveLength >= 3) {
+          endStep();
           return {
             text: response.text || "上下文过长，无法继续",
             messages,
@@ -85,6 +89,7 @@ export async function runAgentLoop(
         }
         const { messages: compressed } = await contextManager.maybeCompress(messages);
         messages = compressed;
+        endStep();
         iterations++;
         continue;
       }
@@ -94,6 +99,7 @@ export async function runAgentLoop(
         if (!response.text || response.text.trim().length === 0) {
           emptyResponseCount++;
           if (emptyResponseCount >= 3) {
+            endStep();
             return {
               text: "Agent 连续返回空响应，任务可能无法完成",
               messages,
@@ -103,17 +109,20 @@ export async function runAgentLoop(
             };
           }
           messages.push({ role: "user", content: "请继续完成任务。如果已完成，请给出总结。" });
+          endStep();
           iterations++;
           continue;
         }
         consecutiveLength = 0;
         emptyResponseCount = 0;
+        endStep();
         return {
           text: response.text,
           messages,
           iterations: iterations + 1,
           truncated: false,
           toolCallsExecuted,
+          usage: response.usage,
         };
       }
 
@@ -122,8 +131,14 @@ export async function runAgentLoop(
         content: response.text,
         tool_calls: response.toolCalls,
       });
+      // 中间轮次持久化：带 tool_calls 的 assistant 消息落事件/投影（事件溯源完整化，供回放与下一轮上下文）
+      sessionStore.appendMessage(
+        sessionId,
+        { role: "assistant", content: response.text, tool_calls: response.toolCalls },
+        response.usage,
+      );
 
-      const toolResults = await Promise.all(response.toolCalls.map((tc) => executeTool(tc, toolCtx, config)));
+      const toolResults = await Promise.all(response.toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore)));
 
       toolCallsExecuted += toolResults.length;
 
@@ -137,6 +152,7 @@ export async function runAgentLoop(
 
       consecutiveLength = 0;
       emptyResponseCount = 0;
+      endStep();
       iterations++;
     } catch (err) {
       const errorMsg = (err as Error).message;
@@ -156,6 +172,7 @@ export async function runAgentLoop(
         detail: `iteration=${iterations}`,
       });
 
+      endStep();
       return {
         text: `Agent 循环异常: ${errorMsg}`,
         messages,
@@ -166,6 +183,7 @@ export async function runAgentLoop(
     }
   }
 
+  endStep();
   return {
     text: "达到迭代上限",
     messages,
@@ -185,7 +203,7 @@ export async function runAgentLoopStream(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionId, workingDir, projectDir } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir } = deps;
 
   contextManager.freezeSnapshot();
 
@@ -197,12 +215,14 @@ export async function runAgentLoopStream(
   let consecutiveLength = 0;
   let emptyResponseCount = 0;
   const mode = config.permissions.defaultMode;
+  /** 本轮最后一次主请求的 usage（completeStream onUsage 收集；压缩请求走 complete 不污染此值） */
+  let lastUsage: ModelResponse["usage"] | undefined;
+  const endStep = () => sessionStore.appendEvent(sessionId, "step/end", { step: iterations }, "agent-loop");
 
   const toolCtx: ToolContext = {
     agentId: config.id,
     sessionId,
     workingDir,
-    projectDir,
     permissions: mode,
   };
 
@@ -218,6 +238,7 @@ export async function runAgentLoopStream(
     }
 
     try {
+      sessionStore.appendEvent(sessionId, "step/start", { step: iterations }, "agent-loop");
       const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages);
       if (didCompress) {
         messages = compressed;
@@ -233,7 +254,12 @@ export async function runAgentLoopStream(
       // 流式调用
       callbacks.onIterationStart?.(iterations);
       callbacks.onThinkingStart?.();
-      const stream = modelRouter.completeStream(config.modelPreference, messages, tools, { signal });
+      const stream = modelRouter.completeStream(config.modelPreference, messages, tools, {
+        signal,
+        onUsage: (usage) => {
+          lastUsage = usage;
+        },
+      });
 
       let fullText = "";
       let streamFinishReason = "";
@@ -274,6 +300,7 @@ export async function runAgentLoopStream(
       }
 
       if (signal?.aborted) {
+        endStep();
         return {
           text: fullText,
           messages,
@@ -303,8 +330,14 @@ export async function runAgentLoopStream(
             content: fullText,
             tool_calls: toolCalls,
           });
+          // 中间轮次持久化：带 tool_calls 的 assistant 消息落事件/投影（事件溯源完整化）
+          sessionStore.appendMessage(
+            sessionId,
+            { role: "assistant", content: fullText, tool_calls: toolCalls },
+            lastUsage,
+          );
 
-          const toolResults = await Promise.all(toolCalls.map((tc) => executeTool(tc, toolCtx, config)));
+          const toolResults = await Promise.all(toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore)));
 
           toolCallsExecuted += toolResults.length;
 
@@ -324,6 +357,7 @@ export async function runAgentLoopStream(
             });
           }
 
+          endStep();
           iterations++;
           consecutiveLength = 0;
           emptyResponseCount = 0;
@@ -335,6 +369,7 @@ export async function runAgentLoopStream(
       if (streamFinishReason === "length") {
         consecutiveLength++;
         if (consecutiveLength >= 3) {
+          endStep();
           return {
             text: fullText || "上下文过长，无法继续",
             messages,
@@ -345,6 +380,7 @@ export async function runAgentLoopStream(
         }
         const { messages: compressed } = await contextManager.maybeCompress(messages);
         messages = compressed;
+        endStep();
         iterations++;
         continue;
       }
@@ -352,6 +388,7 @@ export async function runAgentLoopStream(
       if (!fullText || fullText.trim().length === 0) {
         emptyResponseCount++;
         if (emptyResponseCount >= 3) {
+          endStep();
           return {
             text: "Agent 连续返回空响应，任务可能无法完成",
             messages,
@@ -361,21 +398,25 @@ export async function runAgentLoopStream(
           };
         }
         messages.push({ role: "user", content: "请继续完成任务。如果已完成，请给出总结。" });
+        endStep();
         iterations++;
         continue;
       }
 
       consecutiveLength = 0;
       emptyResponseCount = 0;
+      endStep();
       return {
         text: fullText,
         messages,
         iterations: iterations + 1,
         truncated: false,
         toolCallsExecuted,
+        usage: lastUsage,
       };
     } catch (err) {
       if (signal?.aborted) {
+        endStep();
         return {
           text: "",
           messages,
@@ -401,6 +442,7 @@ export async function runAgentLoopStream(
         detail: `iteration=${iterations}, toolCalls=${toolCallsExecuted}`,
       });
 
+      endStep();
       return {
         text: `Agent 循环异常: ${errorMsg}`,
         messages,
@@ -411,6 +453,7 @@ export async function runAgentLoopStream(
     }
   }
 
+  endStep();
   return {
     text: "达到迭代上限",
     messages,
@@ -420,7 +463,36 @@ export async function runAgentLoopStream(
   };
 }
 
-async function executeTool(toolCall: ToolCall, ctx: ToolContext, config: AgentConfig): Promise<ToolResult> {
+async function executeTool(
+  toolCall: ToolCall,
+  ctx: ToolContext,
+  config: AgentConfig,
+  sessionStore: SessionStore,
+): Promise<ToolResult> {
+  const startedAt = Date.now();
+  sessionStore.appendEvent(
+    ctx.sessionId,
+    "tool/call",
+    { callId: toolCall.id, name: toolCall.function.name, arguments: toolCall.function.arguments },
+    "agent-loop",
+  );
+  const result = await executeToolInner(toolCall, ctx, config);
+  sessionStore.appendEvent(
+    ctx.sessionId,
+    "tool/result",
+    {
+      callId: result.tool_call_id,
+      success: result.success,
+      content: result.success ? result.content : `Error: ${result.error ?? ""}`,
+      error: result.error,
+      durationMs: Date.now() - startedAt,
+    },
+    "agent-loop",
+  );
+  return result;
+}
+
+async function executeToolInner(toolCall: ToolCall, ctx: ToolContext, config: AgentConfig): Promise<ToolResult> {
   const toolName = toolCall.function.name;
 
   const preHookResult = await hookManager.trigger("onToolCallPre", {

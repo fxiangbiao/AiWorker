@@ -232,8 +232,9 @@ export class ContextManager {
 
     messages.push({ role: "system", content: fullSystemPrompt });
 
-    // 5. 当前会话历史
-    const history = this.sessionStore.getMessages(sessionId);
+    // 5. 当前会话历史（事件回放：含 tool_calls 与对应 tool 结果，保证 LLM 消息序列完整；
+    //    不用 getMessages——投影表不含 tool 消息，assistant(tool_calls) 无 tool 响应会被 API 拒绝）
+    const history = this.sessionStore.replayEvents(sessionId);
     messages.push(...history);
 
     // 6. 当前用户消息

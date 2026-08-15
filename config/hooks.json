@@ -24,5 +24,8 @@
   "onError": [
     { "handler": "retryWithBackoff", "options": { "maxRetries": 3 } },
     { "handler": "fallbackModel" }
+  ],
+  "onTelemetryRecord": [
+    { "handler": "redactTelemetry" }
   ]
 }

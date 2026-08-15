@@ -18,7 +18,7 @@
     loadRemoteMessages,
     API,
   } from "./lib/stores/chat.svelte";
-  import { serverOnline, currentModel, totalTokens, workingDir, projectDir } from "./lib/stores/status";
+  import { serverOnline, currentModel, totalTokens, workingDir } from "./lib/stores/status";
   import { fmtN } from "./lib/utils/format";
 
   let agents: { id: string; name: string }[] = $state([]);
@@ -51,7 +51,6 @@
         totalTokens.set(d.tokenUsage?.total || 0);
         currentModel.set(d.model || "--");
         workingDir.set(d.workingDir || "");
-        projectDir.set(d.projectDir || "");
         skills.set(d.skills || []);
         serverOnline.set(true);
       })
@@ -101,7 +100,15 @@
       store.messages.push(...loaded);
     }
     pollStatus();
-    syncServerSessions();
+    // 服务器会话合并（排序最新在前）后，若出现了新的最新会话（如 TUI 中产生的新对话），切到最新
+    syncServerSessions().then((hadNew) => {
+      if (hadNew) {
+        const newest = store.chats[0];
+        if (newest && newest.id !== store.activeChatId) {
+          void handleSwitch(newest.id);
+        }
+      }
+    });
     const intv = setInterval(pollStatus, 30000);
     return () => clearInterval(intv);
   });
@@ -212,8 +219,10 @@
     z-index: 100;
   }
   .modal-box {
+    /* 固定为页面宽度 50%（min-width 保证小屏可用性） */
     width: 50vw;
-    max-width: 800px;
+    min-width: 720px;
+    max-width: 90vw;
     height: 75vh;
     background: var(--surface);
     border-radius: var(--radius);

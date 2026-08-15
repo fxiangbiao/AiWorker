@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import type { Database as DBType } from "better-sqlite3";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog } from "../types.js";
+import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent } from "../types.js";
 
 const segmenter =
   typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter("zh-CN", { granularity: "word" }) : null;
@@ -126,6 +126,19 @@ export class SessionStore {
         FOREIGN KEY (turn_id) REFERENCES turn_logs(id)
       );
       CREATE INDEX IF NOT EXISTS idx_tool_logs_turn ON tool_call_logs(turn_id);
+
+      -- 事件溯源: 仅追加事件日志（唯一真源，Sprint 24）
+      -- 不设 session_id 外键：事件日志是审计性真源，可先于会话元数据存在（saveEpisodic 等写入点）
+      CREATE TABLE IF NOT EXISTS session_events (
+        session_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        data TEXT NOT NULL,
+        source TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, seq)
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(type);
     `);
   }
 
@@ -135,6 +148,7 @@ export class SessionStore {
     const now = Date.now();
     const stmt = this.db.prepare(`INSERT INTO sessions (id, agent_id, created_at, updated_at) VALUES (?, ?, ?, ?)`);
     stmt.run(id, agentId, now, now);
+    this.appendEvent(id, "session/created", { agentId });
     return { id, agentId, createdAt: now, updatedAt: now };
   }
 
@@ -149,35 +163,71 @@ export class SessionStore {
         now,
         now,
       );
+      this.appendEvent(id, "session/created", { agentId });
     }
   }
 
-  /** 追加消息 */
-  appendMessage(sessionId: string, message: Message): void {
-    const seqStmt = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM messages WHERE session_id = ?`);
+  /**
+   * 追加一条会话事件（仅追加，seq 每会话连续递增；data 需 JSON 可序列化）
+   * @returns 分配的事件 seq
+   */
+  appendEvent(sessionId: string, type: SessionEventType, data: Record<string, unknown>, source?: string): number {
+    const seqStmt = this.db.prepare(
+      `SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM session_events WHERE session_id = ?`,
+    );
     const { next_seq } = seqStmt.get(sessionId) as { next_seq: number };
+    this.db
+      .prepare(
+        `INSERT INTO session_events (session_id, seq, type, data, source, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(sessionId, next_seq, type, JSON.stringify(data), source ?? null, Date.now());
+    return next_seq;
+  }
 
-    const stmt = this.db.prepare(
-      `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, seq, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    );
-    stmt.run(
-      sessionId,
-      message.role,
-      message.content,
-      message.tool_calls ? JSON.stringify(message.tool_calls) : null,
-      message.tool_call_id ?? null,
-      next_seq,
-      Date.now(),
-    );
+  /** 追加消息（单点入口：同时写事件日志 + messages 投影，同事务；assistant 可携带 usage 供轨迹/遥测） */
+  appendMessage(
+    sessionId: string,
+    message: Message,
+    usage?: { promptTokens: number; completionTokens: number; totalTokens: number },
+  ): void {
+    const tx = this.db.transaction(() => {
+      const seqStmt = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM messages WHERE session_id = ?`);
+      const { next_seq } = seqStmt.get(sessionId) as { next_seq: number };
 
-    // 更新会话时间戳
-    this.db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+      const stmt = this.db.prepare(
+        `INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, seq, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      stmt.run(
+        sessionId,
+        message.role,
+        message.content,
+        message.tool_calls ? JSON.stringify(message.tool_calls) : null,
+        message.tool_call_id ?? null,
+        next_seq,
+        Date.now(),
+      );
+
+      // 事件日志（user/assistant 消息；assistant 携带 usage 由轨迹/遥测消费）
+      if (message.role === "user") {
+        this.appendEvent(sessionId, "user/message", message as unknown as Record<string, unknown>, "session-store");
+      } else if (message.role === "assistant") {
+        this.appendEvent(
+          sessionId,
+          "assistant/message",
+          { message, ...(usage ? { usage } : {}) } as unknown as Record<string, unknown>,
+          "session-store",
+        );
+      }
+
+      // 更新会话时间戳
+      this.db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
+    });
+    tx();
   }
 
   /** 获取会话消息历史 */
-  getMessages(sessionId: string): Message[] {
-    const stmt = this.db.prepare(
+  getMessages(sessionId: string): Message[] {    const stmt = this.db.prepare(
       `SELECT role, content, tool_calls, tool_call_id FROM messages
        WHERE session_id = ? ORDER BY seq ASC`,
     );
@@ -201,6 +251,83 @@ export class SessionStore {
       }
       return msg;
     });
+  }
+
+  /** 获取会话事件流（仅追加日志，seq 升序；支持分页） */
+  getEvents(sessionId: string, fromSeq?: number, limit?: number): SessionEvent[] {
+    let sql = `SELECT seq, session_id, type, data, source, created_at FROM session_events WHERE session_id = ?`;
+    const params: Array<string | number> = [sessionId];
+    if (fromSeq !== undefined) {
+      sql += ` AND seq >= ?`;
+      params.push(fromSeq);
+    }
+    sql += ` ORDER BY seq ASC`;
+    if (limit !== undefined) {
+      sql += ` LIMIT ?`;
+      params.push(limit);
+    }
+    const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      seq: r.seq as number,
+      sessionId: r.session_id as string,
+      type: r.type as SessionEventType,
+      data: JSON.parse(r.data as string) as Record<string, unknown>,
+      createdAt: r.created_at as number,
+      source: r.source as string | undefined,
+    }));
+  }
+
+  /** 事件回放 → 消息序列（保持消息语义顺序：助手消息的 tool_calls 后紧跟对应 tool 结果） */
+  replayEvents(sessionId: string): Message[] {
+    const events = this.getEvents(sessionId);
+    const toolResults = new Map<string, Message>();
+    for (const ev of events) {
+      if (ev.type === "tool/result") {
+        const d = ev.data as { callId: string; success: boolean; content: string; error?: string };
+        toolResults.set(d.callId, {
+          role: "tool",
+          content: d.success ? d.content : `Error: ${d.error ?? d.content}`,
+          tool_call_id: d.callId,
+        });
+      }
+    }
+    const messages: Message[] = [];
+    for (const ev of events) {
+      if (ev.type === "user/message") {
+        messages.push(ev.data as unknown as Message);
+      } else if (ev.type === "assistant/message") {
+        const { message } = ev.data as { message: Message };
+        messages.push(message);
+        if (message.tool_calls) {
+          for (const tc of message.tool_calls) {
+            const toolMsg = toolResults.get(tc.id);
+            if (toolMsg) messages.push(toolMsg);
+          }
+        }
+      }
+    }
+    return messages;
+  }
+
+  /** 一致性校验：事件回放派生消息 vs messages 投影（投影表不含 tool 消息，故仅比较 user/assistant 骨架） */
+  verifyProjection(sessionId: string): { ok: boolean; eventCount: number; messageCount: number; mismatches: string[] } {
+    const events = this.getEvents(sessionId);
+    const replayed = this.replayEvents(sessionId).filter((m) => m.role !== "tool");
+    const stored = this.getMessages(sessionId).filter((m) => m.role !== "tool");
+    const mismatches: string[] = [];
+    if (replayed.length !== stored.length) {
+      mismatches.push(`长度不一致: 回放 ${replayed.length} vs 投影 ${stored.length}`);
+    } else {
+      for (let i = 0; i < stored.length; i++) {
+        const a = replayed[i]!;
+        const b = stored[i]!;
+        if (a.role !== b.role || a.content !== b.content || a.tool_call_id !== b.tool_call_id) {
+          mismatches.push(`第 ${i} 条不一致: ${a.role}(${b.role})`);
+          if (mismatches.length >= 5) break;
+        }
+      }
+    }
+    return { ok: mismatches.length === 0, eventCount: events.length, messageCount: stored.length, mismatches };
   }
 
   /** 列出最近会话（含消息数 + 首条用户消息摘要） */
@@ -246,18 +373,23 @@ export class SessionStore {
   /** 保存会话摘要 */
   setSummary(sessionId: string, summary: string): void {
     this.db.prepare(`UPDATE sessions SET summary = ? WHERE id = ?`).run(summary, sessionId);
+    this.appendEvent(sessionId, "title/set", { title: summary }, "session-store");
   }
 
   /** 重命名会话（更新 summary 作为标题） */
   renameSession(id: string, title: string): boolean {
     const result = this.db.prepare(`UPDATE sessions SET summary = ?, updated_at = ? WHERE id = ?`).run(title, Date.now(), id);
+    if (result.changes > 0) {
+      this.appendEvent(id, "title/set", { title }, "session-store");
+    }
     return result.changes > 0;
   }
 
-  /** 删除会话（级联删除消息与 turn/tool logs） */
+  /** 删除会话（级联删除消息、事件日志与 turn/tool logs） */
   deleteSession(id: string): boolean {
     const tx = this.db.transaction(() => {
       this.db.prepare("DELETE FROM messages WHERE session_id = ?").run(id);
+      this.db.prepare("DELETE FROM session_events WHERE session_id = ?").run(id);
       // 先删 tool_call_logs（外键引用 turn_logs.id），再删 turn_logs
       this.db.prepare(
         `DELETE FROM tool_call_logs WHERE turn_id IN (SELECT id FROM turn_logs WHERE session_id = ?)`,
@@ -355,6 +487,7 @@ export class SessionStore {
        VALUES (?, ?, ?, ?, ?)`,
     );
     stmt.run(sessionId, enriched, summary, Date.now().toString(), weight.toString());
+    this.appendEvent(sessionId, "memory/update", { kind: "episodic", summary }, "session-store");
   }
 
   private tryFts5Match(

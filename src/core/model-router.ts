@@ -1,10 +1,12 @@
 /**
- * 模型路由器
+ * 模型路由器（门面）
  * 统一 OpenAI 兼容格式，支持多 provider 路由
  * 设计依据：调研报告——OpenAI 标准消息格式保证多模型切换零摩擦
+ *
+ * 改造（对比报告借鉴点 #6）：供应商专属逻辑下沉到 src/core/llm/ 适配器层，
+ * 本类只负责 profile 解析、适配器路由与 token/成本计量；公开 API 保持不变。
  */
 
-import OpenAI from "openai";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,10 +14,11 @@ import type {
   ModelCompleteOptions,
   ModelResponse,
   Message,
-  ToolCall,
   ToolDefinition,
   StreamChunk,
 } from "../types.js";
+import type { LlmConnection } from "./llm/llm-adapter.js";
+import { adapterRegistry } from "./llm/adapter-registry.js";
 
 interface ModelProfile {
   provider: string;
@@ -26,6 +29,8 @@ interface ModelProfile {
   maxTokens: number;
   /** DeepSeek 思考模式：true=开启（temperature 无效），false=关闭（temperature 生效），缺省=供应商默认 */
   thinking?: boolean;
+  /** 供应商适配器 id（缺省 openai-compatible），见 src/core/llm/ */
+  adapter?: string;
 }
 
 interface ModelsConfig {
@@ -42,11 +47,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export class ModelRouter {
   private config: ModelsConfig;
-  private clients = new Map<string, OpenAI>();
   private totalTokensUsed = 0;
   private totalPromptTokens = 0;
   private totalCompletionTokens = 0;
   private currentProfile = "";
+  /** 最近一次请求的 usage（assistant/message 事件携带，供轨迹/遥测消费） */
+  private lastUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
   /** 运行时覆盖（/config 命令设置，持久化到文件） */
   private runtimeProfileKey = "";
   private runtimeModel = "";
@@ -111,77 +117,23 @@ export class ModelRouter {
     return merged;
   }
 
-  private getClient(profile: ModelProfile): OpenAI {
-    const key = `${profile.provider}:${profile.baseURL}`;
-    let client = this.clients.get(key);
-    if (!client) {
-      client = new OpenAI({
-        apiKey: profile.apiKey,
-        baseURL: profile.baseURL,
-      });
-      this.clients.set(key, client);
-    }
-    return client;
+  /** profile → 适配器连接参数 */
+  private toConnection(profile: ModelProfile): LlmConnection {
+    const conn: LlmConnection = {
+      provider: profile.provider,
+      model: profile.model,
+      baseURL: profile.baseURL,
+      apiKey: profile.apiKey,
+      temperature: profile.temperature,
+      maxTokens: profile.maxTokens,
+    };
+    if (profile.thinking !== undefined) conn.thinking = profile.thinking;
+    return conn;
   }
 
   async complete(options: ModelCompleteOptions): Promise<ModelResponse> {
     const profile = this.getProfile(undefined);
-    const model = options.model || profile.model;
-    const client = this.getClient(profile);
-
-    const requestParams: OpenAI.Chat.ChatCompletionCreateParams = {
-      model,
-      messages: options.messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      temperature: options.temperature ?? profile.temperature,
-      max_tokens: options.maxTokens ?? profile.maxTokens,
-    };
-
-    if (options.tools && options.tools.length > 0) {
-      requestParams.tools = options.tools as unknown as OpenAI.Chat.ChatCompletionTool[];
-    }
-
-    // DeepSeek 思考模式需经 extra_body 传递（OpenAI SDK 兼容）
-    const extraBody: Record<string, unknown> = {};
-    if (profile.thinking !== undefined) {
-      extraBody.thinking = { type: profile.thinking ? "enabled" : "disabled" };
-    }
-
-    const response = await client.chat.completions.create(requestParams, {
-      signal: options.signal,
-      ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
-    });
-
-    const choice = response.choices[0];
-    const message = choice.message;
-
-    const toolCalls: ToolCall[] = (message.tool_calls ?? []).map((tc) => ({
-      id: tc.id,
-      type: "function" as const,
-      function: {
-        name: tc.function.name,
-        arguments: tc.function.arguments,
-      },
-    }));
-
-    const usage = response.usage
-      ? {
-          promptTokens: response.usage.prompt_tokens,
-          completionTokens: response.usage.completion_tokens,
-          totalTokens: response.usage.total_tokens,
-        }
-      : { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-
-    this.totalTokensUsed += usage.totalTokens;
-    this.totalPromptTokens += usage.promptTokens;
-    this.totalCompletionTokens += usage.completionTokens;
-
-    return {
-      text: message.content ?? "",
-      toolCalls,
-      hasToolCalls: toolCalls.length > 0,
-      usage,
-      finishReason: (choice.finish_reason as ModelResponse["finishReason"]) ?? "stop",
-    };
+    return this.dispatch(profile, options);
   }
 
   async completeWithProfile(
@@ -191,7 +143,9 @@ export class ModelRouter {
     options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
   ): Promise<ModelResponse> {
     const profile = this.getProfile(preference);
-    return this.complete({
+    // 用 preference profile 的完整连接（provider/baseURL/apiKey 等）执行，
+    // 避免 lite 等异源 profile 的 model 错发到 default 的连接
+    return this.dispatch(profile, {
       model: profile.model,
       messages,
       tools,
@@ -199,6 +153,32 @@ export class ModelRouter {
       maxTokens: options?.maxTokens ?? profile.maxTokens,
       signal: options?.signal,
     });
+  }
+
+  /** 共享执行：适配器路由 + 计量 */
+  private async dispatch(profile: ModelProfile, options: ModelCompleteOptions): Promise<ModelResponse> {
+    const adapter = adapterRegistry.resolve(profile.adapter);
+
+    const response = await adapter.complete(this.toConnection(profile), {
+      model: options.model || profile.model,
+      messages: options.messages,
+      tools: options.tools,
+      temperature: options.temperature ?? profile.temperature,
+      maxTokens: options.maxTokens ?? profile.maxTokens,
+      signal: options.signal,
+    });
+
+    this.lastUsage = response.usage;
+    this.totalTokensUsed += response.usage.totalTokens;
+    this.totalPromptTokens += response.usage.promptTokens;
+    this.totalCompletionTokens += response.usage.completionTokens;
+
+    return response;
+  }
+
+  /** 最近一次请求的 usage（供 appendMessage 写入 assistant/message 事件） */
+  getLastUsage(): { promptTokens: number; completionTokens: number; totalTokens: number } | undefined {
+    return this.lastUsage ?? undefined;
   }
 
   getTokenUsage(): number {
@@ -236,14 +216,23 @@ export class ModelRouter {
     return this.runtimeModel || this.currentProfile || this.config.default.model;
   }
 
+  /** 状态栏展示：当前生效模型 + profile 上下文（/config model 切换 profile 后可感知） */
+  getDisplayModel(): string {
+    const model = this.getCurrentModel();
+    if (this.runtimeProfileKey && this.runtimeProfileKey !== "default") {
+      return `${model} (${this.runtimeProfileKey})`;
+    }
+    return model;
+  }
+
   // ── 运行时配置（/config 命令支持）──
 
   /** 可用的默认模型选项：default + profiles */
-  getAvailableModels(): Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number }> {
-    const out: Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number }> = [];
-    out.push({ key: "default", model: this.config.default.model, provider: this.config.default.provider, baseURL: this.config.default.baseURL, temperature: this.config.default.temperature, maxTokens: this.config.default.maxTokens });
+  getAvailableModels(): Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number; adapter?: string }> {
+    const out: Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number; adapter?: string }> = [];
+    out.push({ key: "default", model: this.config.default.model, provider: this.config.default.provider, baseURL: this.config.default.baseURL, temperature: this.config.default.temperature, maxTokens: this.config.default.maxTokens, adapter: this.config.default.adapter });
     for (const [key, p] of Object.entries(this.config.profiles)) {
-      out.push({ key, model: p.model ?? this.config.default.model, provider: p.provider ?? this.config.default.provider, baseURL: p.baseURL ?? this.config.default.baseURL, temperature: p.temperature ?? this.config.default.temperature, maxTokens: p.maxTokens ?? this.config.default.maxTokens });
+      out.push({ key, model: p.model ?? this.config.default.model, provider: p.provider ?? this.config.default.provider, baseURL: p.baseURL ?? this.config.default.baseURL, temperature: p.temperature ?? this.config.default.temperature, maxTokens: p.maxTokens ?? this.config.default.maxTokens, adapter: p.adapter ?? this.config.default.adapter });
     }
     return out;
   }
@@ -294,116 +283,32 @@ export class ModelRouter {
     preference: string,
     messages: Message[],
     tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void },
   ): AsyncGenerator<StreamChunk> {
     const profile = this.getProfile(preference);
     this.currentProfile = profile.model;
-    const client = this.getClient(profile);
+    const adapter = adapterRegistry.resolve(profile.adapter);
 
-    const requestParams: OpenAI.Chat.ChatCompletionCreateParams = {
+    const stream = adapter.completeStream(this.toConnection(profile), {
       model: profile.model,
-      messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages,
+      tools,
       temperature: options?.temperature ?? profile.temperature,
-      max_tokens: options?.maxTokens ?? profile.maxTokens,
-      stream: true,
-      stream_options: { include_usage: true },
-    };
-
-    if (tools && tools.length > 0) {
-      requestParams.tools = tools as unknown as OpenAI.Chat.ChatCompletionTool[];
-    }
-
-    // DeepSeek 思考模式需经 extra_body 传递（OpenAI SDK 兼容）
-    const extraBody: Record<string, unknown> = {};
-    if (profile.thinking !== undefined) {
-      extraBody.thinking = { type: profile.thinking ? "enabled" : "disabled" };
-    }
-
-    const stream = await client.chat.completions.create(requestParams, {
+      maxTokens: options?.maxTokens ?? profile.maxTokens,
       signal: options?.signal,
-      ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
+      onUsage: (usage) => {
+        // 流式 usage 只在流结束时一次性回调（防多 chunk 计数膨胀）
+        this.lastUsage = usage;
+        this.totalPromptTokens += usage.promptTokens;
+        this.totalCompletionTokens += usage.completionTokens;
+        this.totalTokensUsed += usage.totalTokens;
+        // 透传调用方回调（agent-loop 用其收集"本轮主请求"usage，避开压缩请求污染单槽）
+        options?.onUsage?.(usage);
+      },
     });
 
-    const tcAcc: Map<number, { id: string; name: string; args: string }> = new Map();
-    let finishReason: string = "stop";
-    let streamPromptTokens = 0;
-    let streamCompletionTokens = 0;
-
-    try {
-      for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta;
-        const choiceFinish = chunk.choices?.[0]?.finish_reason;
-
-        if (choiceFinish) {
-          finishReason = choiceFinish;
-        }
-
-        // reasoning_content (DeepSeek R1 等推理模型)
-        const reasoning = (delta as Record<string, unknown>)?.reasoning_content as string | undefined;
-        if (reasoning) {
-          yield { type: "thinking", content: reasoning };
-        }
-
-        if (delta?.tool_calls) {
-          for (const tcDelta of delta.tool_calls) {
-            const idx = tcDelta.index;
-            if (!tcAcc.has(idx)) {
-              tcAcc.set(idx, { id: tcDelta.id ?? "", name: "", args: "" });
-            }
-            const acc = tcAcc.get(idx)!;
-            if (tcDelta.id) acc.id = tcDelta.id;
-            if (tcDelta.function?.name) {
-              acc.name = tcDelta.function.name;
-              yield { type: "tool_call_start", toolCallId: acc.id, toolName: acc.name };
-            }
-            if (tcDelta.function?.arguments) {
-              acc.args += tcDelta.function.arguments;
-              yield { type: "tool_call_delta", toolCallId: acc.id, content: tcDelta.function.arguments };
-            }
-          }
-        }
-
-        if (delta?.content) {
-          yield { type: "text", content: delta.content };
-        }
-
-        // Capture usage from the last chunk (stream_options.include_usage ensures
-        // it appears; only the last value is correct — accumulating per-chunk
-        // would vastly overcount if the provider reports cumulative values).
-        if (chunk.usage) {
-          streamPromptTokens = chunk.usage.prompt_tokens;
-          streamCompletionTokens = chunk.usage.completion_tokens;
-        }
-      }
-
-      // Accumulate stream usage once (per-request, not per-chunk)
-      this.totalPromptTokens += streamPromptTokens;
-      this.totalCompletionTokens += streamCompletionTokens;
-      this.totalTokensUsed += streamPromptTokens + streamCompletionTokens;
-
-      const resolvedToolCalls: ToolCall[] = [];
-      for (const [, acc] of tcAcc) {
-        if (acc.id && acc.name) {
-          resolvedToolCalls.push({
-            id: acc.id,
-            type: "function",
-            function: { name: acc.name, arguments: acc.args },
-          });
-        }
-      }
-
-      yield {
-        type: "done",
-        finishReason: finishReason as StreamChunk["finishReason"],
-        content: resolvedToolCalls.length > 0 ? JSON.stringify(resolvedToolCalls) : undefined,
-      };
-    } catch (err) {
-      const isAbort = (err as Error).name === "AbortError" || (err as Error).message?.includes("abort");
-      if (isAbort) {
-        yield { type: "error", error: "aborted" };
-      } else {
-        yield { type: "error", error: (err as Error).message };
-      }
+    for await (const chunk of stream) {
+      yield chunk;
     }
   }
 }

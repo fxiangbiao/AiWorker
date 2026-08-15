@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { API } from "$lib/stores/chat.svelte";
+  import TracePanel from "./TracePanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp">("context");
+  let tab = $state<"context" | "logs" | "skills" | "mcp" | "trace">("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -128,13 +129,13 @@
       .finally(() => { loading = false; });
   }
 
-  function switchTab(t: "context" | "logs" | "skills" | "mcp") {
+  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "trace") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
     else if (t === "logs") loadLogs();
     else if (t === "skills") loadSkills();
-    else loadMcp();
+    else if (t === "mcp") loadMcp();
   }
 
   onMount(() => loadContext());
@@ -146,6 +147,7 @@
     <button class="sp-tab" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
     <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-tab" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
+    <button class="sp-tab" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
   <div class="sp-body">
@@ -184,6 +186,8 @@
           {/each}
         </div>
       {/if}
+    {:else if tab === "trace"}
+      <TracePanel />
     {:else if tab === "mcp"}
       {#if mcpServers.length === 0}
         <div class="sp-empty">暂无 MCP 服务器</div>

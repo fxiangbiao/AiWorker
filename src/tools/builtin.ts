@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 内置工具实现
  * 文件系统读写 + 终端执行 + Web 搜索 + Web 抓取
  */
@@ -74,11 +74,11 @@ const writeFileDef: ToolDefinition = {
 };
 
 const writeFileHandler: ToolHandler = async (args, ctx) => {
-  const filePath = resolve(ctx.projectDir, args.path as string);
+  const filePath = resolve(ctx.workingDir, args.path as string);
 
-  // 路径遍历防护: 确保解析后路径仍在 projectDir 内
+  // 路径遍历防护: 确保解析后路径仍在工作目录内
   const resolvedPath = resolve(filePath);
-  const resolvedBase = resolve(ctx.projectDir);
+  const resolvedBase = resolve(ctx.workingDir);
   const rel = relative(resolvedBase, resolvedPath);
   if (rel.startsWith("..") || isAbsolute(rel)) {
     return {
