@@ -186,6 +186,35 @@ describe("HTTP Server", () => {
     local.close();
   });
 
+  it("/plugins 返回插件列表（未注入 getPlugins 时为空）", async () => {
+    const resp = await fetch(`${base}${API}/plugins`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.plugins).toEqual([]);
+  });
+
+  it("/plugins 支持 getPlugins 返回插件信息", async () => {
+    const deps = mockDeps();
+    deps.getPlugins = () => [
+      {
+        name: "demo",
+        entry: "/tmp/demo/plugin.ts",
+        status: "loaded",
+        registeredTools: ["demo_tool"],
+        registeredHooks: 0,
+      },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/plugins`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.plugins).toHaveLength(1);
+    expect(data.plugins[0]).toMatchObject({ name: "demo", status: "loaded", registeredTools: ["demo_tool"] });
+    local.close();
+  });
+
   it("/context 未配置 breakdown 时返回 500", async () => {
     const resp = await fetch(`${base}${API}/context`);
     expect([500, 200]).toContain(resp.status);

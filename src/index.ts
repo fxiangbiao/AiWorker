@@ -33,6 +33,7 @@ import { GameDevAgent } from "./agents/game-dev-agent.js";
 import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
 import { TeamCoordinator } from "./core/team-coordinator.js";
+import { pluginManager } from "./core/plugin-manager.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
@@ -240,6 +241,18 @@ program
       stdout.write(chalk.gray("⚠ 未加载 MCP（检查 config/mcp.json）\n"));
     }
 
+    // ─── 插件（config/plugins/，fail-soft：单个失败不阻断启动） ───
+    const pluginsDir = resolve(process.cwd(), "config", "plugins");
+    const pluginSummary = await pluginManager.loadFromDir(pluginsDir, { dataDir });
+    if (pluginSummary.loaded > 0) {
+      stdout.write(chalk.green(`✓ 已加载 ${pluginSummary.loaded} 个插件\n`));
+    }
+    for (const p of pluginManager.getPlugins()) {
+      if (p.status === "error") {
+        stdout.write(chalk.yellow(`⚠ 插件 ${p.name} 加载失败: ${p.error}\n`));
+      }
+    }
+
     if (options.server) {
       const port = parseInt(options.port, 10);
       startServer(
@@ -267,6 +280,7 @@ program
             contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
           getMcpStatuses: () => mcpManager.getStatuses(),
+          getPlugins: () => pluginManager.getPlugins(),
         },
         port,
       );

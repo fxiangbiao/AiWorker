@@ -15,7 +15,7 @@ import { projectTrace, computeSessionStats } from "./core/trace.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
-import type { StreamCallbacks, Task, AgentRunResult, PermissionMode } from "./types.js";
+import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
 interface DelegateAgent {
@@ -50,6 +50,7 @@ interface ServerDeps {
     string,
     { name: string; transport: string; connected: boolean; toolCount: number; state?: string; error?: string; tools?: { name: string; description: string }[] }
   >;
+  getPlugins?: () => PluginInfo[];
   dataDir?: string;
 }
 
@@ -455,6 +456,12 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/skills") && req.method === "GET") {
       const skills = deps.getSkills?.() ?? deps.skillNames.map((n) => ({ name: n, description: "", expert: "" }));
       sendJSON(res, 200, { skills });
+      return;
+    }
+
+    if (url === apiUrl("/plugins") && req.method === "GET") {
+      const plugins = deps.getPlugins?.() ?? [];
+      sendJSON(res, 200, { plugins });
       return;
     }
 
