@@ -109,9 +109,6 @@ program
 
     const skillsDir = resolve(process.cwd(), "skills");
     const skillCount = skillRegistry.loadFromDir(skillsDir);
-    if (skillCount > 0) {
-      stdout.write(chalk.green(`✓ 已加载 ${skillCount} 个技能\n`));
-    }
 
     const modelRouter = new ModelRouter();
     // 恢复运行时覆盖（/config 持久化）
@@ -128,17 +125,10 @@ program
     const compressor = new ContextCompressor(modelProvider);
     const contextManager = new ContextManager(sessionStore, dataDir, compressor);
 
-    // 扫描工作目录，注入项目画像
-    {
-      const profiler = new ProjectProfiler(workingDir);
-      const profile = profiler.scan();
-      if (profile) {
-        contextManager.setProjectProfile(profile);
-        stdout.write(
-          chalk.gray(`─ 项目: ${profile.type}, ${profile.pkgManager}, ${profile.topDirs.length} 个顶层目录\n`),
-        );
-      }
-    }
+    // 扫描工作目录，注入项目画像（unknown = 未识别项目类型，展示层友好化）
+    const profiler = new ProjectProfiler(workingDir);
+    const projectProfile = profiler.scan();
+    if (projectProfile) contextManager.setProjectProfile(projectProfile);
 
     initAuditLog(dataDir);
 
@@ -231,27 +221,50 @@ program
     ]);
     const mcpStatuses = mcpManager.getStatuses();
     const mcpServers = Object.values(mcpStatuses);
-    if (mcpServers.length > 0) {
-      stdout.write(chalk.green(`✓ 系统加载 ${mcpServers.length} 个 MCP\n`));
-      for (const s of mcpServers) {
-        const icon = s.connected ? chalk.green("✓") : chalk.yellow("⚠");
-        stdout.write(icon + chalk.green(` MCP: ${s.name} (${s.toolCount} 工具${s.connected ? "" : ", 连接失败"})\n`));
-      }
-    } else {
-      stdout.write(chalk.gray("⚠ 未加载 MCP（检查 config/mcp.json）\n"));
-    }
 
     // ─── 插件（config/plugins/，fail-soft：单个失败不阻断启动） ───
     const pluginsDir = resolve(process.cwd(), "config", "plugins");
-    const pluginSummary = await pluginManager.loadFromDir(pluginsDir, { dataDir });
-    if (pluginSummary.loaded > 0) {
-      stdout.write(chalk.green(`✓ 已加载 ${pluginSummary.loaded} 个插件\n`));
+    await pluginManager.loadFromDir(pluginsDir, { dataDir });
+
+    // ─── 启动状态区（统一精简格式：✓ 类别  内容；绿色仅保留图标） ───
+    const stat = (label: string, value: string): void => {
+      stdout.write(chalk.green("✓ ") + label.padEnd(4) + chalk.gray(value) + "\n");
+    };
+    const plugins = pluginManager.getPlugins();
+    const loadedPlugins = plugins.filter((p) => p.status === "loaded");
+    const externalMcp = mcpServers.filter((s) => !s.name.includes("builtin"));
+    const failedMcp = externalMcp.filter((s) => !s.connected);
+
+    stat("模型", modelRouter.getDisplayModel());
+    stat("专家", `${Object.keys(agents).length}`);
+    const toolParts: string[] = [];
+    if (externalMcp.length > 0) {
+      toolParts.push(`${externalMcp.length} MCP（${externalMcp.map((s) => s.name).join(", ")}）`);
     }
-    for (const p of pluginManager.getPlugins()) {
+    if (loadedPlugins.length > 0) {
+      const toolNames = loadedPlugins
+        .flatMap((p) => p.registeredTools)
+        .map((t) => (t.includes(":") ? t.slice(t.indexOf(":") + 1) : t));
+      toolParts.push(`${loadedPlugins.length} 插件（${toolNames.join(", ")}）`);
+    }
+    stat("工具", toolParts.length > 0 ? toolParts.join(" · ") : "内置工具就绪");
+    stat("技能", `${skillCount}`);
+    if (projectProfile) {
+      const typeLabel = projectProfile.type === "unknown" ? "未识别" : projectProfile.type;
+      const pkgPart = projectProfile.pkgManager ? ` · ${projectProfile.pkgManager}` : "";
+      const dirsPart = projectProfile.topDirs.length > 0 ? ` · ${projectProfile.topDirs.length} 个顶层目录` : "";
+      stat("项目", `${typeLabel}${pkgPart}${dirsPart}`);
+    }
+    // 告警（黄色，状态区之后）
+    for (const s of failedMcp) {
+      stdout.write(chalk.yellow(`⚠ MCP ${s.name} 连接失败${s.error ? `: ${s.error}` : ""}\n`));
+    }
+    for (const p of plugins) {
       if (p.status === "error") {
         stdout.write(chalk.yellow(`⚠ 插件 ${p.name} 加载失败: ${p.error}\n`));
       }
     }
+    stdout.write("\n");
 
     if (options.server) {
       const port = parseInt(options.port, 10);
@@ -293,14 +306,7 @@ program
       a.setMode(currentMode);
     }
 
-    stdout.write(chalk.green("✓ 核心引擎就绪\n"));
-    stdout.write(chalk.green(`✓ 模型: ${modelRouter.getDisplayModel()}\n`));
-    stdout.write(chalk.green("✓ 内置工具已注册: fs_read, fs_write, fs_list, terminal_exec, web_search, web_fetch\n"));
-    stdout.write(
-      chalk.green("✓ 专家智能体: 通用助手, 研究分析师, 编码工程师, 数据分析师, 产品运营, 理财顾问, 游戏设计师\n"),
-    );
-    stdout.write(chalk.green("✓ Team 协调器已就绪: 支持多专家协作\n"));
-    stdout.write(chalk.gray("输入消息开始对话, /help 查看帮助, /plan <描述> 使用多专家协作\n\n"));
+    stdout.write(chalk.gray("输入消息开始对话，/help 查看帮助，/plugins 查看插件\n\n"));
 
     // 初始状态栏
     if (!isServer) {
