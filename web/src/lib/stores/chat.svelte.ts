@@ -8,6 +8,9 @@ export interface ChatItem {
 
 export const API = "/api/v1";
 
+/** 消息缓存 key 前缀（版本化：消息结构变化时递增，强制下次重新拉取服务器） */
+const MSGS_PREFIX = "aiworker_msgs_v2_";
+
 export interface UIMessage {
   role: "user" | "assistant" | "agent";
   content: string;
@@ -102,11 +105,11 @@ export function saveChats(all: ChatItem[]) {
 }
 
 export function loadMessages(id: string): UIMessage[] {
-  return load<UIMessage[]>("aiworker_msgs_" + id, []);
+  return load<UIMessage[]>(MSGS_PREFIX + id, []);
 }
 
 export function saveMessages(id: string, msgs: UIMessage[]) {
-  if (id) save("aiworker_msgs_" + id, msgs);
+  if (id) save(MSGS_PREFIX + id, msgs);
 }
 
 /** 从服务器 /sessions 合并会话列表（服务器有而本地没有的补进来，按创建时间最新在前） */
@@ -215,7 +218,8 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
 export async function deleteChat(id: string): Promise<boolean> {
   // 本地聊天列表独立于服务端 session：无论服务端是否 404（本地创建但未发送过消息的会话），都更新本地
   store.chats = store.chats.filter((c) => c.id !== id);
-  localStorage.removeItem(`aiworker_msgs_${id}`);
+  localStorage.removeItem(`aiworker_msgs_${id}`); // 旧版本缓存（清理）
+  localStorage.removeItem(`${MSGS_PREFIX}${id}`);
   if (store.activeChatId === id) {
     store.activeChatId = null;
     store.messages = [];
