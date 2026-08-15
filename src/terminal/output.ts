@@ -136,10 +136,20 @@ export class StreamOutputRenderer {
 
   /** 工具调用开始（onToolCall） */
   toolStart(name: string, args: string, id: string): void {
-    const preview = this.sanitizePreview(args, 40);
-    const marker = `${chalk.blue(`🔧 ${name}`)}${preview ? chalk.dim(` ${preview}`) : ""}`;
-    this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: preview });
-    this.emitLineRaw(`  ${marker}`);
+    let preview = this.sanitizePreview(args, 40);
+    let marker = chalk.blue(`🔧 ${name}`);
+    let resultPreview = preview; // 结果行的预览（ask_user 不重复展示问题）
+    if (name === "ask_user") {
+      // ask_user 的 args 是 {question, options?}：卡片展示问题本身（截断），而非原始 JSON
+      const parsed = tryParseJson(args) as { question?: unknown; options?: unknown } | null;
+      const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
+      const optCount = Array.isArray(parsed?.options) ? parsed.options.length : 0;
+      preview = q ? this.sanitizePreview(q, 56) : "";
+      marker = chalk.blue(`🔧 ${name}${optCount > 0 ? chalk.dim(`（${optCount} 个选项）`) : ""}`);
+      resultPreview = "";
+    }
+    this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: resultPreview });
+    this.emitLineRaw(`  ${marker}${preview ? chalk.dim(` ${preview}`) : ""}`);
   }
 
   /** 工具调用结束（onToolResult） */
@@ -194,5 +204,14 @@ export class StreamOutputRenderer {
     let clean = s.replace(/\s+/g, " ").trim();
     if (clean.length > max) clean = clean.slice(0, max) + "…";
     return clean;
+  }
+}
+
+/** 轻量 JSON 解析（失败返回 null） */
+function tryParseJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
   }
 }

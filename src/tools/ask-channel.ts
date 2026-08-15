@@ -64,17 +64,27 @@ export async function requestAsk(question: string, options: string[] = []): Prom
 
 async function stdinAsk(question: string, options: string[]): Promise<string | null> {
   const { stdin, stdout } = await import("node:process");
+  const { default: chalk } = await import("chalk");
   const rawMode = typeof stdin.setRawMode === "function";
   if (rawMode) stdin.setRawMode(false);
   stdin.resume();
 
   return new Promise((resolve) => {
-    let prompt = `\n❓ ${question}`;
+    // 多行排版：问题独立成行、选项逐行编号，避免长选项挤在一行换行错乱
+    const lines: string[] = [];
+    lines.push("");
+    lines.push(`${chalk.cyan("❓")} ${question}`);
     if (options.length > 0) {
-      prompt += `\n  选项: ${options.map((o, i) => `${i + 1}.${o}`).join("  ")}`;
+      for (let i = 0; i < options.length; i++) {
+        lines.push(`   ${chalk.dim(`${i + 1})`)} ${options[i]}`);
+      }
     }
-    prompt += "\n（输入回答或选项序号，回车确认）: ";
-    stdout.write(prompt);
+    lines.push(
+      chalk.dim(
+        options.length > 0 ? "（直接输入回答，或输入选项序号后回车）: " : "（输入回答后回车）: ",
+      ),
+    );
+    stdout.write(lines.join("\n"));
 
     const handler = (data: Buffer) => {
       const input = data.toString("utf-8").trim();

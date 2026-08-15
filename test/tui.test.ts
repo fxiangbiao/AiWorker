@@ -447,6 +447,25 @@ describe("StreamOutputRenderer 流式表格对齐（Sprint 26）", () => {
     expect(lines.length).toBe(5); // 表头 + 分隔线 + 3 数据行
     assertAligned(lines);
   });
+
+  it("ask_user 工具卡展示问题与选项数，而非原始 JSON", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.toolStart("ask_user", JSON.stringify({ question: "请告诉我你的职业信息？", options: ["程序员", "产品", "教师"] }), "t1");
+      r.toolResult("ask_user", true, "用户回答: 程序员", "t1");
+    });
+    const joined = out.join("");
+    expect(joined).toContain("🔧 ask_user（3 个选项）");
+    expect(joined).toContain("请告诉我你的职业信息？");
+    // 不展示原始 JSON
+    expect(joined).not.toContain('"question"');
+    expect(joined).not.toContain('"options"');
+    // 结果行不含重复问题预览
+    expect(joined).toContain("✓ 用户回答: 程序员");
+    const askLines = joined.split("\n").filter(Boolean);
+    expect(askLines[0]).not.toContain("用户回答");
+  });
 });
 
 describe("键解析 parseKeys", () => {
