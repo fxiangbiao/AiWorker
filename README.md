@@ -260,6 +260,7 @@ export default async function setup(ctx) {
 - **fail-soft**：单个插件加载失败记录 error 并在启动横幅 ⚠ 告警，不阻断启动（`/plugins` 可查）。
 - **安全**：插件是任意进程权限代码，仅加载可信插件。
 - **同名覆盖**：全局工具同名时后加载的覆盖先加载的（加载顺序不定）；插件管理器检测到覆盖会记录警告，`/plugins` 以 ⚠ 展示（scope 注册遮蔽全局是设计特性，不警告）。工具名保持唯一。
+- **Hook 错误隔离**：插件 hook 抛错**不会中断任务**（fail-soft），错误记入审计（`/log` 可查）并视为放行；要拦截请显式返回 `{ proceed: false }`。
 - **工具作用域**：插件工具**默认全局可见**（豁免各 agent YAML 的 `tools:` 白名单，与 `mcp_` 前缀工具同等待遇，即插即用）；注册到 `scope: "coding"` 后仅 coding 专家的模型可见。
 - dev（tsx）下 `.ts`/`.js` 均可；编译后（node dist）仅 `.js` 可用。
 

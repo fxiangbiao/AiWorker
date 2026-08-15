@@ -69,7 +69,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - token 估算统一 `Math.ceil(chars / 3.5)`
 
 ### Hook 与安全
-- `src/hooks/hook-manager.ts` — 6 事件：onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError / onTelemetryRecord；`config/hooks.json` 注册 14 handlers，支持 `enabled: false`
+- `src/hooks/hook-manager.ts` — 6 事件：onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError / onTelemetryRecord；`config/hooks.json` 注册 14 handlers，支持 `enabled: false`；**trigger 逐 hook fail-soft**：单个 hook 抛错记审计（`action: hook:<event>`, `result: error`）并视为放行，不中断任务；权限类 hook 请用显式 `{ proceed: false }` 拦截
 - **`src/security/approval-service.ts` — 审批服务（权限决策单点）**：`checkCommandBlock`（ask 高危拦截）/ `checkPermission`（模式允许工具）/ `checkConfirmation`（plan 全确认、auto 高危确认）；**无确认通道默认拒绝（fail-closed）**；三个权限 hook（`dangerousCommandBlock`/`permissionCheck`/`confirmHighRisk`）均为薄委托，`index.ts` 构造注入（`confirm: requestConfirm`），测试可注入 mock
 - `permissionCheck` 仅 onToolCallPre 生效；`turnLogger` onMessage 记基线 + onTaskComplete 结算增量 + onError 标记（错误轮 token 置 0、reason=error）+ 发 `turn/start`·`turn/end` 事件
 - 权限三模式：ask（只读工具，写/高危被 permissionCheck 拦截产生红色告警）/ plan（每步确认）/ auto（自动，高危仍确认）；`danger-detector.ts` 正则拦截高危操作（含单文件删除 rm/del/Remove-Item）
