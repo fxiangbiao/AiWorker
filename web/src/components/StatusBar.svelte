@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fmtN, basename } from "$lib/utils/format";
-  import { currentModel, totalTokens, workingDir, projectDir, serverOnline, PRICING } from "$lib/stores/status";
+  import { currentModel, totalTokens, workingDir, serverOnline, PRICING } from "$lib/stores/status";
 
   let cost = $derived((($totalTokens || 0) * (PRICING.prompt + PRICING.completion)) / 1e6);
 </script>
@@ -11,7 +11,6 @@
   <div class="sb-item">tokens: {fmtN($totalTokens)}</div>
   <span>cost: ¥{cost.toFixed(4)}</span>
   <span class="sb-dir" title="工作目录: {$workingDir}">💻 {basename($workingDir) || "--"}</span>
-  <span class="sb-dir" title="输出目录: {$projectDir}">📤 {basename($projectDir) || "--"}</span>
 </div>
 
 <style>

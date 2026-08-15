@@ -78,10 +78,11 @@ export class Screen {
     this.prev = frame;
 
     if (old.length === 0) {
-      // 首帧：清屏后全量输出
-      this.out(`\x1b[H`);
+      // 首帧 / resize 后（prev 被清空）：清屏后全量输出。
+      // 必须清屏：终端变窄/变矮时旧帧行尾与底部内容会残留，与新内容重叠。
+      this.out(`\x1b[2J\x1b[H`);
       for (let i = 0; i < height; i++) {
-        this.out(`\x1b[${i + 1};1H${frame[i]}`);
+        this.out(`\x1b[${i + 1};1H\x1b[2K${frame[i]}`);
       }
       return;
     }

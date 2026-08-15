@@ -111,6 +111,13 @@ class OpenAICompatibleAdapterImpl implements LlmAdapter {
   async *completeStream(conn: LlmConnection, options: LlmStreamOptions): AsyncGenerator<StreamChunk> {
     const client = this.getClient(conn);
     let attempt = 0;
+    // 本次生成器是否已产出过 chunk：一旦产出，迭代中途失败绝不重试
+    // （消费者已收到部分输出，重试会导致文本/工具调用重复执行）
+    let emitted = false;
+    const emit = (chunk: StreamChunk): StreamChunk => {
+      emitted = true;
+      return chunk;
+    };
 
     for (;;) {
       // 流创建阶段失败：未产出任何 chunk，可安全重试
@@ -156,7 +163,7 @@ class OpenAICompatibleAdapterImpl implements LlmAdapter {
           // reasoning_content (DeepSeek R1 等推理模型)
           const reasoning = (delta as Record<string, unknown>)?.reasoning_content as string | undefined;
           if (reasoning) {
-            yield { type: "thinking", content: reasoning };
+            yield emit({ type: "thinking", content: reasoning });
           }
 
           if (delta?.tool_calls) {
@@ -169,17 +176,17 @@ class OpenAICompatibleAdapterImpl implements LlmAdapter {
               if (tcDelta.id) acc.id = tcDelta.id;
               if (tcDelta.function?.name) {
                 acc.name = tcDelta.function.name;
-                yield { type: "tool_call_start", toolCallId: acc.id, toolName: acc.name };
+                yield emit({ type: "tool_call_start", toolCallId: acc.id, toolName: acc.name });
               }
               if (tcDelta.function?.arguments) {
                 acc.args += tcDelta.function.arguments;
-                yield { type: "tool_call_delta", toolCallId: acc.id, content: tcDelta.function.arguments };
+                yield emit({ type: "tool_call_delta", toolCallId: acc.id, content: tcDelta.function.arguments });
               }
             }
           }
 
           if (delta?.content) {
-            yield { type: "text", content: delta.content };
+            yield emit({ type: "text", content: delta.content });
           }
 
           // Capture usage from the last chunk (stream_options.include_usage ensures
@@ -221,7 +228,8 @@ class OpenAICompatibleAdapterImpl implements LlmAdapter {
           return;
         }
         const code = classifyError(err);
-        if (isRetryable(code) && attempt < MAX_RETRIES) {
+        // 迭代中途失败：若已产出过 chunk 则不再重试（防内容/工具调用重复）
+        if (isRetryable(code) && !emitted && attempt < MAX_RETRIES) {
           attempt += 1;
           await sleep(Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), 8000));
           continue;

@@ -150,5 +150,6 @@ export function isAbortError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   if ((err as { name?: unknown }).name === "AbortError") return true;
   const message = err instanceof Error ? err.message : "";
-  return /abort/i.test(message);
+  // 单词边界收窄：避免消息中 "abort" 子串（如 "import"）误判为中断
+  return /\babort(?:ed|ing)?\b/i.test(message);
 }

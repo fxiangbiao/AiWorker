@@ -186,6 +186,23 @@ describe("OpenAICompatibleAdapter.completeStream", () => {
     }
     expect(chunks).toEqual([{ type: "error", error: "aborted" }]);
   });
+
+  it("迭代中途 retryable 失败不重试（已产出 chunk → 直接 error，防内容/工具调用重复）", async () => {
+    // 第一个 chunk 正常产出，随后抛 429：消费者已收到部分输出，绝不再重试
+    h.mockCreate = vi.fn().mockImplementation(
+      async function* () {
+        yield { choices: [{ delta: { content: "部分输出" }, finish_reason: null }] };
+        throw { status: 429, message: "rate limit exceeded" };
+      },
+    );
+    const chunks: StreamChunk[] = [];
+    for await (const c of openaiCompatibleAdapter.completeStream(conn, { model: "m", messages: [] })) {
+      chunks.push(c);
+    }
+    expect(chunks.map((c) => c.type)).toEqual(["text", "error"]);
+    expect((chunks[1] as { errorCode?: string }).errorCode).toBe("rate_limit");
+    expect(h.mockCreate).toHaveBeenCalledTimes(1); // 未重试
+  });
 });
 
 describe("错误分类与重试判定", () => {
@@ -274,5 +291,66 @@ describe("ModelRouter 门面", () => {
     expect(router.getTokenUsage()).toBe(25);
     expect(router.getPromptTokens()).toBe(17);
     expect(router.getCompletionTokens()).toBe(8);
+  });
+
+  it("completeWithProfile 使用 preference profile 的完整连接与温度（lite 类异源 profile 不再错配 default 连接）", async () => {
+    const dir = makeTestDir("llm-router-profile");
+    const cfgPath = resolve(dir, "models.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        default: {
+          provider: "deepseek",
+          model: "m1",
+          baseURL: "https://t.local/v1",
+          apiKey: "sk-1",
+          temperature: 0.5,
+          maxTokens: 4096,
+          adapter: "openai-compatible",
+        },
+        profiles: {
+          coding: { temperature: 0.2 },
+          lite: { provider: "openai", model: "qwen-x", baseURL: "http://localhost:8000/v1", apiKey: "sk-lite", temperature: 0.7 },
+        },
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+    );
+    const router = new ModelRouter(cfgPath);
+
+    // coding：temperature 0.2 生效（preference profile 覆盖）
+    h.mockCreate = vi.fn().mockResolvedValue(okResponse);
+    await router.completeWithProfile("coding", [{ role: "user", content: "hi" }]);
+    expect(h.mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "m1", temperature: 0.2 }),
+      expect.anything(),
+    );
+
+    // lite：模型名 + 连接参数均来自 lite profile（不再用 default 的连接发 lite 模型）
+    h.mockCreate = vi.fn().mockResolvedValue(okResponse);
+    await router.completeWithProfile("lite", [{ role: "user", content: "hi" }]);
+    expect(h.mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "qwen-x", temperature: 0.7 }),
+      expect.anything(),
+    );
+  });
+
+  it("getDisplayModel 展示 profile 上下文（/config model 后状态栏可感知）", async () => {
+    const dir = makeTestDir("llm-router-display");
+    const cfgPath = resolve(dir, "models.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        default: { provider: "deepseek", model: "m1", baseURL: "https://t.local/v1", apiKey: "sk-1", temperature: 0.5, maxTokens: 4096 },
+        profiles: { coding: { temperature: 0.2 } },
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+    );
+    const router = new ModelRouter(cfgPath);
+    expect(router.getDisplayModel()).toBe("m1");
+    router.setDefaultModel("coding");
+    // coding 未覆盖 model → 模型名不变，但展示 profile 上下文
+    expect(router.getDisplayModel()).toBe("m1 (coding)");
+    router.setDefaultModel("");
+    expect(router.getDisplayModel()).toBe("m1");
   });
 });
