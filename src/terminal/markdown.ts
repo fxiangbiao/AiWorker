@@ -17,9 +17,16 @@ function stripAnsiSequences(s: string): string {
     .replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "");
 }
 
+/** emoji 呈现字符（✅⭐🔥 等，终端占 2 列） */
+const EMOJI_PRESENTATION_RE = /^\p{Emoji_Presentation}$/u;
+
 /** 判断字符是否为宽字符（CJK 全角，占 2 列）。制表线 ─│ 等 Ambiguous 按 1 列。 */
 export function charWidth(ch: string): number {
   const cp = ch.codePointAt(0) ?? 0;
+  // 零宽字符：ZWJ / 变体选择符（emoji 序列内部，不占列）
+  if (cp === 0x200d || cp === 0xfe0e || cp === 0xfe0f) return 0;
+  // emoji 呈现字符（✅⭐🔥 等）占 2 列（✗✓★ 等文本呈现仍 1 列）
+  if (EMOJI_PRESENTATION_RE.test(ch)) return 2;
   // 常见 CJK 全角范围（东亚宽字符）
   if (
     (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo

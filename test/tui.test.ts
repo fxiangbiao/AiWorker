@@ -346,6 +346,18 @@ describe("Markdown 块级渲染", () => {
     expect(out[0]!).not.toContain("# "); // 已渲染，非原始 Markdown
     expect(out).toHaveLength(3);
   });
+
+  it("charWidth：emoji 呈现字符 2 列、文本符号 1 列、CJK 2 列", () => {
+    expect(charWidth("✅")).toBe(2); // U+2705 Emoji_Presentation
+    expect(charWidth("⭐")).toBe(2);
+    expect(charWidth("🔥")).toBe(2);
+    expect(charWidth("✗")).toBe(1); // U+2717 文本呈现
+    expect(charWidth("✓")).toBe(1);
+    expect(charWidth("★")).toBe(1);
+    expect(charWidth("中")).toBe(2);
+    expect(charWidth("a")).toBe(1);
+    expect(charWidth("\u200d")).toBe(0); // ZWJ
+  });
 });
 
 describe("StreamOutputRenderer 流式表格对齐（Sprint 26）", () => {
@@ -421,6 +433,18 @@ describe("StreamOutputRenderer 流式表格对齐（Sprint 26）", () => {
     });
     const lines = out.join("").split("\n").filter(Boolean).map(strip);
     expect(lines.length).toBe(3);
+    assertAligned(lines);
+  });
+
+  it("含 emoji（✅）与符号（✗★）的表格仍严格对齐", async () => {
+    const { StreamOutputRenderer } = await import("../src/terminal/output.js");
+    const r = new StreamOutputRenderer();
+    const out = captureStdout(() => {
+      r.writeChunk("| 资源 | 免费 | 评分 |\n|---|---|---|\n| fast.ai | ✅ | ★★★ |\n| 《MML》书 | ✗ | ★★ |\n| 吴恩达课程 | 可旁听 | ★★★★ |\n\n");
+      r.flush();
+    });
+    const lines = out.join("").split("\n").filter(Boolean).map(strip);
+    expect(lines.length).toBe(5); // 表头 + 分隔线 + 3 数据行
     assertAligned(lines);
   });
 });
