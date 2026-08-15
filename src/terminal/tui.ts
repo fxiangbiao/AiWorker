@@ -288,7 +288,7 @@ export class Tui {
     this.messages.append(
       chalk.dim(
         multiple && options.length > 0
-          ? "（可多选：↑/↓ 移动，Tab 勾选/取消，Enter 提交；也可输入序号如 1,3）"
+          ? "（可多选：↑/↓ 移动，Tab/空格 勾选/取消，Enter 提交；也可输入序号如 1,3）"
           : "（直接输入回答，或输入选项序号后回车）",
       ),
     );
@@ -354,6 +354,13 @@ export class Tui {
   private handleAskKey(ev: KeyEvent): void {
     switch (ev.type) {
       case "char":
+        // 多选模式：输入框为空时空格 = 勾选/取消当前高亮项（与 Tab 一致）；
+        // 一旦开始输入（序号列表/自由文本），空格照常插入
+        if (ev.char === " " && this.askMultiple && this.askOptions.length > 0 && this.input.getValue() === "") {
+          this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
+          this.renderAskOptions();
+          return;
+        }
         this.input.type(ev.char);
         break;
       case "paste":

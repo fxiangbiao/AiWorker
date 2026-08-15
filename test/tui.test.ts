@@ -742,6 +742,49 @@ describe("Tui 帧合成", () => {
     t.destroy();
   });
 
+  it("ask 多选：空格键勾选/取消（输入框为空时）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // eslint-disable-next-line no-control-regex
+    const strip = (s: string) => s.replace(/\x1b\[\d+(;\d+)*m/g, "");
+    const text = () => t.messages.renderViewport(80, 12).map(strip).join("\n");
+
+    const p = t.ask("你玩哪些？", ["竞技类", "单机大作"], 30000, true);
+    // 空输入 + 空格 → 勾选高亮项
+    t.simulateKey({ type: "char", char: " " });
+    expect(text()).toContain(">[*] 1) 竞技类");
+    // 再按空格 → 取消
+    t.simulateKey({ type: "char", char: " " });
+    expect(text()).toContain(">[ ] 1) 竞技类");
+    // 勾选后 Enter 提交
+    t.simulateKey({ type: "char", char: " " });
+    t.simulateKey({ type: "enter" });
+    expect(await p).toBe("竞技类");
+    t.destroy();
+  });
+
+  it("ask 多选：输入开始后空格照常插入（序号空格分隔与自由文本不受影响）", async () => {
+    const { Tui } = await import("../src/terminal/tui.js");
+    const t = new Tui();
+    t.init();
+    t.screen.setOut(() => {});
+    // 空格分隔序号列表
+    const p1 = t.ask("q", ["甲", "乙", "丙"], 30000, true);
+    t.simulateKey({ type: "char", char: "1" });
+    t.simulateKey({ type: "char", char: " " }); // 输入中：插入空格而非勾选
+    t.simulateKey({ type: "char", char: "3" });
+    t.simulateKey({ type: "enter" });
+    expect(await p1).toBe("甲, 丙");
+    // 含空格自由文本
+    const p2 = t.ask("q", ["甲", "乙"], 30000, true);
+    for (const ch of "自定义 回答") t.simulateKey({ type: "char", char: ch });
+    t.simulateKey({ type: "enter" });
+    expect(await p2).toBe("自定义 回答");
+    t.destroy();
+  });
+
   it("ask 多选：单序号走单选路径，自由文本原样返回", async () => {
     const { Tui } = await import("../src/terminal/tui.js");
     const t = new Tui();
