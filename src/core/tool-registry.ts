@@ -83,6 +83,11 @@ class ToolRegistry {
     return !!tool && tool.enabled;
   }
 
+  /** 是否为插件注册的工具（供可见性白名单豁免） */
+  isPluginTool(name: string): boolean {
+    return !!this.tools.get(name)?.plugin;
+  }
+
   // ===== 作用域视图（Sprint 27） =====
 
   /** 获取命名作用域视图（scope 注册 + 全局回退，同名遮蔽全局） */
@@ -190,6 +195,11 @@ export class ToolScopeView {
   isAvailable(name: string): boolean {
     const tool = this.registry.getWithScope(this.scopeId, name);
     return !!tool && tool.enabled;
+  }
+
+  /** 是否为插件注册的工具（scope 优先，回退全局） */
+  isPluginTool(name: string): boolean {
+    return !!this.registry.getWithScope(this.scopeId, name)?.plugin;
   }
 }
 

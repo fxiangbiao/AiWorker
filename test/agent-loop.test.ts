@@ -231,6 +231,39 @@ describe("Sprint 27: 工具可见性白名单 + 作用域遮蔽", () => {
     expect(seenTools.map((t) => t.function.name)).toContain("beta");
   });
 
+  it("插件注册的工具豁免白名单（即插即用，无需加入 agent tools）", async () => {
+    toolRegistry.register("alpha", def("alpha"), async () => ({ tool_call_id: "", success: true, content: "a" }));
+    toolRegistry.register("beta", def("beta"), async () => ({ tool_call_id: "", success: true, content: "b" }));
+    toolRegistry.register("plugin_tool", def("plugin_tool"), async () => ({ tool_call_id: "", success: true, content: "p" }), {
+      plugin: "demo",
+    });
+
+    const config = makeConfig();
+    config.tools = ["alpha"];
+
+    const sessionId = store.createSession("test").id;
+    let seenTools: ToolDefinition[] = [];
+    const modelRouter = {
+      completeWithProfile: async (_pref: string, _msgs: Message[], tools?: ToolDefinition[]) => {
+        seenTools = tools ?? [];
+        return plain("完成");
+      },
+    } as unknown as ModelRouter;
+
+    await runAgentLoop(config, "可见性", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    const names = seenTools.map((t) => t.function.name);
+    expect(names).toContain("alpha");
+    expect(names).toContain("plugin_tool"); // 插件工具豁免
+    expect(names).not.toContain("beta"); // 普通工具仍被白名单过滤
+  });
+
   it("toolScope 传参：执行走 scope view（遮蔽全局同名 handler）", async () => {
     toolRegistry.register("alpha", def("alpha"), async () => ({ tool_call_id: "", success: true, content: "global-alpha" }));
     toolRegistry.getScope("coding").register("alpha", def("alpha"), async () => ({ tool_call_id: "", success: true, content: "scoped-alpha" }));

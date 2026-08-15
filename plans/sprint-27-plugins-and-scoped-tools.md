@@ -189,3 +189,8 @@ server 分支的 `startServer` deps 增加 `getPlugins: () => pluginManager.getP
 
 **测试**：全量 **322 通过**（22 文件；原 300 + 新增 22）。
 **验证**：`tsc --noEmit` 0 错误；`eslint src/ test/` 0 警告；`vitest` 322 通过；`npm run web:build` 成功。
+
+**修复迭代（实机验证发现）**：
+- 同名冲突警告（`PluginInfo.warnings` + `/plugins` ⚠ 展示，e629900）
+- 示例插件补充 registerHook（example 工具调用日志，b7e4e6f）；hello 插件修复 `hc.log` 不存在的方法调用（2d2deb9）
+- **插件工具豁免可见性白名单**：实机测试发现模型看不到 `now` 插件工具（被 coding agent 的 `config.tools` 白名单过滤，只能绕路 terminal_exec）→ `filterVisibleTools` 增加插件工具豁免（`isPluginTool`，与 `mcp_` 同待遇）；内置工具仍按白名单裁剪，scope 注册仍可限定专家；端到端验证 coding agent 模型可见 `now/greeting/hello`

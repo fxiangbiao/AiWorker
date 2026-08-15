@@ -87,11 +87,12 @@ export async function runAgentLoop(
       maybeInjectRepeatReminder(messages, recentToolCalls, reminderStreak);
 
       // 作用域视图取工具定义（scope 遮蔽 + 全局回退），再按 agent 白名单收窄；
-      // ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截（产生红色告警）
+      // 插件工具与 MCP 工具（mcp_ 前缀）豁免白名单（即插即用）；ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截
       const availableTools = toolView
         ? await toolView.getAvailableDefinitions(toolCtx)
         : await toolRegistry.getAvailableDefinitions(toolCtx);
-      const tools = filterVisibleTools(availableTools, config);
+      const isPluginRegistered = (name: string) => (toolView ? toolView.isPluginTool(name) : toolRegistry.isPluginTool(name));
+      const tools = filterVisibleTools(availableTools, config, isPluginRegistered);
 
       const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools);
 
@@ -284,11 +285,12 @@ export async function runAgentLoopStream(
       maybeInjectRepeatReminder(messages, recentToolCalls, reminderStreak);
 
       // 作用域视图取工具定义（scope 遮蔽 + 全局回退），再按 agent 白名单收窄；
-      // ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截（产生红色告警）
+      // 插件工具与 MCP 工具（mcp_ 前缀）豁免白名单（即插即用）；ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截
       const availableTools = toolView
         ? await toolView.getAvailableDefinitions(toolCtx)
         : await toolRegistry.getAvailableDefinitions(toolCtx);
-      const tools = filterVisibleTools(availableTools, config);
+      const isPluginRegistered = (name: string) => (toolView ? toolView.isPluginTool(name) : toolRegistry.isPluginTool(name));
+      const tools = filterVisibleTools(availableTools, config, isPluginRegistered);
 
       // 流式调用
       callbacks.onIterationStart?.(iterations);
@@ -707,11 +709,21 @@ async function executeToolInner(
   return result;
 }
 
-/** agent 工具可见性白名单：config.tools 非空时仅保留白名单工具；MCP 工具（mcp_ 前缀）保持全局可见 */
-function filterVisibleTools(available: ToolDefinition[], config: AgentConfig): ToolDefinition[] {
+/**
+ * agent 工具可见性白名单：config.tools 非空时仅保留白名单工具；
+ * MCP 工具（mcp_ 前缀）与插件注册的工具豁免（即插即用，专家默认可见）
+ */
+function filterVisibleTools(
+  available: ToolDefinition[],
+  config: AgentConfig,
+  isPluginRegistered: (name: string) => boolean,
+): ToolDefinition[] {
   if (config.tools.length === 0) return available;
   return available.filter(
-    (t) => config.tools.includes(t.function.name) || t.function.name.startsWith("mcp_"),
+    (t) =>
+      config.tools.includes(t.function.name) ||
+      t.function.name.startsWith("mcp_") ||
+      isPluginRegistered(t.function.name),
   );
 }
 

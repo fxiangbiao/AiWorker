@@ -92,4 +92,21 @@ describe("ToolRegistry 作用域视图", () => {
     });
     expect(toolRegistry.listScopeTools("coding")[0]!.plugin).toBe("demo");
   });
+
+  it("isPluginTool 区分插件工具（全局与 scope 回退）", () => {
+    toolRegistry.register("plain", def("plain"), async () => ({ tool_call_id: "", success: true, content: "" }));
+    toolRegistry.register("plug", def("plug"), async () => ({ tool_call_id: "", success: true, content: "" }), {
+      plugin: "demo",
+    });
+    expect(toolRegistry.isPluginTool("plain")).toBe(false);
+    expect(toolRegistry.isPluginTool("plug")).toBe(true);
+
+    const view = toolRegistry.getScope("coding");
+    view.register("scoped_plug", def("scoped_plug"), async () => ({ tool_call_id: "", success: true, content: "" }), {
+      plugin: "demo2",
+    });
+    expect(view.isPluginTool("scoped_plug")).toBe(true);
+    expect(view.isPluginTool("plug")).toBe(true); // 回退全局
+    expect(view.isPluginTool("plain")).toBe(false);
+  });
 });
