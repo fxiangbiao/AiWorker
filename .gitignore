@@ -10,3 +10,5 @@ data-test/
 skills/pending/
 skills/default/
 ai_default_project/
+# 演示视频体积超平台限制（GitHub 单文件 100MB），不纳入仓库
+docs/videos/*.mp4

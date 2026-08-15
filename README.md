@@ -15,6 +15,7 @@
 
 - [特性](#特性)
 - [界面预览](#界面预览)
+- [作品展示](#作品展示)
 - [快速开始](#快速开始)
 - [交互界面](#交互界面)
 - [项目结构](#项目结构)
@@ -68,13 +69,26 @@
 
 ## 界面预览
 
-> 📸 截图占位：自研 TUI（差分渲染 + CJK 对齐 + 流式 Markdown 表格）与 Web UI（Svelte 5 + SSE 流式 + 协作面板）演示图。
-> 将截图放到 `docs/screenshots/` 后取消下方注释：
+![TUI 终端 — 问候](docs/screenshots/tui_hello.png)
 
-<!--
-![TUI 终端](docs/screenshots/tui.png)
-![Web UI](docs/screenshots/web.png)
--->
+![TUI 终端 — 工具调用](docs/screenshots/tui_tool_call.png)
+
+![Web UI — 演示 1](docs/screenshots/web_ui_demo1.png)
+
+![Web UI — 演示 2](docs/screenshots/web_ui_demo2.png)
+
+---
+
+## 作品展示
+
+用 AiWorker 生成的 Web 小作品（HTML 单文件，浏览器直接打开）：
+
+- [blackhole.html](docs/videos/blackhole.html) — 黑洞模拟
+- [ocean-sunset.html](docs/videos/ocean-sunset.html) — 海上日落
+- [starship_design.html](docs/videos/starship_design.html) — 星舰设计
+
+> 🎬 演示视频：`docs/videos/AiWorker - Visual Studio Code - Game Demos.mp4`（本地播放）。
+> 因体积 226MB 超过 [GitHub 单文件 100MB 限制](https://docs.github.com/repositories/working-with-files/managing-large-files/about-large-files-on-github)，未纳入仓库，可自行放到本地 `docs/videos/` 查看。
 
 ---
 

@@ -1,0 +1,1130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>🛸 星际飞船设计局</title>
+<style>
+:root{
+  --bg:#070b16; --panel:rgba(13,20,40,.72); --line:#1e2c4a;
+  --cyan:#4de8ff; --orange:#ffb64d; --red:#ff5d5d; --green:#5dff9d;
+  --txt:#d7e6ff; --dim:#7f93bd;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:radial-gradient(1100px 700px at 72% -8%, #12203f 0%, var(--bg) 60%);
+  color:var(--txt); font-family:"Segoe UI",system-ui,"PingFang SC","Microsoft YaHei",sans-serif;
+  height:100vh; display:flex; flex-direction:column; overflow:hidden;
+}
+header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 18px; background:linear-gradient(180deg,rgba(18,30,58,.9),rgba(10,16,30,.6));
+  border-bottom:1px solid var(--line);
+}
+.brand{font-size:20px;font-weight:700;letter-spacing:1px;background:linear-gradient(90deg,var(--cyan),var(--orange));-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .sub{font-size:11px;color:var(--dim);letter-spacing:3px;margin-left:10px;-webkit-text-fill-color:var(--dim)}
+.head-actions{display:flex;gap:10px}
+button{
+  cursor:pointer;border:1px solid var(--line);background:rgba(30,48,84,.55);color:var(--txt);
+  padding:7px 14px;border-radius:8px;font-size:13px;transition:.18s;
+}
+button:hover{border-color:var(--cyan);box-shadow:0 0 12px rgba(77,232,255,.25);transform:translateY(-1px)}
+button:active{transform:translateY(0)}
+button.primary{background:linear-gradient(135deg,#0e4f6e,#0a3a5c);border-color:var(--cyan);color:#dffbff;font-weight:600}
+button.primary:hover{box-shadow:0 0 16px rgba(77,232,255,.45)}
+button.danger:hover{border-color:var(--red);box-shadow:0 0 12px rgba(255,93,93,.3)}
+button:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+main{flex:1;display:grid;grid-template-columns:230px 1fr 268px;gap:12px;padding:12px;min-height:0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;backdrop-filter:blur(6px);display:flex;flex-direction:column;min-height:0}
+.panel h3{font-size:13px;letter-spacing:2px;color:var(--cyan);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.left{overflow-y:auto;scrollbar-width:thin}
+.left::-webkit-scrollbar{width:6px}
+.left::-webkit-scrollbar-thumb{background:#23365e;border-radius:3px}
+.group{margin-bottom:12px}
+.group .g-title{font-size:12px;color:var(--dim);margin-bottom:6px;display:flex;justify-content:space-between}
+.group .g-title b{color:var(--orange);font-weight:600}
+.opts{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.opt{
+  border:1px solid var(--line);background:rgba(20,32,60,.5);border-radius:8px;padding:6px 8px;
+  cursor:pointer;transition:.15s;text-align:left;
+}
+.opt:hover{border-color:var(--dim)}
+.opt.sel{border-color:var(--cyan);background:rgba(77,232,255,.12);box-shadow:0 0 10px rgba(77,232,255,.2)}
+.opt .n{font-size:12px;font-weight:600;display:block}
+.opt .s{font-size:10px;color:var(--dim);display:block;margin-top:2px}
+.opt .c{color:var(--orange);font-size:10px}
+.opt.sel .s{color:#bcd8ff}
+.stage{display:flex;flex-direction:column;min-height:0;position:relative;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:radial-gradient(700px 500px at 50% 45%,#0b1226 0%,#05080f 100%)}
+.stage-top{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:rgba(10,16,30,.7);border-bottom:1px solid var(--line);z-index:5}
+.tabs{display:flex;gap:6px}
+.tabs button{font-size:12px;padding:5px 12px}
+.tabs button.active{border-color:var(--orange);color:var(--orange);background:rgba(255,182,77,.1)}
+#hint{font-size:11px;color:var(--dim)}
+canvas{flex:1;width:100%;height:100%;display:block;cursor:grab}
+canvas.grabbing{cursor:grabbing}
+.hud-msg{position:absolute;top:52px;left:50%;transform:translateX(-50%);font-size:12px;color:var(--dim);pointer-events:none;text-align:center;z-index:6}
+.right{overflow-y:auto;scrollbar-width:thin}
+.right::-webkit-scrollbar{width:6px}
+.right::-webkit-scrollbar-thumb{background:#23365e;border-radius:3px}
+#shipName{width:100%;background:rgba(20,32,60,.6);border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:8px 10px;font-size:14px;margin-bottom:10px;outline:none}
+#shipName:focus{border-color:var(--cyan)}
+.palette{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.sw{
+  width:26px;height:26px;border-radius:50%;border:2px solid #2a3f6e;cursor:pointer;position:relative;transition:.15s;
+}
+.sw:hover{transform:scale(1.12)}
+.sw.sel{border-color:#fff;box-shadow:0 0 10px rgba(255,255,255,.4)}
+.sw::after{content:"";position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;background:var(--b);border:2px solid #0a0f1e}
+.stat{margin-bottom:9px}
+.stat .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-bottom:3px}
+.stat .lbl b{color:var(--txt);font-weight:600}
+.bar{height:7px;background:#141f3a;border-radius:4px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:4px;transition:width .25s}
+.cost-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);margin-top:4px}
+.cost-row .bar{flex:1}
+.cost-row b{color:var(--orange);font-size:14px}
+.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:12px}
+.btn-row select{grid-column:1/-1;background:rgba(20,32,60,.6);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:6px;font-size:12px;outline:none}
+.rating{margin-top:12px;text-align:center;font-size:12px;color:var(--dim)}
+.rating b{font-size:20px;background:linear-gradient(90deg,var(--cyan),var(--orange));-webkit-background-clip:text;background-clip:text;color:transparent}
+footer{padding:6px 18px;font-size:11px;color:var(--dim);border-top:1px solid var(--line);display:flex;justify-content:space-between}
+.warn{color:var(--red)!important}
+.overlay{
+  position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(4,7,14,.72);backdrop-filter:blur(3px);z-index:20;text-align:center;
+}
+.overlay h1{font-size:34px;letter-spacing:3px;background:linear-gradient(90deg,var(--red),var(--orange));-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:10px}
+.overlay p{color:var(--dim);margin-bottom:18px}
+@media (max-width:980px){
+  main{grid-template-columns:1fr;overflow-y:auto}
+  body{overflow:auto}
+  .stage{min-height:520px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">🛸 星际飞船设计局<span class="sub">STARSHIP DESIGN BUREAU</span></div>
+  <div class="head-actions">
+    <button id="btnSound" title="音效开关">🔊</button>
+    <button id="btnTest" class="primary" title="或按 T">🚀 开始试飞</button>
+  </div>
+</header>
+
+<main>
+  <aside class="panel left">
+    <h3>◈ 部件选择</h3>
+    <div id="partGroups"></div>
+  </aside>
+
+  <section class="stage">
+    <div class="stage-top">
+      <div class="tabs">
+        <button id="tabDesign" class="active">🔧 设计</button>
+        <button id="tabTest">🚀 试飞</button>
+      </div>
+      <div id="hint">拖拽旋转飞船 · 选择部件</div>
+    </div>
+    <canvas id="cv"></canvas>
+    <div id="hudMsg" class="hud-msg"></div>
+    <div id="overlayBox"></div>
+  </section>
+
+  <aside class="panel right">
+    <h3>◈ 飞船信息</h3>
+    <input id="shipName" maxlength="14" placeholder="给你的飞船起个名字…"/>
+    <div class="palette" id="palette"></div>
+    <div class="stats" id="stats"></div>
+    <div class="cost-row"><span>造价</span><div class="bar"><i id="costBar"></i></div><b id="costTxt"></b></div>
+    <div class="btn-row">
+      <button id="btnRandom" title="随机生成">🎲 随机</button>
+      <button id="btnSave">💾 保存</button>
+      <select id="designList"></select>
+      <button id="btnLoad">载入</button>
+      <button id="btnDel" class="danger">删除</button>
+    </div>
+    <div class="rating">综合评级 <b id="ratingNum">—</b></div>
+  </aside>
+</main>
+
+<footer><span id="footInfo">—</span><span>预算 100 · ESC 返回设计</span></footer>
+
+<script>
+"use strict";
+/* ================= 部件数据 ================= */
+const PARTS = {
+  hull: [
+    {id:'fighter',name:'猎鹰轻甲',hp:90,  speed:1.45,turn:1.25,cost:20,desc:'轻巧灵活，速度至上'},
+    {id:'frigate',name:'巡航舰体',hp:155, speed:1.05,turn:1.0, cost:30,desc:'均衡耐用，万金油'},
+    {id:'dread',  name:'无畏重甲',hp:250, speed:0.75,turn:0.75,cost:45,desc:'重装堡垒，皮糙肉厚'},
+  ],
+  engine: [
+    {id:'ion',   name:'离子引擎', speed:1.25,energy:1.2, dmg:1.0, cost:10,desc:'节能高效'},
+    {id:'plasma',name:'等离子引擎',speed:1.0, energy:1.0, dmg:1.15,cost:16,desc:'火力增幅'},
+    {id:'warp',  name:'曲率引擎', speed:1.6, energy:0.85,dmg:1.0, cost:26,desc:'极速，能耗高'},
+  ],
+  weapon: [
+    {id:'laser',  name:'脉冲激光', dmg:9, rate:5,   en:2.2, kind:'laser',  cost:10,desc:'连射极快'},
+    {id:'plasma', name:'等离子炮', dmg:16,rate:2.6, en:5,   kind:'plasma', cost:18,desc:'高伤中速'},
+    {id:'missile',name:'追踪导弹', dmg:28,rate:1.1, en:9,   kind:'missile',cost:30,desc:'自动追踪'},
+  ],
+  shield: [
+    {id:'none',  name:'无护盾', val:0,   cost:0, desc:'裸奔'},
+    {id:'basic', name:'基础护盾', val:70, cost:10,desc:'基本防护'},
+    {id:'energy',name:'能量护盾', val:120,cost:20,desc:'自动回复'},
+    {id:'quant', name:'量子护盾', val:185,cost:34,desc:'顶级防护'},
+  ],
+  wing: [
+    {id:'none', name:'无翼',   man:1.0,  cost:0, desc:'极简'},
+    {id:'arrow',name:'箭形翼', man:1.18, cost:8, desc:'稳定'},
+    {id:'swept',name:'后掠翼', man:1.32, cost:13,desc:'高机动'},
+    {id:'x',    name:'X形翼', man:1.22, cost:16,desc:'经典造型'},
+  ],
+  cockpit: [
+    {id:'classic',name:'经典座舱', turn:1.0,  cost:0, desc:'标准视野'},
+    {id:'arrow',  name:'箭头座舱', turn:1.06, cost:4, desc:'锐利外形'},
+    {id:'bubble', name:'球形座舱', turn:1.12, cost:8, desc:'全景视野'},
+  ],
+};
+
+const GROUPS = [
+  {key:'hull',    label:'🛡️ 船体'},
+  {key:'engine',  label:'🔥 引擎'},
+  {key:'weapon',  label:'⚔️ 武器'},
+  {key:'shield',  label:'💠 护盾'},
+  {key:'wing',    label:'🪽 机翼'},
+  {key:'cockpit', label:'👁️ 座舱'},
+];
+
+const PALETTES = [
+  {a:'#4de8ff',b:'#ffb64d'},{a:'#ff5d5d',b:'#ffe14d'},
+  {a:'#5dff9d',b:'#4de8ff'},{a:'#c86dff',b:'#ff6dd8'},
+  {a:'#ffb64d',b:'#ff5d5d'},{a:'#8dff6d',b:'#ffe14d'},
+];
+
+const BUDGET = 100;
+
+/* ================= 全局状态 ================= */
+const state = {
+  parts: sanitizeParts({hull:'fighter', engine:'ion', weapon:'laser', shield:'none', wing:'none', cockpit:'classic'}),
+  color1:'#4de8ff', color2:'#ffb64d',
+  mode:'design',
+  rot:0, dragRot:0, dragging:false, lastDragX:0, clock:0,
+  designs: loadDesigns(),
+  sound:true,
+};
+
+/* ================= DOM 引用 ================= */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W=0,H=0,dpr=1;
+
+function resize(){
+  dpr = Math.min(2, window.devicePixelRatio||1);
+  const oldW=W, oldH=H;
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W*dpr; cv.height = H*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  makeStars();
+  // 试飞中窗口变化：按比例缩放实体坐标，避免飞船/陨石跑到新画布外
+  if(state.mode==='test'&&game.ship&&oldW>0&&oldH>0&&(W!==oldW||H!==oldH)){
+    const sx=W/oldW, sy=H/oldH;
+    game.ship.x*=sx; game.ship.y*=sy;
+    for(const b of game.bullets){ b.x*=sx; b.y*=sy; }
+    for(const m of game.missiles){ m.x*=sx; m.y*=sy; }
+    for(const e of game.enemies){ e.x*=sx; e.y*=sy; }
+  }
+}
+window.addEventListener('resize', resize);
+
+/* ================= 工具函数 ================= */
+function shade(hex,f){
+  const n=parseInt(hex.slice(1),16);
+  let r=(n>>16)&255,g=(n>>8)&255,b=n&255;
+  r=Math.round(Math.min(255,Math.max(0,r*(1+f))));
+  g=Math.round(Math.min(255,Math.max(0,g*(1+f))));
+  b=Math.round(Math.min(255,Math.max(0,b*(1+f))));
+  return `rgb(${r},${g},${b})`;
+}
+function poly(ctx,pts,close=true){
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);
+  if(close)ctx.closePath();
+}
+function sanitizeParts(p){
+  const out={};
+  const src=(p&&typeof p==='object')?p:{};
+  for(const k in PARTS){
+    const id=src[k];
+    out[k]=PARTS[k].some(x=>x.id===id)?id:PARTS[k][0].id;
+  }
+  return out;
+}
+function resolveParts(){
+  const P={};
+  for(const k in state.parts){
+    if(!PARTS[k]) continue;                       // 跳过垃圾键（历史污染/坏存档）
+    const found=PARTS[k].find(p=>p.id===state.parts[k]);
+    P[k]=found||PARTS[k][0];                      // 非法 id 回退该组默认部件
+  }
+  for(const k in PARTS){ if(!P[k]) P[k]=PARTS[k][0]; }  // 兜底补全缺失分组
+  return P;
+}
+function computeStats(P){
+  const cost = P.hull.cost+P.engine.cost+P.weapon.cost+P.shield.cost+P.wing.cost+P.cockpit.cost;
+  return {
+    hp:P.hull.hp,
+    shield:P.shield.val,
+    speed:P.hull.speed*P.engine.speed,
+    turn:P.hull.turn*P.wing.man*P.cockpit.turn,
+    dmg:P.weapon.dmg*P.engine.dmg,
+    rate:P.weapon.rate,
+    energyMax:100*P.engine.energy,
+    regen:16*P.engine.energy,
+    enCost:P.weapon.en,
+    cost,
+    rating: Math.min(100,Math.round((
+        (P.hull.hp/250)+(P.shield.val/185)+(P.hull.speed*P.engine.speed/1.6)
+        +(P.weapon.dmg*P.engine.dmg/28)+(P.hull.turn*P.wing.man*P.cockpit.turn/1.32)
+        +(P.engine.energy/1.2)
+      )/6*100))
+  };
+}
+
+/* ================= 星星背景 ================= */
+let stars=[];
+function makeStars(){
+  stars=[];
+  const n=Math.floor(W*H/4200);
+  for(let i=0;i<n;i++) stars.push({x:Math.random()*W,y:Math.random()*H,r:Math.random()*1.4+0.3,t:Math.random()*6.28,s:Math.random()*2+0.5});
+}
+function drawStars(par){
+  for(const st of stars){
+    const tw=0.55+0.45*Math.sin(state.clock*st.s+st.t);
+    ctx.globalAlpha=tw*(0.5+par*0.5);
+    ctx.fillStyle='#cfe4ff';
+    ctx.fillRect(st.x,st.y,st.r,st.r);
+  }
+  ctx.globalAlpha=1;
+}
+
+/* ================= 飞船绘制 ================= */
+const HULL_PTS = {
+  fighter:[[0,-46],[8,-20],[20,-2],[16,18],[6,26],[0,30],[-6,26],[-16,18],[-20,-2],[-8,-20]],
+  frigate:[[0,-52],[12,-34],[24,-16],[26,6],[18,26],[8,34],[0,38],[-8,34],[-18,26],[-26,6],[-24,-16],[-12,-34]],
+  dread:  [[0,-58],[16,-42],[30,-22],[32,4],[26,26],[16,38],[0,44],[-16,38],[-26,26],[-32,4],[-30,-22],[-16,-42]],
+};
+
+function drawWings(ctx,wing,col){
+  if(wing.id==='none') return;
+  let sets=[];
+  if(wing.id==='arrow'){
+    sets=[[[-8,4],[-38,22],[-34,42],[-12,30]],[[8,4],[38,22],[34,42],[12,30]]];
+  }else if(wing.id==='swept'){
+    sets=[[[-6,-6],[-44,30],[-30,44],[-10,26]],[[6,-6],[44,30],[30,44],[10,26]]];
+  }else if(wing.id==='x'){
+    sets=[[[-6,-26],[-30,-18],[-28,-2],[-8,-6]],[[6,-26],[30,-18],[28,-2],[8,-6]],
+          [[-8,10],[-34,20],[-30,34],[-10,24]],[[8,10],[34,20],[30,34],[10,24]]];
+  }
+  ctx.fillStyle=shade(col.a,-0.18);
+  ctx.strokeStyle=col.b; ctx.lineWidth=1.5;
+  for(const pts of sets){ poly(ctx,pts); ctx.fill(); ctx.stroke(); }
+}
+
+function drawCockpit(ctx,id,col){
+  ctx.save();
+  if(id==='classic'){
+    const g=ctx.createLinearGradient(0,-32,0,0);
+    g.addColorStop(0,'#dffbff'); g.addColorStop(1,shade(col.a,-0.3));
+    ctx.fillStyle=g; ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.ellipse(0,-20,6,12,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+  }else if(id==='arrow'){
+    ctx.fillStyle='#c9f4ff';
+    poly(ctx,[[0,-34],[7,-14],[4,2],[0,8],[-4,2],[-7,-14]]); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.4)'; ctx.lineWidth=1; ctx.stroke();
+  }else{
+    const g=ctx.createRadialGradient(-2,-18,2,0,-14,9);
+    g.addColorStop(0,'#eaffff'); g.addColorStop(1,'#6fc9e8');
+    ctx.fillStyle=g; ctx.strokeStyle='rgba(255,255,255,.4)';
+    ctx.beginPath(); ctx.arc(0,-14,8,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle='rgba(255,255,255,.55)';
+    ctx.beginPath(); ctx.arc(-2,-16,2.4,0,Math.PI*2); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawWeapons(ctx,id,col,time){
+  if(id==='laser'){
+    for(const s of [-1,1]){
+      ctx.fillStyle=shade(col.a,-0.35); ctx.strokeStyle=col.b; ctx.lineWidth=1;
+      ctx.fillRect(s*15-2,6,4,16); ctx.strokeRect(s*15-2,6,4,16);
+      ctx.fillStyle=col.b;
+      ctx.beginPath(); ctx.arc(s*15,6,2.2,0,Math.PI*2); ctx.fill();
+    }
+  }else if(id==='plasma'){
+    for(const s of [-1,1]){
+      ctx.fillStyle=shade(col.a,-0.3);
+      poly(ctx,[[s*13-3,4],[s*13-3,20],[s*13-6,26],[s*13+6,26],[s*13+3,20],[s*13+3,4]]); ctx.fill();
+      ctx.fillStyle='rgba(255,138,77,.9)';
+      ctx.shadowColor='#ff8a4d'; ctx.shadowBlur=8;
+      ctx.beginPath(); ctx.arc(s*13,26,3.4,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur=0;
+    }
+  }else if(id==='missile'){
+    for(const s of [-1,1]){
+      ctx.fillStyle='#2a3a5c'; ctx.strokeStyle='#5a7bb0';
+      poly(ctx,[[s*17-3,0],[s*17-3,24],[s*17+3,24],[s*17+3,0]]); ctx.fill(); ctx.stroke();
+      ctx.fillStyle=col.b;
+      ctx.shadowColor=col.b; ctx.shadowBlur=6;
+      ctx.beginPath(); ctx.arc(s*17,24,2.6,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur=0;
+    }
+  }
+}
+
+function drawEngines(ctx,hullId,engineId,col,time,thrust){
+  let nozz=[];
+  if(hullId==='fighter') nozz=[[0,30]];
+  else if(hullId==='frigate') nozz=[[-9,33],[9,33]];
+  else nozz=[[-14,40],[0,44],[14,40]];
+  const flameCol = engineId==='ion'?'#4de8ff':engineId==='plasma'?'#ff8a4d':'#c86dff';
+  const len = 10+13*thrust+5*Math.sin(time*18);
+  for(const arr of nozz){
+    const nx=arr[0],ny=arr[1];
+    const g=ctx.createLinearGradient(nx,ny,nx,ny+len+10);
+    g.addColorStop(0,'rgba(255,255,255,.95)');
+    g.addColorStop(0.35,flameCol);
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g;
+    ctx.shadowColor=flameCol; ctx.shadowBlur=14;
+    poly(ctx,[[nx-4,ny],[nx+4,ny],[nx+1.5,ny+len+8],[nx-1.5,ny+len+8]]);
+    ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.fillStyle='#1b2740'; ctx.strokeStyle='#3d5484';
+    poly(ctx,[[nx-4,ny-2],[nx+4,ny-2],[nx+5,ny+4],[nx-5,ny+4]]);
+    ctx.fill(); ctx.stroke();
+  }
+}
+
+function drawShip(ctx,P,col,x,y,scale,angle,time,thrust){
+  ctx.save();
+  ctx.translate(x,y); ctx.rotate(angle); ctx.scale(scale,scale);
+  ctx.shadowColor=col.b; ctx.shadowBlur=22;
+  drawWings(ctx,P.wing,col);
+  ctx.shadowBlur=0;
+  const g=ctx.createLinearGradient(0,-55,0,42);
+  g.addColorStop(0,shade(col.a,0.35));
+  g.addColorStop(0.55,col.a);
+  g.addColorStop(1,shade(col.a,-0.35));
+  ctx.fillStyle=g; ctx.strokeStyle=shade(col.b,-0.15); ctx.lineWidth=2;
+  poly(ctx,HULL_PTS[P.hull.id]); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle='rgba(255,255,255,.13)'; ctx.lineWidth=1;
+  poly(ctx,HULL_PTS[P.hull.id].map(function(p){return [p[0]*0.7,p[1]*0.7];})); ctx.stroke();
+  drawCockpit(ctx,P.cockpit.id,col);
+  drawWeapons(ctx,P.weapon.id,col,time);
+  drawEngines(ctx,P.hull.id,P.engine.id,col,time,thrust);
+  ctx.restore();
+}
+
+/* ================= 部件 UI ================= */
+function fmtStat(k,p){
+  if(k==='hull') return 'HP '+p.hp+' · 速'+p.speed.toFixed(2);
+  if(k==='engine') return '速'+p.speed+' · 能'+p.energy;
+  if(k==='weapon') return '伤'+p.dmg+' · 射'+p.rate;
+  if(k==='shield') return p.val>0?'护盾 '+p.val:'无防护';
+  if(k==='wing') return '机动 x'+p.man.toFixed(2);
+  return '转向 x'+p.turn.toFixed(2);
+}
+function buildPartUI(){
+  const box=document.getElementById('partGroups');
+  box.innerHTML='';
+  for(const gp of GROUPS){
+    const d=document.createElement('div'); d.className='group';
+    const list=PARTS[gp.key];
+    d.innerHTML='<div class="g-title"><span>'+gp.label+'</span><b id="cost_'+gp.key+'"></b></div><div class="opts"></div>';
+    const op=d.querySelector('.opts');
+    for(const p of list){
+      const b=document.createElement('div');
+      b.className='opt'; b.dataset.g=gp.key; b.dataset.id=p.id; b.title=p.desc;
+      b.innerHTML='<span class="n">'+p.name+'</span><span class="s">'+fmtStat(gp.key,p)+'</span><span class="c">⚡'+p.cost+'</span>';
+      b.addEventListener('click',function(){ selectPart(gp.key,p.id); });
+      op.appendChild(b);
+    }
+    box.appendChild(d);
+  }
+  buildPalette();
+}
+function selectPart(k,id){
+  state.parts[k]=id;
+  refreshUI();
+}
+function buildPalette(){
+  const box=document.getElementById('palette');
+  box.innerHTML='';
+  PALETTES.forEach(function(pa,i){
+    const b=document.createElement('div');
+    b.className='sw'; b.style.background=pa.a; b.style.setProperty('--b',pa.b);
+    if(pa.a===state.color1&&pa.b===state.color2) b.classList.add('sel');
+    b.title='配色 '+(i+1);
+    b.addEventListener('click',function(){
+      state.color1=pa.a; state.color2=pa.b;
+      buildPalette(); refreshUI();
+    });
+    box.appendChild(b);
+  });
+}
+
+/* ================= 统计面板 ================= */
+const STAT_DEFS=[
+  ['装甲','hp','#ff5d5d',250],
+  ['护盾','shield','#4de8ff',185],
+  ['速度','speed','#5dff9d',1.6],
+  ['火力','dmg','#ffb64d',28],
+  ['射速','rate','#ff6dd8',5],
+  ['机动','turn','#8dff6d',1.32],
+  ['能量','energyMax','#c86dff',120],
+];
+function refreshStats(){
+  const P=resolveParts(), S=computeStats(P);
+  const box=document.getElementById('stats');
+  box.innerHTML='';
+  for(const def of STAT_DEFS){
+    const v=S[def[1]];
+    const pct=Math.min(100,Math.round(v/def[3]*100));
+    const d=document.createElement('div'); d.className='stat';
+    d.innerHTML='<div class="lbl"><span>'+def[0]+'</span><b>'+v.toFixed(1)+'</b></div>'+
+      '<div class="bar"><i style="width:'+pct+'%;background:linear-gradient(90deg,'+def[2]+',#fff)"></i></div>';
+    box.appendChild(d);
+  }
+  // 造价
+  const cb=document.getElementById('costBar');
+  const pct=Math.min(100,S.cost/BUDGET*100);
+  cb.style.width=pct+'%';
+  cb.style.background=S.cost>BUDGET?'#ff5d5d':'linear-gradient(90deg,#ffb64d,#ffe14d)';
+  const ct=document.getElementById('costTxt');
+  ct.textContent=S.cost+' / '+BUDGET;
+  ct.className=S.cost>BUDGET?'warn':'';
+  document.getElementById('ratingNum').textContent=S.rating;
+  document.getElementById('footInfo').textContent=
+    '当前方案：'+P.hull.name+' + '+P.engine.name+' + '+P.weapon.name+' + '+P.shield.name+' + '+P.wing.name;
+  const over=S.cost>BUDGET;
+  document.getElementById('btnTest').disabled=over;
+  document.getElementById('btnTest').title=over?'预算超支，请调整部件':'开始试飞';
+  // 每个分组小计
+  for(const gp of GROUPS){
+    const el=document.getElementById('cost_'+gp.key);
+    if(el) el.textContent='⚡'+P[gp.key].cost;
+  }
+  // 选中高亮
+  document.querySelectorAll('.opt').forEach(function(b){
+    b.classList.toggle('sel', state.parts[b.dataset.g]===b.dataset.id);
+  });
+}
+
+/* ================= 存档 ================= */
+function loadDesigns(){
+  let arr=[];
+  try{ arr=JSON.parse(localStorage.getItem('starship_designs_v1'))||[]; }
+  catch(e){ return []; }
+  if(!Array.isArray(arr)) return [];
+  return arr.filter(function(d){ return d&&typeof d==='object'; }).map(function(d){
+    return {
+      name:String(d.name||'未命名'),
+      parts:sanitizeParts(d.parts),
+      color1:d.color1||'#4de8ff',
+      color2:d.color2||'#ffb64d',
+      rating:Math.min(100,Math.max(0,Math.round(Number(d.rating)||0))),
+      ts:Number(d.ts)||0
+    };
+  });
+}
+function persistDesigns(){
+  localStorage.setItem('starship_designs_v1', JSON.stringify(state.designs));
+  refreshList();
+}
+function refreshList(){
+  const sel=document.getElementById('designList');
+  sel.innerHTML='';
+  state.designs.forEach(function(d,i){
+    const o=document.createElement('option');
+    o.value=i; o.textContent=d.name+'（评级'+d.rating+'）';
+    sel.appendChild(o);
+  });
+  if(!state.designs.length){
+    const o=document.createElement('option');
+    o.textContent='暂无存档'; sel.appendChild(o);
+  }
+}
+const MAX_DESIGNS=20;
+function saveCurrent(){
+  const name=(document.getElementById('shipName').value.trim())||('飞船'+(state.designs.length+1));
+  const P=resolveParts(),S=computeStats(P);
+  if(state.designs.length>=MAX_DESIGNS) state.designs.shift();   // 超限移除最旧存档
+  state.designs.push({name:name,parts:sanitizeParts(state.parts),
+    color1:state.color1,color2:state.color2,rating:S.rating,ts:Date.now()});
+  persistDesigns();
+  document.getElementById('shipName').value=name;
+  flashMsg('已保存：'+name+(state.designs.length>=MAX_DESIGNS?'（存档已满，移除最旧）':''));
+}
+function loadSelected(){
+  const sel=document.getElementById('designList');
+  if(!state.designs.length) return;
+  const d=state.designs[Number(sel.value)];
+  if(!d) return;
+  state.parts=sanitizeParts(d.parts);
+  state.color1=d.color1; state.color2=d.color2;
+  document.getElementById('shipName').value=d.name;
+  buildPalette(); refreshUI();
+  flashMsg('已载入：'+d.name);
+}
+function deleteSelected(){
+  if(!state.designs.length) return;
+  const sel=document.getElementById('designList');
+  const i=Number(sel.value);
+  state.designs.splice(i,1);
+  persistDesigns();
+  flashMsg('已删除');
+}
+function randomDesign(){
+  for(const k in PARTS){
+    const list=PARTS[k];
+    state.parts[k]=list[Math.floor(Math.random()*list.length)].id;
+  }
+  const pa=PALETTES[Math.floor(Math.random()*PALETTES.length)];
+  state.color1=pa.a; state.color2=pa.b;
+  buildPalette(); refreshUI();
+  flashMsg('🎲 已随机生成');
+}
+
+/* ================= 音效 ================= */
+let AC=null;
+function ensureAC(){
+  if(!AC){ try{ AC=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  if(AC&&AC.state==='suspended'){ const p=AC.resume(); if(p&&p.catch) p.catch(function(){}); }
+}
+function beep(freq,dur,type,vol){
+  if(!state.sound||!AC) return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.type=type||'square'; o.frequency.value=freq;
+  g.gain.setValueAtTime(vol||0.06,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.connect(g); g.connect(AC.destination);
+  o.start(); o.stop(AC.currentTime+dur);
+}
+function noiseBurst(dur,vol){
+  if(!state.sound||!AC) return;
+  const n=Math.floor(AC.sampleRate*dur),buf=AC.createBuffer(1,n,AC.sampleRate);
+  const ch=buf.getChannelData(0);
+  for(let i=0;i<n;i++) ch[i]=(Math.random()*2-1)*(1-i/n);
+  const src=AC.createBufferSource(); src.buffer=buf;
+  const g=AC.createGain(); g.gain.value=vol||0.15;
+  src.connect(g); g.connect(AC.destination); src.start();
+}
+
+/* ================= 试飞战斗 ================= */
+// 试飞边界环绕余量：大于最大船体半长（无畏 58），整船完全出屏后再从对侧进入
+const SHIP_WRAP_M=64;
+// 飞船碰撞半径随船体变化（重甲更大，命中判定更真实）
+const SHIP_R={fighter:16,frigate:20,dread:24};
+const game = {
+  ship:null, bullets:[], missiles:[], enemies:[], parts:[],
+  score:0, time:0, spawnT:0, over:false, shake:0, overlayBuilt:false,
+};
+function resetGame(){
+  const P=resolveParts(),S=computeStats(P);
+  game.ship={x:W/2,y:H/2,vx:0,vy:0,angle:0,
+    hp:S.hp,maxHp:S.hp,shield:S.shield,maxShield:S.shield,
+    energy:S.energyMax,energyMax:S.energyMax,fireCd:0,shieldCd:0,alive:true,
+    hitR:SHIP_R[P.hull.id]||16};
+  game.bullets=[]; game.missiles=[]; game.enemies=[]; game.parts=[];
+  game.score=0; game.time=0; game.spawnT=1; game.over=false; game.shake=0; game.overlayBuilt=false;
+}
+function fireWeapon(P,S){
+  const s=game.ship;
+  const nx=s.x+Math.sin(s.angle)*34, ny=s.y-Math.cos(s.angle)*34;
+  if(P.weapon.kind==='laser'){
+    const px=Math.cos(s.angle), py=Math.sin(s.angle);
+    for(const off of [-7,7]){
+      game.bullets.push({x:nx+px*off,y:ny+py*off,vx:Math.sin(s.angle)*560,vy:-Math.cos(s.angle)*560,
+        r:3,dmg:S.dmg,life:1.2,kind:'laser'});
+    }
+    beep(880,0.06,'square',0.04);
+  }else if(P.weapon.kind==='plasma'){
+    game.bullets.push({x:nx,y:ny,vx:Math.sin(s.angle)*440,vy:-Math.cos(s.angle)*440,
+      r:6,dmg:S.dmg,life:1.4,kind:'plasma'});
+    beep(220,0.12,'sawtooth',0.07);
+  }else{
+    game.missiles.push({x:nx,y:ny,vx:Math.sin(s.angle)*160,vy:-Math.cos(s.angle)*160,
+      r:5,dmg:S.dmg,life:4,turn:4,kind:'missile'});
+    beep(440,0.2,'triangle',0.05);
+  }
+  // 枪口闪光
+  for(let i=0;i<4;i++){
+    const a=s.angle+(Math.random()-0.5)*0.8;
+    game.parts.push({x:nx,y:ny,vx:Math.cos(a)*80*Math.random(),vy:Math.sin(a)*80*Math.random(),
+      life:0.12,max:0.12,color:'#ffe9a8',r:2});
+  }
+}
+function updateGame(dt){
+  if(game.over){ updateParts(dt); return; }
+  const P=resolveParts(),S=computeStats(P);
+  const s=game.ship;
+  game.time+=dt;
+  const acc=300*S.speed, maxV=270*S.speed, turn=3.0*S.turn;
+  const kL=keys['ArrowLeft']||keys['KeyA'], kR=keys['ArrowRight']||keys['KeyD'];
+  if(kL) s.angle-=turn*dt;
+  if(kR) s.angle+=turn*dt;
+  let thrust=0;
+  if(keys['ArrowUp']||keys['KeyW']) thrust=1;
+  if(keys['ArrowDown']||keys['KeyS']) thrust=-0.45;
+  s.vx+=Math.sin(s.angle)*acc*thrust*dt;
+  s.vy-=Math.cos(s.angle)*acc*thrust*dt;
+  const f=Math.pow(0.04,dt);
+  s.vx*=f; s.vy*=f;
+  const sp=Math.hypot(s.vx,s.vy);
+  if(sp>maxV){ s.vx*=maxV/sp; s.vy*=maxV/sp; }
+  s.x+=s.vx*dt; s.y+=s.vy*dt;
+  if(s.x<-SHIP_WRAP_M)s.x=W+SHIP_WRAP_M; if(s.x>W+SHIP_WRAP_M)s.x=-SHIP_WRAP_M;
+  if(s.y<-SHIP_WRAP_M)s.y=H+SHIP_WRAP_M; if(s.y>H+SHIP_WRAP_M)s.y=-SHIP_WRAP_M;
+  // 护盾 / 能量回复
+  s.shieldCd-=dt;
+  if(s.shieldCd<0&&s.shield<s.maxShield) s.shield=Math.min(s.maxShield,s.shield+7*dt);
+  s.energy=Math.min(s.energyMax,s.energy+S.regen*dt);
+  // 开火
+  s.fireCd-=dt;
+  if((keys['Space']||keys['KeyJ'])&&s.fireCd<=0&&s.energy>=S.enCost){
+    fireWeapon(P,S);
+    s.fireCd=1/S.rate;
+    s.energy-=S.enCost;
+  }
+  // 引擎粒子
+  if(thrust>0&&Math.random()<0.5){
+    const bx=s.x-Math.sin(s.angle)*40, by=s.y+Math.cos(s.angle)*40;
+    game.parts.push({x:bx,y:by,vx:-Math.sin(s.angle)*40+(Math.random()-0.5)*30,
+      vy:Math.cos(s.angle)*40+(Math.random()-0.5)*30,life:0.3,max:0.3,
+      color:P.engine.id==='ion'?'#4de8ff':P.engine.id==='plasma'?'#ff8a4d':'#c86dff',r:2.4});
+  }
+  // 陨石生成
+  game.spawnT-=dt;
+  if(game.spawnT<=0){
+    spawnAsteroid();
+    game.spawnT=Math.max(0.42,1.5-game.time*0.012);
+  }
+  updateBullets(dt);
+  updateMissiles(dt);
+  updateAsteroids(dt);
+  updateParts(dt);
+  game.shake=Math.max(0,game.shake-dt*30);
+}
+function spawnAsteroid(){
+  const big=Math.random()<0.15;
+  const r=big?30+Math.random()*12:12+Math.random()*12;
+  const edge=Math.floor(Math.random()*4);
+  let x,y,vx,vy;
+  const spd=Math.min(150,30+Math.random()*50+game.time*0.4);
+  const a=Math.random()*Math.PI*2;
+  if(edge===0){x=-40;y=Math.random()*H;}
+  else if(edge===1){x=W+40;y=Math.random()*H;}
+  else if(edge===2){x=Math.random()*W;y=-40;}
+  else{x=Math.random()*W;y=H+40;}
+  vx=Math.cos(a)*spd; vy=Math.sin(a)*spd;
+  // 朝向画面中心
+  const dx=W/2-x,dy=H/2-y,dl=Math.hypot(dx,dy)||1;
+  vx+=dx/dl*spd*0.4; vy+=dy/dl*spd*0.4;
+  const verts=[];
+  const nv=9+Math.floor(Math.random()*4);
+  for(let i=0;i<nv;i++) verts.push(r*(0.75+Math.random()*0.4));
+  game.enemies.push({x,y,vx,vy,r,hp:r*1.5,rot:Math.random()*6.28,rv:(Math.random()-0.5)*1.6,verts});
+}
+function updateBullets(dt){
+  for(let i=game.bullets.length-1;i>=0;i--){
+    const b=game.bullets[i];
+    b.x+=b.vx*dt; b.y+=b.vy*dt; b.life-=dt;
+    if(b.life<=0||b.x<-50||b.x>W+50||b.y<-50||b.y>H+50){ game.bullets.splice(i,1); continue; }
+    for(let j=game.enemies.length-1;j>=0;j--){
+      const e=game.enemies[j];
+      if(hit(b.x,b.y,b.r,e.x,e.y,e.r)){
+        e.hp-=b.dmg;
+        spark(b.x,b.y,b.vx*0.2,b.vy*0.2,b.kind==='plasma'?'#ff8a4d':'#4de8ff',6);
+        game.bullets.splice(i,1);
+        if(e.hp<=0){ destroyAsteroid(j); }
+        break;
+      }
+    }
+  }
+}
+function updateMissiles(dt){
+  for(let i=game.missiles.length-1;i>=0;i--){
+    const m=game.missiles[i];
+    m.life-=dt;
+    if(m.life<=0){ explode(m.x,m.y,'#ff6d6d',10,60); game.missiles.splice(i,1); continue; }
+    // 追踪最近陨石
+    let best=null,bd=1e9;
+    for(const e of game.enemies){
+      const d=(e.x-m.x)*(e.x-m.x)+(e.y-m.y)*(e.y-m.y);
+      if(d<bd){bd=d;best=e;}
+    }
+    if(best){
+      const want=Math.atan2(best.y-m.y,best.x-m.x);
+      const cur=Math.atan2(m.vy,m.vx);
+      let diff=want-cur;
+      while(diff>Math.PI)diff-=Math.PI*2;
+      while(diff<-Math.PI)diff+=Math.PI*2;
+      const na=cur+Math.max(-m.turn*dt,Math.min(m.turn*dt,diff));
+      const spd=Math.hypot(m.vx,m.vy)||300;
+      m.vx=Math.cos(na)*spd; m.vy=Math.sin(na)*spd;
+    }
+    m.x+=m.vx*dt; m.y+=m.vy*dt;
+    // 导弹尾迹
+    game.parts.push({x:m.x,y:m.y,vx:(Math.random()-0.5)*20,vy:(Math.random()-0.5)*20,life:0.25,max:0.25,color:'#ffb64d',r:2});
+    for(let j=game.enemies.length-1;j>=0;j--){
+      const e=game.enemies[j];
+      if(hit(m.x,m.y,m.r,e.x,e.y,e.r)){
+        e.hp-=m.dmg;
+        explode(m.x,m.y,'#ff6d6d',12,80);
+        game.missiles.splice(i,1);
+        if(e.hp<=0) destroyAsteroid(j);
+        break;
+      }
+    }
+  }
+}
+function updateAsteroids(dt){
+  for(let i=game.enemies.length-1;i>=0;i--){
+    const e=game.enemies[i];
+    e.x+=e.vx*dt; e.y+=e.vy*dt; e.rot+=e.rv*dt;
+    if(e.x<-80||e.x>W+80||e.y<-80||e.y>H+80){ game.enemies.splice(i,1); continue; }
+    // 撞飞船
+    const s=game.ship;
+    if(s.alive&&hit(e.x,e.y,e.r*0.8,s.x,s.y,s.hitR||16)){
+      damageShip(e.r*1.4);
+      destroyAsteroid(i);
+    }
+  }
+}
+function destroyAsteroid(i){
+  const e=game.enemies[i];
+  explode(e.x,e.y,'#ffb64d',14,90);
+  if(e.r>16){
+    for(let k=0;k<2;k++){
+      const nr=e.r/1.8, a=Math.random()*6.28;
+      game.enemies.push({x:e.x,y:e.y,vx:e.vx+Math.cos(a)*60,vy:e.vy+Math.sin(a)*60,
+        r:nr,hp:nr*1.5,rot:Math.random()*6.28,rv:(Math.random()-0.5)*2,verts:[]});
+      const ne=game.enemies[game.enemies.length-1];
+      ne.verts=[]; const nv=8+Math.floor(Math.random()*3);
+      for(let v=0;v<nv;v++) ne.verts.push(nr*(0.75+Math.random()*0.4));
+    }
+    game.score+=5;
+  }else{
+    game.score+=15;
+  }
+  game.enemies.splice(i,1);
+  flashMsg('击毁陨石 +'+(e.r>16?'5':'15'));
+}
+function damageShip(d){
+  const s=game.ship;
+  s.shieldCd=2.5;
+  if(s.shield>0){
+    const absorbed=Math.min(s.shield,d);
+    s.shield-=absorbed;
+    d-=absorbed;
+  }
+  if(d>0){
+    s.hp-=d;
+    game.shake=8;
+    beep(120,0.25,'sawtooth',0.1);
+    if(s.hp<=0){ s.hp=0; s.alive=false; game.over=true; gameOver(); }
+  }else{
+    beep(300,0.1,'square',0.06);
+  }
+}
+function hit(ax,ay,ar,bx,by,br){
+  const dx=ax-bx,dy=ay-by,r=ar+br;
+  return dx*dx+dy*dy<=r*r;
+}
+function spark(x,y,vx,vy,color,n){
+  for(let i=0;i<n;i++){
+    game.parts.push({x,y,vx:vx+(Math.random()-0.5)*140,vy:vy+(Math.random()-0.5)*140,
+      life:0.35,max:0.35,color,r:1.6+Math.random()*1.6});
+  }
+}
+function explode(x,y,color,n,pow){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*6.28,sp=pow*(0.3+Math.random());
+    game.parts.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,
+      life:0.4+Math.random()*0.4,max:0.8,color,r:2+Math.random()*3});
+  }
+  game.parts.push({x,y,vx:0,vy:0,life:0.3,max:0.3,color:'#ffffff',r:6,ring:true});
+  noiseBurst(0.2,0.18);
+}
+function updateParts(dt){
+  for(let i=game.parts.length-1;i>=0;i--){
+    const p=game.parts[i];
+    p.x+=p.vx*dt; p.y+=p.vy*dt;
+    p.vx*=0.96; p.vy*=0.96;
+    p.life-=dt;
+    if(p.life<=0) game.parts.splice(i,1);
+  }
+}
+
+/* ================= 试飞渲染 ================= */
+function fmtTime(t){
+  t=Math.max(0,t);
+  const m=Math.floor(t/60), s2=Math.floor(t%60);
+  return m>0?(m+' 分 '+s2+' 秒'):(s2+' 秒');
+}
+function drawGame(){
+  const s=game.ship;
+  ctx.clearRect(0,0,W,H);
+  drawStars(1);
+  ctx.save();
+  if(game.shake>0) ctx.translate((Math.random()-0.5)*game.shake,(Math.random()-0.5)*game.shake);
+  // 陨石
+  for(const e of game.enemies){
+    ctx.save();
+    ctx.translate(e.x,e.y); ctx.rotate(e.rot);
+    ctx.beginPath();
+    for(let i=0;i<e.verts.length;i++){
+      const a=i/e.verts.length*6.28;
+      const px=Math.cos(a)*e.verts[i],py=Math.sin(a)*e.verts[i];
+      if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);
+    }
+    ctx.closePath();
+    ctx.fillStyle='#4a3b2f'; ctx.strokeStyle='#6b5544'; ctx.lineWidth=1.5;
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  // 子弹
+  for(const b of game.bullets){
+    ctx.save();
+    ctx.translate(b.x,b.y);
+    if(b.kind==='plasma'){
+      const g=ctx.createRadialGradient(0,0,0,0,0,b.r+6);
+      g.addColorStop(0,'#fff'); g.addColorStop(0.4,'#ff8a4d'); g.addColorStop(1,'rgba(255,138,77,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(0,0,b.r+6,0,Math.PI*2); ctx.fill();
+    }else{
+      ctx.fillStyle='#4de8ff'; ctx.shadowColor='#4de8ff'; ctx.shadowBlur=8;
+      ctx.beginPath(); ctx.arc(0,0,b.r,0,Math.PI*2); ctx.fill(); ctx.shadowBlur=0;
+    }
+    ctx.restore();
+  }
+  // 导弹
+  for(const m of game.missiles){
+    ctx.save();
+    ctx.translate(m.x,m.y); ctx.rotate(Math.atan2(m.vy,m.vx));
+    ctx.fillStyle='#e8e8f0'; ctx.strokeStyle='#ff6d6d';
+    ctx.beginPath(); ctx.moveTo(10,0); ctx.lineTo(-6,4); ctx.lineTo(-3,0); ctx.lineTo(-6,-4);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  // 粒子
+  for(const p of game.parts){
+    const a=p.life/p.max;
+    ctx.globalAlpha=a;
+    if(p.ring){
+      ctx.strokeStyle=p.color; ctx.lineWidth=3*a;
+      ctx.beginPath(); ctx.arc(p.x,p.y,(1-a)*40+6,0,Math.PI*2); ctx.stroke();
+    }else{
+      ctx.fillStyle=p.color;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r*a+0.5,0,Math.PI*2); ctx.fill();
+    }
+  }
+  ctx.globalAlpha=1;
+  // 玩家飞船
+  if(s.alive){
+    const P=resolveParts();
+    const thrust=(keys['ArrowUp']||keys['KeyW'])?1:0.12;
+    drawShip(ctx,P,{a:state.color1,b:state.color2},s.x,s.y,1, s.angle, state.clock, thrust);
+  }
+  ctx.restore();
+  drawHUD();
+}
+function drawHUD(){
+  const s=game.ship;
+  // 左上角血条
+  ctx.save();
+  const bw=180,bh=12,bx=14,by=14;
+  ctx.fillStyle='rgba(6,10,22,.72)';
+  ctx.fillRect(bx-4,by-4,bw+8,bh*2+14);
+  ctx.fillStyle='#2a3550'; ctx.fillRect(bx,by,bw,bh);
+  ctx.fillStyle='#ff5d5d';
+  ctx.fillRect(bx,by,bw*Math.max(0,s.hp/s.maxHp),bh);
+  ctx.fillStyle='#2a3550'; ctx.fillRect(bx,by+bh+6,bw,bh);
+  if(s.maxShield>0){
+    ctx.fillStyle='#4de8ff';
+    ctx.fillRect(bx,by+bh+6,bw*Math.max(0,s.shield/s.maxShield),bh);
+  }
+  ctx.fillStyle='#d7e6ff'; ctx.font='11px sans-serif'; ctx.textAlign='left';
+  ctx.fillText('装甲 '+Math.ceil(s.hp)+'/'+s.maxHp,bx,by-6);
+  ctx.fillText('护盾 '+(s.maxShield>0?Math.ceil(s.shield)+'/'+s.maxShield:'—'),bx,by+bh+20);
+  // 能量条
+  const ew=180,eh=8,ex=14,ey=H-26;
+  ctx.fillStyle='rgba(6,10,22,.72)';
+  ctx.fillRect(ex-4,ey-4,ew+8,eh+10);
+  ctx.fillStyle='#2a3550'; ctx.fillRect(ex,ey,ew,eh);
+  ctx.fillStyle='#c86dff';
+  ctx.fillRect(ex,ey,ew*Math.max(0,s.energy/s.energyMax),eh);
+  ctx.fillStyle='#d7e6ff'; ctx.font='11px sans-serif';
+  ctx.fillText('能量 '+Math.ceil(s.energy)+'/'+Math.ceil(s.energyMax),ex,ey-5);
+  // 分数与时长
+  ctx.textAlign='right';
+  ctx.font='bold 22px sans-serif'; ctx.fillStyle='#ffe14d';
+  ctx.fillText(String(game.score).padStart(6,'0'),W-16,36);
+  ctx.font='12px sans-serif'; ctx.fillStyle='#7f93bd';
+  ctx.fillText('生存 '+fmtTime(game.time),W-16,56);
+  ctx.font='11px sans-serif'; ctx.fillStyle='#4de8ff';
+  ctx.fillText('W/A/S/D 移动 · 空格开火 · ESC 返回',W-16,H-14);
+  ctx.restore();
+  // 结束遮罩（仅在状态翻转时构建一次，避免每帧重建 DOM / 重复绑定事件）
+  if(game.over&&!game.overlayBuilt){
+    game.overlayBuilt=true;
+    const box=document.getElementById('overlayBox');
+    box.innerHTML='<div class="overlay"><h1>☠ 飞船坠毁</h1>'+
+      '<p>本次得分 <b style="color:#ffe14d;font-size:28px">'+game.score+'</b><br/>生存时长 '+fmtTime(game.time)+'</p>'+
+      '<button class="primary" id="btnRetry" style="font-size:15px;padding:10px 26px">🔄 重新试飞</button>'+
+      '<button id="btnBack" style="margin-top:10px">🔧 返回设计</button></div>';
+    document.getElementById('btnRetry').addEventListener('click',function(){
+      document.getElementById('overlayBox').innerHTML='';
+      resetGame();
+      beep(600,0.1,'square',0.05);
+    });
+    document.getElementById('btnBack').addEventListener('click',function(){ setMode('design'); });
+  }
+}
+
+/* ================= 设计模式渲染 ================= */
+function drawDesign(){
+  ctx.clearRect(0,0,W,H);
+  drawStars(0.5);
+  const cx=W/2,cy=H/2-8;
+  const g=ctx.createRadialGradient(cx,cy,10,cx,cy,170);
+  g.addColorStop(0,'rgba(77,232,255,0.10)'); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // 底座
+  ctx.save();
+  ctx.translate(cx,cy+92); ctx.scale(1,0.28);
+  ctx.fillStyle='rgba(0,0,0,0.5)';
+  ctx.beginPath(); ctx.arc(0,0,68,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+  const P=resolveParts();
+  drawShip(ctx,P,{a:state.color1,b:state.color2},cx,cy+8,1.35,state.rot,state.clock,0.22);
+  // 名字
+  ctx.fillStyle='rgba(215,230,255,.55)'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+  ctx.fillText((document.getElementById('shipName').value||'未命名飞船')+' · 点击部件实时更新',cx,cy+120);
+  ctx.textAlign='left';
+}
+
+/* ================= 模式切换 ================= */
+function setMode(m){
+  if(m==='test'){
+    const S=computeStats(resolveParts());
+    if(S.cost>BUDGET){ flashMsg('⚠ 预算超支，请先调整部件'); beep(180,0.15,'sawtooth',0.08); return; }
+  }
+  state.mode=m;
+  if(m==='design') document.getElementById('overlayBox').innerHTML='';
+  document.getElementById('tabDesign').classList.toggle('active',m==='design');
+  document.getElementById('tabTest').classList.toggle('active',m==='test');
+  document.getElementById('btnTest').textContent = m==='design'?'🚀 开始试飞':'🏠 返回设计';
+  document.getElementById('hint').textContent = m==='design'
+    ?'拖拽旋转飞船 · 选择部件'
+    :'W/A/S/D 或方向键移动 · 空格开火';
+  if(m==='test'){
+    ensureAC();
+    resetGame();
+    flashMsg('试飞开始！击毁陨石得分');
+    beep(660,0.12,'square',0.06);
+  }
+}
+function flashMsg(txt){
+  const el=document.getElementById('hudMsg');
+  el.textContent=txt;
+  el.style.opacity=1;
+  clearTimeout(flashMsg._t);
+  flashMsg._t=setTimeout(function(){ el.style.opacity=0; },1400);
+}
+
+/* ================= 输入 ================= */
+const keys={};
+window.addEventListener('keydown',function(e){
+  keys[e.code]=true;
+  const ae=document.activeElement;
+  const typing=!!(ae&&(ae.tagName==='INPUT'||ae.tagName==='TEXTAREA'||ae.tagName==='SELECT'));
+  if(e.code==='KeyT'&&!typing){ setMode(state.mode==='design'?'test':'design'); }
+  if(e.code==='Escape'&&state.mode==='test'){ setMode('design'); }
+  if(e.code==='Space'&&!typing) e.preventDefault();
+});
+window.addEventListener('keyup',function(e){ keys[e.code]=false; });
+
+// 拖拽旋转（设计模式）
+cv.addEventListener('pointerdown',function(e){
+  if(state.mode!=='design') return;
+  state.dragging=true; state.lastDragX=e.clientX;
+  cv.classList.add('grabbing');
+  ensureAC();
+});
+window.addEventListener('pointermove',function(e){
+  if(state.dragging&&state.mode==='design'){
+    state.dragRot+=(e.clientX-state.lastDragX)*0.01;
+    state.lastDragX=e.clientX;
+  }
+});
+window.addEventListener('pointerup',function(){ state.dragging=false; cv.classList.remove('grabbing'); });
+
+// 按钮
+document.getElementById('btnTest').addEventListener('click',function(){
+  setMode(state.mode==='design'?'test':'design');
+});
+document.getElementById('tabDesign').addEventListener('click',function(){ setMode('design'); });
+document.getElementById('tabTest').addEventListener('click',function(){ setMode('test'); });
+document.getElementById('btnRandom').addEventListener('click',randomDesign);
+document.getElementById('btnSave').addEventListener('click',saveCurrent);
+document.getElementById('btnLoad').addEventListener('click',loadSelected);
+document.getElementById('btnDel').addEventListener('click',deleteSelected);
+document.getElementById('btnSound').addEventListener('click',function(){
+  state.sound=!state.sound;
+  this.textContent=state.sound?'🔊':'🔇';
+  ensureAC();
+  if(state.sound) beep(880,0.1,'square',0.06);
+});
+
+/* ================= 刷新 & 主循环 ================= */
+function refreshUI(){
+  refreshStats();
+  // 同步部件价格显示
+}
+function gameOver(){
+  beep(90,0.8,'sawtooth',0.15);
+  noiseBurst(0.5,0.25);
+}
+let last=0;
+function loop(t){
+  requestAnimationFrame(loop);
+  const dt=Math.min(0.05,(t-last)/1000||0.016);
+  last=t;
+  state.clock+=dt;
+  if(state.mode==='design'){
+    if(!state.dragging) state.rot=state.dragRot+Math.sin(state.clock*0.4)*0.12;
+    drawDesign();
+  }else{
+    updateGame(dt);
+    drawGame();
+  }
+}
+
+/* ================= 初始化 ================= */
+buildPartUI();
+refreshUI();
+refreshList();
+resize();
+if(!state.designs.length){
+  // 预置一个示例设计
+  state.designs.push({name:'新手号',parts:{hull:'frigate',engine:'plasma',weapon:'laser',shield:'basic',wing:'arrow',cockpit:'classic'},
+    color1:'#4de8ff',color2:'#ffb64d',rating:62,ts:Date.now()});
+  persistDesigns();
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
