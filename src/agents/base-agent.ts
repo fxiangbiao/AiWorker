@@ -87,6 +87,7 @@ export abstract class BaseAgent {
       sessionId,
       workingDir: task.workingDir ?? workingDir,
       dataDir: this.dataDir,
+      toolScope: this.config.id,
     });
 
     // 持久化助手回复（携带本轮主请求 usage，供轨迹/遥测；来自 loop 显式返回，避免被压缩请求覆盖）
@@ -164,6 +165,7 @@ export abstract class BaseAgent {
         sessionId,
         workingDir: task.workingDir ?? workingDir,
         dataDir: this.dataDir,
+        toolScope: this.config.id,
       },
       callbacks,
       signal,

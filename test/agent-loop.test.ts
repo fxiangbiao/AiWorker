@@ -10,7 +10,7 @@ import { SessionStore } from "../src/memory/session-store.js";
 import { ContextManager } from "../src/core/context-manager.js";
 import { toolRegistry } from "../src/core/tool-registry.js";
 import { runAgentLoop } from "../src/core/agent-loop.js";
-import type { AgentConfig, AgentRunResult, ModelResponse, ToolDefinition } from "../src/types.js";
+import type { AgentConfig, AgentRunResult, ModelResponse, ToolDefinition, Message } from "../src/types.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 
 let dir: string;
@@ -58,6 +58,13 @@ function toolCall(id: string, name: string, args: string): ModelResponse {
 
 function plain(text: string): ModelResponse {
   return { text, toolCalls: [], hasToolCalls: false, usage, finishReason: "stop" };
+}
+
+function def(name: string): ToolDefinition {
+  return {
+    type: "function",
+    function: { name, description: name, parameters: { type: "object", properties: {} } },
+  };
 }
 
 beforeEach(() => {
@@ -166,5 +173,81 @@ describe("E. 防循环提醒", () => {
     const reminders = result.messages.filter((m) => m.role === "system" && m.content.includes("停止重复调用"));
     expect(reminders).toHaveLength(0);
     expect(result.text).toBe("完成");
+  });
+});
+
+describe("Sprint 27: 工具可见性白名单 + 作用域遮蔽", () => {
+  it("config.tools 白名单收窄模型可见工具（mcp_ 前缀保留）", async () => {
+    toolRegistry.register("alpha", def("alpha"), async () => ({ tool_call_id: "", success: true, content: "a" }));
+    toolRegistry.register("beta", def("beta"), async () => ({ tool_call_id: "", success: true, content: "b" }));
+    toolRegistry.register("mcp_demo_lookup", def("mcp_demo_lookup"), async () => ({ tool_call_id: "", success: true, content: "m" }));
+
+    const config = makeConfig();
+    config.tools = ["alpha"];
+
+    const sessionId = store.createSession("test").id;
+    let seenTools: ToolDefinition[] = [];
+    const modelRouter = {
+      completeWithProfile: async (_pref: string, _msgs: Message[], tools?: ToolDefinition[]) => {
+        seenTools = tools ?? [];
+        return plain("完成");
+      },
+    } as unknown as ModelRouter;
+
+    await runAgentLoop(config, "可见性", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    const names = seenTools.map((t) => t.function.name);
+    expect(names).toContain("alpha");
+    expect(names).not.toContain("beta");
+    expect(names).toContain("mcp_demo_lookup");
+  });
+
+  it("tools 为空时不过滤（保持全部可见）", async () => {
+    toolRegistry.register("beta", def("beta"), async () => ({ tool_call_id: "", success: true, content: "b" }));
+
+    const sessionId = store.createSession("test").id;
+    let seenTools: ToolDefinition[] = [];
+    const modelRouter = {
+      completeWithProfile: async (_pref: string, _msgs: Message[], tools?: ToolDefinition[]) => {
+        seenTools = tools ?? [];
+        return plain("完成");
+      },
+    } as unknown as ModelRouter;
+
+    await runAgentLoop(makeConfig(), "可见性", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    expect(seenTools.map((t) => t.function.name)).toContain("beta");
+  });
+
+  it("toolScope 传参：执行走 scope view（遮蔽全局同名 handler）", async () => {
+    toolRegistry.register("alpha", def("alpha"), async () => ({ tool_call_id: "", success: true, content: "global-alpha" }));
+    toolRegistry.getScope("coding").register("alpha", def("alpha"), async () => ({ tool_call_id: "", success: true, content: "scoped-alpha" }));
+
+    const sessionId = store.createSession("test").id;
+    const modelRouter = mockRouter([() => toolCall("t1", "alpha", "{}"), () => plain("完成")]);
+
+    const result = await runAgentLoop(makeConfig(), "遮蔽", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+      toolScope: "coding",
+    });
+
+    const toolMsg = result.messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toBe("scoped-alpha");
   });
 });

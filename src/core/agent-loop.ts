@@ -11,6 +11,7 @@ import type {
   ToolCall,
   ToolResult,
   ToolContext,
+  ToolDefinition,
   AgentRunResult,
   AgentConfig,
   StreamCallbacks,
@@ -20,7 +21,7 @@ import type {
 import type { ModelRouter } from "./model-router.js";
 import type { ContextManager } from "./context-manager.js";
 import type { SessionStore } from "../memory/session-store.js";
-import { toolRegistry } from "./tool-registry.js";
+import { toolRegistry, type ToolScopeView } from "./tool-registry.js";
 import { hookManager } from "../hooks/hook-manager.js";
 import { auditLogger } from "./audit-logger.js";
 
@@ -34,6 +35,8 @@ export interface AgentLoopDeps {
   dataDir?: string;
   /** 工具调用超时（ms），默认 TOOL_TIMEOUT_MS；测试可注入短值 */
   toolTimeoutMs?: number;
+  /** 工具作用域（agent id）：scope 注册 + 全局回退，同名遮蔽全局（对齐 DSH scoped registry） */
+  toolScope?: string;
 }
 
 export async function runAgentLoop(
@@ -41,8 +44,10 @@ export async function runAgentLoop(
   userMessage: string,
   deps: AgentLoopDeps,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope } = deps;
   const toolTimeoutMs = deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS;
+  /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
+  const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
   contextManager.freezeSnapshot();
 
@@ -81,9 +86,12 @@ export async function runAgentLoop(
       // 防循环提醒：连续相同工具调用时注入提示（在模型请求前）
       maybeInjectRepeatReminder(messages, recentToolCalls, reminderStreak);
 
-      const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
-      // ask 模式传全部工具定义：模型可尝试调用，非只读工具由 permissionCheck 拦截（产生红色告警）
-      const tools = availableTools;
+      // 作用域视图取工具定义（scope 遮蔽 + 全局回退），再按 agent 白名单收窄；
+      // ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截（产生红色告警）
+      const availableTools = toolView
+        ? await toolView.getAvailableDefinitions(toolCtx)
+        : await toolRegistry.getAvailableDefinitions(toolCtx);
+      const tools = filterVisibleTools(availableTools, config);
 
       const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools);
 
@@ -152,7 +160,7 @@ export async function runAgentLoop(
       );
 
       const toolResults = await Promise.all(
-        response.toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs)),
+        response.toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs, toolView)),
       );
 
       toolCallsExecuted += toolResults.length;
@@ -221,8 +229,10 @@ export async function runAgentLoopStream(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope } = deps;
   const toolTimeoutMs = deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS;
+  /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
+  const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
   contextManager.freezeSnapshot();
 
@@ -273,9 +283,12 @@ export async function runAgentLoopStream(
       // 防循环提醒：连续相同工具调用时注入提示（在模型请求前）
       maybeInjectRepeatReminder(messages, recentToolCalls, reminderStreak);
 
-      const availableTools = await toolRegistry.getAvailableDefinitions(toolCtx);
-      // ask 模式传全部工具定义：模型可尝试调用，非只读工具由 permissionCheck 拦截（产生红色告警）
-      const tools = availableTools;
+      // 作用域视图取工具定义（scope 遮蔽 + 全局回退），再按 agent 白名单收窄；
+      // ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截（产生红色告警）
+      const availableTools = toolView
+        ? await toolView.getAvailableDefinitions(toolCtx)
+        : await toolRegistry.getAvailableDefinitions(toolCtx);
+      const tools = filterVisibleTools(availableTools, config);
 
       // 流式调用
       callbacks.onIterationStart?.(iterations);
@@ -364,7 +377,7 @@ export async function runAgentLoopStream(
           );
 
           const toolResults = await Promise.all(
-            toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs)),
+            toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs, toolView)),
           );
 
           toolCallsExecuted += toolResults.length;
@@ -558,6 +571,7 @@ async function executeTool(
   config: AgentConfig,
   sessionStore: SessionStore,
   timeoutMs: number,
+  toolView: ToolScopeView | null,
 ): Promise<ToolResult> {
   const startedAt = Date.now();
   sessionStore.appendEvent(
@@ -566,7 +580,7 @@ async function executeTool(
     { callId: toolCall.id, name: toolCall.function.name, arguments: toolCall.function.arguments },
     "agent-loop",
   );
-  const result = await executeToolInner(toolCall, ctx, config, timeoutMs);
+  const result = await executeToolInner(toolCall, ctx, config, timeoutMs, toolView);
   sessionStore.appendEvent(
     ctx.sessionId,
     "tool/result",
@@ -587,6 +601,7 @@ async function executeToolInner(
   ctx: ToolContext,
   config: AgentConfig,
   timeoutMs: number,
+  toolView: ToolScopeView | null,
 ): Promise<ToolResult> {
   const toolName = toolCall.function.name;
 
@@ -636,7 +651,7 @@ async function executeToolInner(
     };
   }
 
-  const handler = toolRegistry.getHandler(toolName);
+  const handler = toolView ? toolView.getHandler(toolName) : toolRegistry.getHandler(toolName);
   if (!handler) {
     return {
       tool_call_id: toolCall.id,
@@ -690,6 +705,14 @@ async function executeToolInner(
   });
 
   return result;
+}
+
+/** agent 工具可见性白名单：config.tools 非空时仅保留白名单工具；MCP 工具（mcp_ 前缀）保持全局可见 */
+function filterVisibleTools(available: ToolDefinition[], config: AgentConfig): ToolDefinition[] {
+  if (config.tools.length === 0) return available;
+  return available.filter(
+    (t) => config.tools.includes(t.function.name) || t.function.name.startsWith("mcp_"),
+  );
 }
 
 function coerceToolArgs(args: Record<string, unknown>): Record<string, unknown> {
