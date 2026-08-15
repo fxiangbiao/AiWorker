@@ -3,6 +3,7 @@
   import UserMessage from "./UserMessage.svelte";
   import AgentCard from "./AgentCard.svelte";
   import ConfirmCard from "./ConfirmCard.svelte";
+  import AskCard from "./AskCard.svelte";
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
   import {
@@ -14,6 +15,7 @@
     type UIMessage,
     type PlanStep,
     type ConfirmItem,
+    type AskItem,
     API,
   } from "$lib/stores/chat.svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
@@ -21,13 +23,14 @@
 
   let errors: string[] = $state([]);
 
-  // 切换会话时清空错误提示与确认卡片（临时状态）
+  // 切换会话时清空错误提示与确认/提问卡片（临时状态）
   let _lastSession = $state(store.activeChatId);
   $effect(() => {
     if (store.activeChatId !== _lastSession) {
       _lastSession = store.activeChatId;
       errors = [];
       store.confirms = [];
+      store.asks = [];
     }
   });
 
@@ -90,6 +93,15 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, value }),
+    }).catch(() => { /* 服务端超时后忽略 */ });
+  }
+
+  function respondAsk(id: string, answer: string | null) {
+    store.asks = store.asks.filter((a) => a.id !== id);
+    fetch(`${API}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, answer }),
     }).catch(() => { /* 服务端超时后忽略 */ });
   }
 
@@ -428,6 +440,7 @@
           m._activeStep = undefined;
         }
         store.confirms = [];
+        store.asks = [];
         store.diffVersion++;
         tick().then(() => scrollToBottom(true));
         break;
@@ -443,6 +456,17 @@
         };
         const exist = store.confirms.find((c) => c.id === confirm.id);
         if (!exist) store.confirms.push(confirm);
+        break;
+      }
+      case "ask_user": {
+        const ask: AskItem = {
+          id: data.askId as string,
+          question: (data.question as string) || "",
+          options: ((data.options as string[]) || []).filter(Boolean),
+        };
+        const exist = store.asks.find((a) => a.id === ask.id);
+        if (!exist) store.asks.push(ask);
+        tick().then(() => scrollToBottom());
         break;
       }
       case "tool_blocked": {
@@ -470,6 +494,7 @@
           m._activeStep = undefined;
         }
         store.confirms = [];
+        store.asks = [];
         break;
     }
   }
@@ -508,6 +533,9 @@
       {/each}
       {#each store.confirms as c}
         <ConfirmCard confirm={c} onRespond={(v) => respondConfirm(c.id, v)} />
+      {/each}
+      {#each store.asks as a}
+        <AskCard ask={a} onRespond={(v) => respondAsk(a.id, v)} />
       {/each}
       {#each errors as err}
         <ErrorBanner message={err} />

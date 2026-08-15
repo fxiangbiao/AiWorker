@@ -7,23 +7,28 @@
 ## 特性
 
 **Agent 核心**
-- 流式逐 token 输出 + AbortSignal 中断 + 空响应断路器 + token 压缩（75% 阈值，保留最近 3-8 轮）
+- 流式逐 token 输出 + AbortSignal 中断 + 空响应断路器 + **防循环提醒**（连续相同工具调用自动注入提示）+ token 压缩（75% 阈值，保留最近 3-8 轮）
 - 多 profile 模型路由：coding / reasoning / writing / creative / lite + DeepSeek 思考模式（`extra_body`）
 - 7 个专家智能体：通用 / 研究 / 编码 / 数据分析 / 理财 / 游戏 / 产品运营，关键词正则 → LLM 语义两阶段路由
 - Team 协调器：`/plan` DAG 编排（4 种模板 + Kahn 环路检测）、`/debate` 双专家互审
 
 **工具与扩展**
-- 6 个内置工具：fs_read / fs_write / fs_list / terminal_exec（异步）/ web_search（Bing 零 key）/ web_fetch（15s 超时）
+- 8 个内置工具：fs_read / fs_write / fs_list / terminal_exec（异步）/ **terminal_session（持久终端，cd/env 跨调用保留）** / web_search（Bing 零 key）/ web_fetch（15s 超时）/ **ask_user（模型主动向用户提问，CLI stdin / Web 提问卡片）**
 - MCP 协议：stdio/HTTP 双传输 + 内置工具服务器（math_eval/uuid_gen/json_format/timestamp_convert）+ 自动重连 + 健康检查
 - 38 个技能（7 大领域）：SKILL.md 正则触发 + 依赖缺失自动降级 + 复杂任务后自沉淀（可开关）
 
 **安全与合规**
 - Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
+- **审批服务（ApprovalService）**：权限决策单点（模式矩阵 + fail-closed，无确认通道默认拒绝），hooks 内权限 handler 均为薄委托
+- **工具调用统一超时护栏**（默认 60s），任何工具不会无限挂起
 - Hooks 5 生命周期点 + 14 个 Handler：敏感数据过滤 / 高危确认 / 权限检查 / Diff 快照 / 审计日志 / 重试退避 / 模型降级
 
 **记忆与上下文**
 - 三层记忆：工作记忆（SQLite）+ 情景记忆（FTS5 + 中文分词 + 时间衰减）+ 语义记忆（MEMORY.md/USER.md 有界管理）
 - **会话事件溯源**：`session_events` 仅追加日志作为唯一真源，消息/轮次/工具调用可回放派生（`/trace`、统计、遥测共用）
+- **超长工具结果落盘（spill）**：fs_read/terminal 输出 > 8000 字符自动写入 `data/spills/`，上下文只留定位符 + 预览（replay-safe）
+- **工具结果剪枝**：上下文组装时超长 tool 消息截断 + 标记（完整内容仍在事件日志）
+- **会话自动标题**：首条用户消息自动生成（首行截断 ≤24 字符，不覆盖手动重命名）
 - 上下文管理：冻结快照 + 自适应压缩 + 分层 token 占比统计（`/context`）+ 工作目录感知（ProjectProfiler）
 - 监控日志：轮次日志（TurnLog）+ 工具调用日志（ToolCallLog），`/log` 查看真实耗时与 token
 
@@ -33,7 +38,7 @@
 
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
-- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、系统管理弹窗与 favicon
+- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
 - **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
 
 ---
@@ -151,6 +156,7 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/skills` | GET | 已加载技能列表（含描述与分组） |
 | `/api/v1/diffs` | GET | 会话文件变更（快照 diff 结构化，按会话分组） |
 | `/api/v1/confirm` | POST | 确认卡片响应（JSON：`id` / `value`） |
+| `/api/v1/ask` | POST | 提问卡片回答（JSON：`id` / `answer`，ask_user 工具用） |
 
 ---
 
@@ -172,18 +178,18 @@ aiworker/
 │   ├── commands/         # CLI 命令注册表（CliCommand/CommandContext 模块化）
 │   ├── agents/           # BaseAgent + 7 专家实现 + 路由
 │   ├── hooks/            # Hook 管理器 + 配置加载 + 14 个 handler
-│   ├── memory/           # session-store（SQLite/FTS5 + 事件溯源）+ telemetry（遥测）+ compressor
+│   ├── memory/           # session-store（SQLite/FTS5 + 事件溯源 + 自动标题）+ telemetry（遥测）+ compressor
 │   ├── mcp/              # 协议客户端 + 内置服务器 + 重连/健康检查
-│   ├── security/         # 危险检测 / 权限模型 / 审计
+│   ├── security/         # 危险检测 / 权限模型 / 审批服务（ApprovalService）/ 审计
 │   ├── terminal/         # TUI 引擎（screen 帧缓冲 / term 键解析 /
 │   │                     # components 组件 / tui 控制器 / markdown / highlight / trace-view）
-│   ├── tools/            # 内置工具
+│   ├── tools/            # 内置工具（fs/terminal/web + spill 落盘 + ask-channel + terminal-session）
 │   ├── server.ts         # HTTP Server + SSE（/chat /plan /debate + trace/stats/telemetry 端点）
 │   ├── index.ts          # CLI 入口
 │   └── types.ts          # 核心类型定义
 ├── test/                 # 测试（模块化，独立 data 目录防并行冲突）
 ├── web/                  # Web UI（Svelte 5 + Vite，独立 package.json）
-├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照
+├── data/                 # 运行时数据（gitignored）：aiworker.db / audit.db / 记忆 / 快照 / spills（超长工具结果）
 ├── ai_default_project/   # Agent 默认工作目录（读写基准，gitignored）
 ├── AGENTS.md             # AI 辅助开发指南
 └── vitest.config.ts

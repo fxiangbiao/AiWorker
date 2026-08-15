@@ -36,6 +36,12 @@ export interface ConfirmItem {
   options: { value: string; label: string }[];
 }
 
+export interface AskItem {
+  id: string;
+  question: string;
+  options: string[];
+}
+
 export interface TimelineItem {
   type: "thinking" | "tool";
   content?: string;
@@ -59,6 +65,7 @@ export const store = $state({
   activeChatId: null as string | null,
   messages: [] as UIMessage[],
   confirms: [] as ConfirmItem[],
+  asks: [] as AskItem[],
   diffVersion: 0,
 });
 
