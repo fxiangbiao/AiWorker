@@ -97,11 +97,11 @@ export const sessionCommands: CliCommand[] = [
       if (sessions.length === 0) {
         ctx.writeLine(chalk.gray("暂无历史会话"));
       } else {
-        ctx.write("\n┌──────┬────────────┬────────────┬──────────────┬──────────────────────┐\n");
+        ctx.write("\n┌──────┬────────────┬──────────┬────────────┬──────────────┬──────────────────────┐\n");
         ctx.write(
-          `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
+          `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("轮数", 8)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
         );
-        ctx.write("├──────┼────────────┼────────────┼──────────────┼──────────────────────┤\n");
+        ctx.write("├──────┼────────────┼──────────┼────────────┼──────────────┼──────────────────────┤\n");
         sessions.forEach((s, i) => {
           const time = new Date(s.updatedAt).toLocaleDateString();
           const agentLabel = s.agentId.length > 12 ? s.agentId.slice(0, 12) : s.agentId;
@@ -109,10 +109,10 @@ export const sessionCommands: CliCommand[] = [
           // CJK 安全截断（displayWidth 计 2 列/字，列宽 20）
           while (displayWidth(summary) > 20) summary = summary.slice(0, -1);
           ctx.write(
-            `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
+            `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.turnCount).padEnd(8)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
           );
         });
-        ctx.write(`└──────┴────────────┴────────────┴──────────────┴──────────────────────┘\n`);
+        ctx.write(`└──────┴────────────┴──────────┴────────────┴──────────────┴──────────────────────┘\n`);
         ctx.write(chalk.gray(`共 ${sessions.length} 个会话，/switch <序号> 切换\n`));
       }
       ctx.printStatus();

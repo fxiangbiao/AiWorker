@@ -111,8 +111,7 @@ describe("命令注册表", () => {
 
   it("help 从注册表自动生成（含 trace/skill，杜绝遗漏）", async () => {
     const { ctx, writeLines } = makeCtx();
-    await find("help").handler(ctx, "", "/help");
-    const joined = writeLines.join("\n");
+    await find("help").handler(ctx, "", "/help");    const joined = writeLines.join("\n");
     expect(joined).toContain("/trace");
     expect(joined).toContain("/skill");
     expect(joined).toContain("/plan");
@@ -372,5 +371,22 @@ describe("bg / jobs / schedule 命令", () => {
     expect(jobs).toHaveLength(1);
     await find("schedule").handler(ctx, "", `/schedule remove ${jobs[0]!.id}`);
     expect(scheduler.getJobs()).toHaveLength(0);
+  });
+
+  it("/sessions 显示真实轮数（用户消息数）", async () => {
+    const { ctx, store, writes } = makeCtx();
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "第一轮" });
+    store.appendMessage(sess.id, { role: "assistant", content: "回复1" });
+    store.appendMessage(sess.id, { role: "user", content: "第二轮" });
+
+    await find("sessions").handler(ctx, "", "/sessions");
+    const joined = writes.join("");
+    expect(joined).toContain("轮数");
+    expect(joined).toContain("消息数");
+    // 行内容包含 2 轮、3 消息（含摘要"第一轮"）
+    const row = joined.split("\n").find((l) => l.includes("第一轮")) ?? "";
+    expect(row).toContain(" 2 ");
+    expect(row).toContain(" 3 ");
   });
 });
