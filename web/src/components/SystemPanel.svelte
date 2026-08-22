@@ -248,14 +248,14 @@
 </script>
 
 <div class="sys-panel">
-  <div class="sp-tabs">
-    <button class="sp-tab" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
-    <button class="sp-tab" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
-    <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
-    <button class="sp-tab" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
-    <button class="sp-tab" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
-    <button class="sp-tab" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
-    <button class="sp-tab" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
+  <div class="sp-side">
+    <button class="sp-nav" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
+    <button class="sp-nav" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
+    <button class="sp-nav" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
+    <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
+    <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
+    <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
+    <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
   <div class="sp-body">
@@ -486,22 +486,33 @@
 </div>
 
 <style>
-  .sys-panel { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
-  .sp-tabs { display: flex; gap: 4px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
-  .sp-tab {
-    flex: 1;
-    padding: 6px 4px;
+  .sys-panel { display: flex; gap: 0; flex: 1; min-height: 0; }
+  .sp-side {
+    width: 92px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .sp-nav {
+    padding: 8px 10px;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-radius: var(--radius-sm);
     color: var(--dim);
     font-family: var(--font-ui);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
+    text-align: left;
   }
-  .sp-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
-  .sp-body { flex: 1; overflow-y: auto; min-height: 0; }
+  .sp-nav:hover { background: var(--hover-bg); color: var(--text); }
+  .sp-nav.active { background: var(--primary-light); color: var(--primary); }
+  .sp-body { flex: 1; overflow-y: auto; min-height: 0; padding-left: 14px; }
   .sp-section { display: flex; flex-direction: column; gap: 6px; }
   .sp-row {
     display: flex;

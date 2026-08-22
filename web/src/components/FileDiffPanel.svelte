@@ -19,10 +19,34 @@
     updatedAt: number;
   }
 
+  interface DirNode {
+    name: string;
+    path: string;
+    dirs: DirNode[];
+    files: DiffFile[];
+  }
+  interface TreeRow {
+    kind: "dir" | "file";
+    name: string;
+    path: string;
+    depth: number;
+    collapsed?: boolean;
+    file?: DiffFile;
+  }
+
   let loading = $state(false);
   let sessions: DiffSession[] = $state([]);
   let selected: DiffFile | null = $state(null);
-  let listWidth = $state<number | null>(null); // null = 默认 20% (1:4)
+  let listWidth = $state<number | null>(null); // null = 默认 25% (1:3)
+  /** 折叠的目录路径（会话目录树） */
+  let collapsedDirs = $state<Set<string>>(new Set());
+  /** 折叠的会话 id */
+  let collapsedSessions = $state<Set<string>>(new Set());
+  /** 树展平缓存版本号（Set 修改不触发响应式） */
+  let treeVer = $state(0);
+  /** 最近复制的行号（提示用） */
+  let copiedLine = $state<number | null>(null);
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
   function startListDrag(e: PointerEvent) {
     e.preventDefault();
@@ -81,10 +105,118 @@
     if (isToday) return `${h}:${m}`;
     return `${d.getMonth() + 1}/${d.getDate()} ${h}:${m}`;
   }
+
+  /** 文件列表 → 目录树 */
+  function buildTree(files: DiffFile[]): DirNode {
+    const root: DirNode = { name: "", path: "", dirs: [], files: [] };
+    for (const f of files) {
+      const parts = f.path.split(/[\\/]/);
+      const fileName = parts.pop()!;
+      let node = root;
+      let dirPath = "";
+      for (const part of parts) {
+        dirPath = dirPath ? `${dirPath}/${part}` : part;
+        let child = node.dirs.find((d) => d.name === part);
+        if (!child) {
+          child = { name: part, path: dirPath, dirs: [], files: [] };
+          node.dirs.push(child);
+        }
+        node = child;
+      }
+      node.files.push({ ...f, path: f.path });
+    }
+    return root;
+  }
+
+  function flattenTree(node: DirNode, depth: number, out: TreeRow[]): void {
+    // 目录在前、文件在后，按名称排序
+    const dirs = [...node.dirs].sort((a, b) => a.name.localeCompare(b.name));
+    const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
+    for (const d of dirs) {
+      const collapsed = collapsedDirs.has(d.path);
+      out.push({ kind: "dir", name: d.name, path: d.path, depth, collapsed });
+      if (!collapsed) flattenTree(d, depth + 1, out);
+    }
+    for (const f of files) {
+      out.push({ kind: "file", name: basename(f.path), path: f.path, depth, file: f });
+    }
+  }
+
+  /** 当前会话的树行（flat，含折叠状态） */
+  function rowsForSession(s: DiffSession): TreeRow[] {
+    const out: TreeRow[] = [];
+    flattenTree(buildTree(s.files), 0, out);
+    return out;
+  }
+
+  function toggleDir(path: string) {
+    const next = new Set(collapsedDirs);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    collapsedDirs = next;
+    treeVer++;
+  }
+
+  function toggleSession(id: string) {
+    const next = new Set(collapsedSessions);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    collapsedSessions = next;
+    treeVer++;
+  }
+
+  // ── 列表拖拽滚动（按住拖动；>4px 视为滚动，不触发文件选择） ──
+  let listEl: HTMLElement | null = null;
+  let dragState: { startY: number; startTop: number; dragging: boolean } | null = null;
+  let suppressClick = false;
+
+  function onListPointerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    dragState = { startY: e.clientY, startTop: listEl?.scrollTop ?? 0, dragging: false };
+    window.addEventListener("pointermove", onListPointerMove);
+    window.addEventListener("pointerup", onListPointerUp);
+  }
+  function onListPointerMove(e: PointerEvent) {
+    if (!dragState || !listEl) return;
+    const dy = e.clientY - dragState.startY;
+    if (!dragState.dragging && Math.abs(dy) > 4) dragState.dragging = true;
+    if (dragState.dragging) {
+      listEl.scrollTop = dragState.startTop - dy;
+      e.preventDefault();
+    }
+  }
+  function onListPointerUp() {
+    // click 在 pointerup 之后同步触发：先记录拖拽标志，下一个宏任务再清空
+    suppressClick = dragState?.dragging ?? false;
+    dragState = null;
+    window.removeEventListener("pointermove", onListPointerMove);
+    window.removeEventListener("pointerup", onListPointerUp);
+    setTimeout(() => (suppressClick = false), 0);
+  }
+  function onListClickCapture(e: MouseEvent) {
+    // 刚发生过拖拽滚动 → 吞掉本次 click（防止误选文件）
+    if (suppressClick) e.stopPropagation();
+  }
+
+  /** 点击 diff 行复制该行文本（不含行号/符号）；拖选文本时不触发 */
+  function copyLine(line: DiffLine, idx: number) {
+    const sel = window.getSelection();
+    if (sel && sel.toString().trim()) return; // 正在拖选 → 跳过
+    const text = line.text;
+    if (!text) return;
+    navigator.clipboard?.writeText(text).catch(() => {});
+    copiedLine = idx;
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copiedLine = null), 1200);
+  }
 </script>
 
 <div class="diff-body">
-  <div class="diff-list" style:width={listWidth ? `${listWidth * 100}%` : "20%"}>
+  <div class="diff-list" style:width={listWidth ? `${listWidth * 100}%` : "25%"} bind:this={listEl}
+    class:dragging={dragState?.dragging}
+    onpointerdown={onListPointerDown}
+    onpointerup={onListPointerUp}
+    onclickcapture={onListClickCapture}>
     <div class="dl-title">变更文件</div>
     {#if loading}
       <div class="dl-empty">加载中...</div>
@@ -92,25 +224,42 @@
       <div class="dl-empty">暂无文件变更</div>
     {:else}
       {#each sessions as s}
-        <div class="dl-session">
+        <div class="dl-session" role="button" tabindex="0"
+          onclick={() => toggleSession(s.id)}
+          onkeydown={(e) => e.key === "Enter" && toggleSession(s.id)}>
+          <span class="dl-caret">{collapsedSessions.has(s.id) ? "▸" : "▾"}</span>
           <span class="dl-sid">{s.sessionId.slice(0, 8)}...</span>
           <span class="dl-stime">{fmtTime(s.updatedAt)}</span>
         </div>
-        {#each s.files as f}
-          <div
-            class="dl-file"
-            class:active={selected?.path === f.path}
-            title={f.path}
-            onclick={() => (selected = f)}
-            onkeydown={(e) => e.key === "Enter" && (selected = f)}
-            role="button"
-            tabindex="0"
-          >
-            <span class="dl-name" title={f.path}>{basename(f.path)}</span>
-            <span class="dl-add">+{f.added}</span>
-            <span class="dl-rem">-{f.removed}</span>
-          </div>
-        {/each}
+        {#if !collapsedSessions.has(s.id)}
+          {#each rowsForSession(s) as row (row.path)}
+            {#if row.kind === "dir"}
+              <div class="dl-dir" style:padding-left={`${10 + row.depth * 12}px`}
+                role="button" tabindex="0"
+                onclick={() => toggleDir(row.path)}
+                onkeydown={(e) => e.key === "Enter" && toggleDir(row.path)}>
+                <span class="dl-caret">{row.collapsed ? "▸" : "▾"}</span>
+                <span class="dl-folder">📁</span>
+                <span class="dl-dirname">{row.name}</span>
+              </div>
+            {:else if row.file}
+              <div
+                class="dl-file"
+                style:padding-left={`${22 + row.depth * 12}px`}
+                class:active={selected?.path === row.file.path}
+                title={row.path}
+                onclick={() => (selected = row.file)}
+                onkeydown={(e) => e.key === "Enter" && (selected = row.file)}
+                role="button"
+                tabindex="0"
+              >
+                <span class="dl-name" title={row.path}>{row.name}</span>
+                <span class="dl-add">+{row.file.added}</span>
+                <span class="dl-rem">-{row.file.removed}</span>
+              </div>
+            {/if}
+          {/each}
+        {/if}
       {/each}
     {/if}
   </div>
@@ -123,7 +272,10 @@
       <div class="dd-path">{selected.path}</div>
       <div class="dd-lines">
         {#each selected.lines as ln, i (i)}
-          <div class="dd-line" class:add={ln.type === "add"} class:del={ln.type === "del"}>
+          <div class="dd-line" class:add={ln.type === "add"} class:del={ln.type === "del"}
+            class:copied={copiedLine === i}
+            title="点击复制该行"
+            onclick={() => copyLine(ln, i)}>
             <span class="dd-no">{i + 1}</span>
             <span class="dd-sign">{ln.type === "add" ? "+" : ln.type === "del" ? "-" : " "}</span>
             <span class="dd-text">{ln.text}</span>
@@ -139,11 +291,14 @@
 <style>
   .diff-body { display: flex; gap: 8px; flex: 1; min-height: 200px; }
   .diff-list {
-    width: 20%;
+    width: 25%;
     overflow-y: auto;
     flex-shrink: 0;
     min-width: 0;
+    user-select: none;
+    cursor: grab;
   }
+  .diff-list.dragging { cursor: grabbing; }
   .diff-resizer {
     width: 5px;
     cursor: col-resize;
@@ -161,9 +316,34 @@
     letter-spacing: .5px;
   }
   .dl-empty, .dd-empty { font-size: 12px; color: var(--dim); padding: 16px 0; text-align: center; }
-  .dl-session { font-size: 10px; color: var(--dim); margin: 8px 0 4px; display: flex; justify-content: space-between; align-items: center; }
-  .dl-sid { font-weight: 600; }
+  .dl-session {
+    font-size: 10px;
+    color: var(--dim);
+    margin: 8px 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+  }
+  .dl-session:hover { background: var(--hover-bg); }
+  .dl-caret { width: 10px; flex-shrink: 0; font-size: 9px; }
+  .dl-sid { font-weight: 600; flex: 1; }
   .dl-stime { color: var(--primary); }
+  .dl-dir {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .dl-dir:hover { background: var(--hover-bg); color: var(--text); }
+  .dl-folder { font-size: 10px; }
+  .dl-dirname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dl-file {
     display: flex;
     align-items: center;
@@ -190,11 +370,24 @@
     overflow: auto;
     flex: 1;
   }
-  .dd-line { display: flex; gap: 8px; padding: 1px 8px; white-space: pre-wrap; word-break: break-all; }
+  .dd-line { display: flex; gap: 8px; padding: 1px 8px; white-space: pre-wrap; word-break: break-all; cursor: text; }
   .dd-line.add { background: rgba(34, 161, 232, .08); }
   .dd-line.del { background: rgba(232, 84, 107, .08); }
-  .dd-no { color: var(--dim); width: 28px; text-align: right; flex-shrink: 0; }
-  .dd-sign { width: 12px; flex-shrink: 0; }
+  .dd-line.copied { outline: 1px solid var(--primary); outline-offset: -1px; }
+  .dd-no {
+    color: var(--dim);
+    width: 28px;
+    text-align: right;
+    flex-shrink: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .dd-sign {
+    width: 12px;
+    flex-shrink: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
   .dd-line.add .dd-sign { color: var(--success); }
   .dd-line.del .dd-sign { color: var(--error); }
   .dd-text { flex: 1; }
