@@ -169,18 +169,17 @@ describe("会话命令", () => {
   });
 
   it("trace --json 输出事件投影 JSON", async () => {
-    const { ctx, writes, store } = makeCtx();
-    const sessionId = store.createSession("coding").id;
-    store.appendMessage(sessionId, { role: "user", content: "hello" });
-    const { ctx: ctx2, writes: w2 } = makeCtx({ currentSessionId: () => sessionId });
-    await find("trace").handler(ctx2, "--json", "/trace --json");
-    void ctx;
-    const json = w2.join("");
+    const { ctx, writes } = makeCtx();
+    const sessionId = ctx.sessionStore.createSession("coding").id;
+    ctx.sessionStore.appendMessage(sessionId, { role: "user", content: "hello" });
+    // 复用同一 ctx/store，只覆盖 currentSessionId（避免第二个空 store 导致事件为空）
+    const traceCtx = { ...ctx, currentSessionId: () => sessionId };
+    await find("trace").handler(traceCtx, "--json", "/trace --json");
+    const json = writes.join("");
     const parsed = JSON.parse(json) as { sessionId: string; items: unknown[]; stats: { turnCount: number } };
     expect(parsed.sessionId).toBe(sessionId);
     expect(parsed.items.length).toBeGreaterThan(0);
     expect(parsed.stats.turnCount).toBe(0);
-    void writes;
   });
 });
 
