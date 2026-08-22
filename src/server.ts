@@ -4,7 +4,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
@@ -21,6 +21,7 @@ import { eventBus } from "./server/event-bus.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
+import { packageInstaller } from "./core/package-installer.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -469,6 +470,94 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/plugins") && req.method === "GET") {
       const plugins = deps.getPlugins?.() ?? [];
       sendJSON(res, 200, { plugins });
+      return;
+    }
+
+    // ─── .aw 资产包导出/导入/列表 ───
+    if (url.startsWith(apiUrl("/packages/export")) && req.method === "GET") {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const type = u.searchParams.get("type") ?? "";
+      const name = u.searchParams.get("name") ?? "";
+      if (!["skill", "mcp", "plugin"].includes(type) || !name) {
+        sendJSON(res, 400, { error: "Missing type/name" });
+        return;
+      }
+      const out = packageInstaller.exportPackage(type as "skill" | "mcp" | "plugin", name);
+      if (!out) {
+        sendJSON(res, 404, { error: `未找到 ${type}: ${name}` });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(`${out.manifest.name}-${out.manifest.version}.aw`)}"`,
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(out.data);
+      return;
+    }
+    // 导入前预览 manifest（Web 安全确认用；不落盘）
+    if (url === apiUrl("/packages/peek") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let peek: { data?: string };
+      try {
+        peek = JSON.parse(body) as { data?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!peek.data || typeof peek.data !== "string") {
+        sendJSON(res, 400, { error: "Missing 'data' (base64 .aw)" });
+        return;
+      }
+      const tmpDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      mkdirSync(tmpDir, { recursive: true });
+      const tmp = resolve(tmpDir, `peek-${Date.now().toString(36)}.aw`);
+      writeFileSync(tmp, Buffer.from(peek.data, "base64"));
+      try {
+        const manifest = packageInstaller.readManifest(tmp);
+        sendJSON(res, 200, { ok: true, type: manifest.type, name: manifest.name, version: manifest.version, description: manifest.description });
+      } catch (err) {
+        sendJSON(res, 400, { ok: false, error: (err as Error).message });
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+      return;
+    }
+    if (url === apiUrl("/packages/import") && req.method === "POST") {      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let req3: { data?: string; force?: boolean };
+      try {
+        req3 = JSON.parse(body) as { data?: string; force?: boolean };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!req3.data || typeof req3.data !== "string") {
+        sendJSON(res, 400, { error: "Missing 'data' (base64 .aw)" });
+        return;
+      }
+      const tmpDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      mkdirSync(tmpDir, { recursive: true });
+      const tmp = resolve(tmpDir, `import-${Date.now().toString(36)}.aw`);
+      writeFileSync(tmp, Buffer.from(req3.data, "base64"));
+      const result = packageInstaller.install(tmp, { force: req3.force === true });
+      rmSync(tmp, { force: true });
+      sendJSON(res, result.success ? 200 : 400, result);
+      return;
+    }
+    if (url === apiUrl("/packages/list") && req.method === "GET") {
+      sendJSON(res, 200, { exportable: packageInstaller.listExportable(), installed: packageInstaller.listInstalled() });
       return;
     }
 

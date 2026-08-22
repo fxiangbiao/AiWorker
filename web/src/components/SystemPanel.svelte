@@ -234,6 +234,95 @@
     failed: "失败",
   };
 
+  // ── .aw 资产包导入/导出 ──
+
+  async function exportAsset(type: "skill" | "mcp" | "plugin", name: string) {
+    try {
+      const resp = await fetch(`${API}/packages/export?type=${type}&name=${encodeURIComponent(name)}`);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name}.aw`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const buf = reader.result as ArrayBuffer;
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+        resolve(btoa(bin));
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  /** 选择 .aw 文件：先 peek manifest → 安全确认 → 导入 */
+  function importAsset() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".aw,application/octet-stream";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const data = await fileToBase64(file);
+      const peekResp = await fetch(`${API}/packages/peek`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data }),
+      });
+      const peek = (await peekResp.json()) as { ok: boolean; type?: string; name?: string; version?: string; error?: string };
+      if (!peekResp.ok) {
+        alert(`不是有效的 .aw 包: ${peek.error ?? peekResp.status}`);
+        return;
+      }
+      // 安全确认：插件执行代码 / MCP 启动进程
+      if (peek.type === "plugin" && !confirm(`⚠️ 导入插件会执行其中的代码（第三方插件可能有风险）。继续导入「${peek.name}」？`)) return;
+      if (peek.type === "mcp" && !confirm(`⚠️ 导入 MCP 会启动外部进程/连接服务。继续导入「${peek.name}」？`)) return;
+      if (peek.type === "skill" && !confirm(`导入技能「${peek.name}」v${peek.version}？`)) return;
+
+      let resp = await fetch(`${API}/packages/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data }),
+      });
+      if (!resp.ok) {
+        const r = (await resp.json()) as { error?: string; success?: boolean };
+        if (!r.success && r.error && r.error.includes("已存在")) {
+          if (confirm(`同名资产已存在。覆盖？`)) {
+            resp = await fetch(`${API}/packages/import`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ data, force: true }),
+            });
+          } else {
+            return;
+          }
+        }
+      }
+      if (resp.ok) {
+        loadSkills();
+        loadMcp();
+        loadPlugins();
+        alert(`导入成功: ${peek.type}「${peek.name}」`);
+      } else {
+        const r = (await resp.json()) as { error?: string };
+        alert(`导入失败: ${r.error ?? resp.status}`);
+      }
+    };
+    input.click();
+  }
+
   function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace") {
     tab = t;
     detail = null;
@@ -306,6 +395,7 @@
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入 .aw</button></div>
       {#if mcpServers.length === 0}
         <div class="sp-empty">暂无 MCP 服务器</div>
       {:else}
@@ -315,6 +405,7 @@
               <div class="sp-mcp-head" onclick={() => (mcpExpanded = mcpExpanded === s.name ? null : s.name)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (mcpExpanded = mcpExpanded === s.name ? null : s.name)}>
                 <span class="sp-mcp-name">{s.name}</span>
                 <span class="sp-mcp-right">
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("mcp", s.name); }}>导出</button>
                   <span class="sp-dot" class:on={s.connected} class:off={!s.connected}>
                     {s.connected ? "已连接" : mcpStateLabel[s.state || "disconnected"] || "未连接"}
                   </span>
@@ -346,6 +437,7 @@
         </div>
       {/if}
     {:else if tab === "plugins"}
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入 .aw</button></div>
       {#if pluginList.length === 0}
         <div class="sp-empty">暂无插件（config/plugins/）</div>
       {:else}
@@ -355,6 +447,7 @@
               <div class="sp-mcp-head">
                 <span class="sp-mcp-name">{p.name}</span>
                 <span class="sp-mcp-right">
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("plugin", p.name); }}>导出</button>
                   {#if p.version}
                     <span class="sp-card-ver">v{p.version}</span>
                   {/if}
@@ -443,12 +536,16 @@
         </div>
       {/if}
     {:else}
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入 .aw</button></div>
       {#if skillList.length === 0}
         <div class="sp-empty">暂无技能</div>
       {:else if detail}
         <div class="sp-detail">
           <div class="sp-detail-back" onclick={() => (detail = null)}>&#8592; 返回技能列表</div>
-          <div class="sp-detail-name">{detail.name} <span class="sp-detail-ver">v{detail.version}</span></div>
+          <div class="sp-detail-name">
+            {detail.name} <span class="sp-detail-ver">v{detail.version}</span>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", detail.name)}>导出</button>
+          </div>
           <div class="sp-detail-expert">{detail.expert}</div>
           {#if detail.description}
             <div class="sp-detail-desc">{detail.description}</div>
@@ -645,4 +742,10 @@
   .sp-sched-btn:hover { filter: brightness(1.1); }
   .sp-del { padding: 2px 8px; font-size: 11px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
   .sp-del:hover { color: var(--error); border-color: var(--error); }
+  .sp-io-bar { margin-bottom: 8px; display: flex; justify-content: flex-end; }
+  .sp-io-btn { padding: 5px 12px; font-size: 11px; background: var(--primary-light); color: var(--primary); border: none; border-radius: var(--radius-sm); cursor: pointer; font-weight: 600; }
+  .sp-io-btn:hover { filter: brightness(1.05); }
+  .sp-io-mini { padding: 1px 8px; font-size: 10px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
+  .sp-io-mini:hover { color: var(--primary); border-color: var(--primary); }
+  .sp-io-mini-inline { margin-left: 8px; vertical-align: middle; }
 </style>

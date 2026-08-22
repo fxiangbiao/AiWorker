@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { buildCliCommands } from "../src/commands/registry.js";
 import { pluginManager } from "../src/core/plugin-manager.js";
@@ -414,5 +414,25 @@ describe("bg / jobs / schedule 命令", () => {
     const row = joined.split("\n").find((l) => l.includes("第一轮")) ?? "";
     expect(row).toContain(" 2 ");
     expect(row).toContain(" 3 ");
+  });
+
+  it("/pkg list 列出可导出资产（.aw）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("pkg").handler(ctx, "", "/pkg list");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("可导出资产");
+    expect(joined).toContain("技能");
+  });
+
+  it("/pkg export 不存在的资产提示未找到", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("pkg").handler(ctx, "", "/pkg export skill no-such-skill");
+    expect(writeLines.some((l) => l.includes("未找到"))).toBe(true);
+  });
+
+  it("/install 非 .aw 后缀被拒绝", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("install").handler(ctx, "foo.zip", "/install foo.zip");
+    expect(writeLines.some((l) => l.includes("不是 .aw 包"))).toBe(true);
   });
 });

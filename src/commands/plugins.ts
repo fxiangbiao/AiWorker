@@ -1,13 +1,62 @@
 /**
- * 插件命令组 — plugins
+ * 插件命令组 — plugins / install
  */
 
 import chalk from "chalk";
+import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { pluginManager } from "../core/plugin-manager.js";
+import { packageInstaller } from "../core/package-installer.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
 
 export const pluginsCommands: CliCommand[] = [
+  {
+    name: "install",
+    usage: "install <path> [-f]",
+    description: "安装 .aw 插件/技能/MCP 包",
+    detail: "解压 .aw 包（按 manifest.type 路由）：plugin→config/plugins/，skill→skills/，mcp→config/mcp.json；-f 覆盖安装",
+    handler: async (ctx, arg) => {
+      const parts = arg.trim().split(/\s+/).filter(Boolean);
+      const force = parts.includes("-f") || parts.includes("--force");
+      const pkgPath = parts.find((p) => p !== "-f" && p !== "--force");
+      if (!pkgPath) {
+        ctx.writeLine(chalk.gray("用法: /install <path> [-f]  例: /install ./git-tools-v1.3.aw"));
+        ctx.printStatus();
+        return "continue";
+      }
+      if (!pkgPath.toLowerCase().endsWith(".aw")) {
+        ctx.writeLine(chalk.yellow(`⚠ "${pkgPath}" 不是 .aw 包（后缀必须为 .aw）`));
+        ctx.printStatus();
+        return "continue";
+      }
+      const abs = existsSync(pkgPath) ? pkgPath : resolvePath(ctx.workingDir, pkgPath);
+      if (!existsSync(abs)) {
+        ctx.writeLine(chalk.red(`✗ 文件不存在: ${abs}`));
+        ctx.printStatus();
+        return "continue";
+      }
+
+      ctx.writeLine(chalk.cyan(`\n📦 安装包: ${abs}`));
+      const result = packageInstaller.install(abs, { force });
+      if (result.success) {
+        ctx.writeLine(chalk.green(`✓ 安装成功 [${result.type}] ${result.name} v${result.version}`));
+        if (result.type === "plugin") {
+          ctx.writeLine(chalk.dim(`  目录: ${result.targetDir}`));
+          ctx.writeLine(chalk.dim("  重启或下次启动时自动加载（plugin-manager 扫描 config/plugins/）"));
+        } else if (result.type === "mcp") {
+          ctx.writeLine(chalk.dim(`  已合并到 ${result.targetDir}（立即生效，/mcps 查看）`));
+        } else {
+          ctx.writeLine(chalk.dim(`  目录: ${result.targetDir}`));
+          ctx.writeLine(chalk.dim("  技能已就绪，输入 /技能名 激活"));
+        }
+      } else {
+        ctx.writeLine(chalk.red(`✗ 安装失败: ${result.error}`));
+      }
+      ctx.printStatus();
+      return "continue";
+    },
+  },
   {
     name: "plugins",
     usage: "plugins",

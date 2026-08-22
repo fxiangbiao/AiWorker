@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.5.1-blue)
+![version](https://img.shields.io/badge/version-0.6.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -69,6 +69,11 @@
 
 **首次运行引导**
 - 首次启动（TUI + 未配置 API Key）自动引导：输入 Key（写 `.env` 立即生效）→ 选权限模式 → 确认目录；`/setup` 随时重配；`.env` 加载零依赖、不覆盖已有环境变量
+
+**资产包分发（.aw）**
+- 技能/MCP/插件统一打包为 `.aw`（zip + manifest.json，`scripts/pack-aw.mjs` 打包）
+- `/pkg export` 导出、`/install` 安装（按 manifest.type 路由：plugin→config/plugins/，skill→skills/，mcp→config/mcp.json）
+- 安全：包名/路径白名单校验（防目录穿越）、入口探测失败回滚、`minAppVersion` 校验；Web 导入前预览 manifest 并警告插件/MCP 执行风险
 
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
@@ -164,6 +169,8 @@ npm run dev -- [选项]
 | `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
 | `/jobs [cancel <id>]` | 查看/取消后台任务 |
 | `/schedule` | 定时任务管理：`add "<cron>" "<任务>" [agentId]` / `add "<自然语言>"` / `remove <id>`（cron 5 字段） |
+| `/install <路径> [-f]` | 安装 .aw 包（插件/技能/MCP，按 manifest 路由） |
+| `/pkg export <类型> <名称>` | 打包导出 .aw 分发文件；`/pkg list` 查看可导出资产 |
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |

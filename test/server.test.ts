@@ -862,4 +862,36 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     });
     expect(resp.status).toBe(400);
   });
+
+  it("GET /packages/export 校验 type；不存在的资产 404", async () => {
+    const missing = await fetch(`${base4}${API}/packages/export?type=skill&name=no-such-skill`);
+    expect(missing.status).toBe(404);
+    const badType = await fetch(`${base4}${API}/packages/export?type=xxx&name=a`);
+    expect(badType.status).toBe(400);
+  });
+
+  it("POST /packages/import 缺 data 返回 400；坏 zip 安装失败", async () => {
+    const noData = await fetch(`${base4}${API}/packages/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(noData.status).toBe(400);
+    // 非法 base64/zip 内容 → 安装失败（400）
+    const bad = await fetch(`${base4}${API}/packages/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: Buffer.from("not a zip").toString("base64") }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it("GET /packages/list 返回可导出与已安装资产", async () => {
+    const resp = await fetch(`${base4}${API}/packages/list`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { exportable: { skills: string[]; mcp: string[]; plugins: string[] } };
+    expect(Array.isArray(data.exportable.skills)).toBe(true);
+    expect(Array.isArray(data.exportable.mcp)).toBe(true);
+    expect(Array.isArray(data.exportable.plugins)).toBe(true);
+  });
 });
