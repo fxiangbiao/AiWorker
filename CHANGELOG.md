@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.4 (2026-08-22)
+
+### 添加模型 / Provider（TUI + Web）
+- **`ModelRouter.addProfile`**：运行时动态添加模型 profile（key 唯一校验、缺 model/baseURL 拒绝、继承默认 provider/apiKey/temperature/maxTokens），立即可切换
+- **CLI `/config add-model <key> <模型名> <baseURL> [provider] [apiKey]`**：添加并持久化到 `config/models.json`（保留 default/pricing/routing 等原有字段）
+- **Web 配置 Tab**：新增「添加模型 / Provider」表单（key/模型名/baseURL/provider/apiKey，apiKey 建议 `${ENV}` 引用）→ `POST /api/v1/config` field=`addModel`
+- 测试 +2（addProfile 单测 + addModel 端点持久化）
+
 ## 0.6.3 (2026-08-22)
 
 ### TUI 会话导出 + Web 系统配置

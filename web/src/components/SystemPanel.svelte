@@ -251,6 +251,12 @@
   let cfgIterAgent = $state("default");
   let cfgIterValue = $state("");
   let cfgMsg = $state("");
+  // 添加模型表单
+  let newModelKey = $state("");
+  let newModelName = $state("");
+  let newModelBase = $state("");
+  let newModelProvider = $state("");
+  let newModelKeyVal = $state("");
 
   function loadConfig() {
     loading = true;
@@ -309,6 +315,28 @@
   function onReset() {
     if (!confirm("恢复配置文件默认（模型/温度/max-tokens）？")) return;
     void applyConfig("reset", null);
+  }
+
+  function onAddModel() {
+    if (!newModelKey.trim() || !newModelName.trim() || !newModelBase.trim()) {
+      cfgMsg = "添加模型需填写 key / 模型名 / baseURL";
+      return;
+    }
+    void applyConfig("addModel", {
+      key: newModelKey.trim(),
+      model: newModelName.trim(),
+      baseURL: newModelBase.trim(),
+      provider: newModelProvider.trim() || undefined,
+      apiKey: newModelKeyVal.trim() || undefined,
+    }).then((ok) => {
+      if (ok) {
+        newModelKey = "";
+        newModelName = "";
+        newModelBase = "";
+        newModelProvider = "";
+        newModelKeyVal = "";
+      }
+    });
   }
 
   // ── .aw 资产包导入/导出 ──
@@ -673,10 +701,29 @@
           <div class="sp-cfg-row">
             <button class="sp-io-btn" onclick={onReset}>恢复模型默认（reset）</button>
           </div>
+          <div class="sp-cfg-sep">添加模型 / Provider</div>
+          <label class="sp-cfg-row">key（唯一标识，如 my-gpt）
+            <input class="sp-cfg-input" bind:value={newModelKey} placeholder="如 my-gpt" />
+          </label>
+          <label class="sp-cfg-row">模型名
+            <input class="sp-cfg-input" bind:value={newModelName} placeholder="如 gpt-4o-mini" />
+          </label>
+          <label class="sp-cfg-row">baseURL
+            <input class="sp-cfg-input" bind:value={newModelBase} placeholder="https://api.example.com/v1" />
+          </label>
+          <label class="sp-cfg-row">provider（可选）
+            <input class="sp-cfg-input" bind:value={newModelProvider} placeholder="如 openai / deepseek" />
+          </label>
+          <label class="sp-cfg-row">apiKey（可选，建议 ${ENV} 引用）
+            <input class="sp-cfg-input" bind:value={newModelKeyVal} placeholder="${MY_API_KEY} 或留空继承默认" />
+          </label>
+          <div class="sp-cfg-row">
+            <button class="sp-io-btn" onclick={onAddModel}>添加模型</button>
+          </div>
           {#if cfgMsg}
             <div class="sp-mcp-error">{cfgMsg}</div>
           {/if}
-          <div class="sp-note">设置持久化到 data/runtime-config.json，重启后仍生效</div>
+          <div class="sp-note">设置持久化到 data/runtime-config.json 与 config/models.json，重启后仍生效</div>
         </div>
       {/if}
     {:else}
@@ -897,4 +944,5 @@
   .sp-cfg-input { font-size: 11px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); min-width: 120px; }
   .sp-cfg-num { min-width: 80px; width: 80px; }
   .sp-note { font-size: 10px; color: var(--dim); margin-top: 8px; }
+  .sp-cfg-sep { font-size: 11px; font-weight: 600; color: var(--dim); border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 10px; }
 </style>

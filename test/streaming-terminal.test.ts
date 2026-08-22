@@ -37,8 +37,7 @@ describe("12. Streaming + 终端模块", () => {
 
   it("ModelRouter 运行时配置：覆盖 + 持久化接口", async () => {
     const { ModelRouter } = await import("../src/core/model-router.js");
-    const r = new ModelRouter(FIXTURE_PATH);
-    const models = r.getAvailableModels();
+    const r = new ModelRouter(FIXTURE_PATH);    const models = r.getAvailableModels();
     expect(models.length).toBeGreaterThanOrEqual(2);
     expect(models.some((m) => m.key === "default")).toBe(true);
     // 覆盖 profile/温度/maxTokens
@@ -65,6 +64,30 @@ describe("12. Streaming + 终端模块", () => {
     r.setTemperature(null);
     r.setMaxTokens(null);
     expect(r.getOverrides()).toEqual({});
+  });
+
+  it("ModelRouter addProfile 动态添加模型并立即可用", async () => {
+    const { ModelRouter } = await import("../src/core/model-router.js");
+    const r = new ModelRouter(FIXTURE_PATH);
+    // 添加新 profile
+    const ok = r.addProfile("my-gpt", {
+      model: "gpt-4o-mini",
+      baseURL: "https://api.example.com/v1",
+      provider: "openai",
+      apiKey: "${MY_KEY}",
+    });
+    expect(ok).toBe(true);
+    // 立即可见于可用列表
+    expect(r.getAvailableModels().some((m) => m.key === "my-gpt" && m.model === "gpt-4o-mini")).toBe(true);
+    // 可切换为默认
+    r.setDefaultModel("my-gpt");
+    expect(r.getCurrentModel()).toBe("gpt-4o-mini");
+    // 持久化结构可从 getProfileRaw 取回
+    expect(r.getProfileRaw("my-gpt")).toMatchObject({ baseURL: "https://api.example.com/v1", apiKey: "${MY_KEY}" });
+    // 重复 key / 缺字段拒绝
+    expect(r.addProfile("my-gpt", { model: "x", baseURL: "y" })).toBe(false);
+    expect(r.addProfile("", { model: "x", baseURL: "y" })).toBe(false);
+    expect(r.addProfile("bad", { model: "", baseURL: "y" })).toBe(false);
   });
 
   it("ModelRouter 运行时配置：覆盖影响 completeStream 请求", async () => {

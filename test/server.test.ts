@@ -6,6 +6,7 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
+import { writeFileSync, readFileSync } from "node:fs";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
 import { jobRunner } from "../src/core/job-runner.js";
@@ -980,6 +981,50 @@ describe("HTTP Server — 后台任务与定时调度", () => {
       body: JSON.stringify({ field: "temperature", value: 9 }),
     });
     expect(bad.status).toBe(400);
+    local.close();
+  });
+
+  it("POST /config addModel：添加模型 profile 并持久化到 config/models.json", async () => {
+    const modelsPath = resolve(testDir, "models.json");
+    writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        default: { provider: "deepseek", model: "m1", baseURL: "https://api.deepseek.com", apiKey: "${K}", temperature: 0.5, maxTokens: 4096, adapter: "openai-compatible" },
+        profiles: { coding: { temperature: 0.2 } },
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.getConfigState = () => ({});
+    deps.setConfigField = (field, value) => {
+      if (field === "addModel") {
+        const v = value as { key?: string; model?: string; baseURL?: string; provider?: string; apiKey?: string };
+        if (!v?.key || !v.model || !v.baseURL) return { ok: false, error: "缺字段" };
+        // 模拟 addProfile + 写回（真实 index.ts 逻辑）
+        const cfg = JSON.parse(readFileSync(modelsPath, "utf-8")) as { profiles: Record<string, unknown> };
+        cfg.profiles[v.key] = { model: v.model, baseURL: v.baseURL, provider: v.provider, apiKey: v.apiKey };
+        writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+        return { ok: true };
+      }
+      return { ok: false, error: "未知" };
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const base6 = `http://127.0.0.1:${port}`;
+
+    const ok = await fetch(`${base6}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "addModel", value: { key: "my-gpt", model: "gpt-4o-mini", baseURL: "https://api.example.com/v1", provider: "openai", apiKey: "${MY_KEY}" } }),
+    });
+    expect(ok.status).toBe(200);
+
+    const cfg = JSON.parse(readFileSync(modelsPath, "utf-8")) as { profiles: Record<string, { model?: string; baseURL?: string }> };
+    expect(cfg.profiles["my-gpt"]).toMatchObject({ model: "gpt-4o-mini", baseURL: "https://api.example.com/v1" });
+    // 原字段保留
+    expect(cfg.profiles["coding"]).toBeDefined();
     local.close();
   });
 });

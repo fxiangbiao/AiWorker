@@ -252,6 +252,44 @@ export class ModelRouter {
     this.runtimeProfileKey = profileKey.trim().toLowerCase();
   }
 
+  /** 动态添加模型 profile（立即生效；持久化由调用方写回 config/models.json） */
+  addProfile(
+    key: string,
+    profile: { model: string; baseURL: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number; adapter?: string },
+  ): boolean {
+    const k = key.trim().toLowerCase();
+    if (!k || k === "default" || this.config.profiles[k]) return false;
+    const model = profile.model?.trim();
+    const baseURL = profile.baseURL?.trim();
+    if (!model || !baseURL) return false;
+    this.config.profiles[k] = {
+      provider: profile.provider?.trim() || this.config.default.provider,
+      model,
+      baseURL,
+      apiKey: profile.apiKey?.trim() || this.config.default.apiKey,
+      temperature: profile.temperature ?? this.config.default.temperature,
+      maxTokens: profile.maxTokens ?? this.config.default.maxTokens,
+      adapter: profile.adapter ?? this.config.default.adapter,
+    };
+    return true;
+  }
+
+  /** 获取动态添加/现有 profile 的原始结构（供持久化写回） */
+  getProfileRaw(key: string): Record<string, unknown> | null {
+    const k = key.trim().toLowerCase();
+    const p = this.config.profiles[k];
+    if (!p) return null;
+    return {
+      provider: p.provider,
+      model: p.model,
+      baseURL: p.baseURL,
+      apiKey: p.apiKey,
+      temperature: p.temperature,
+      maxTokens: p.maxTokens,
+      adapter: p.adapter,
+    };
+  }
+
   /** 设置运行时默认温度（null 恢复配置文件） */
   setTemperature(t: number | null): void {
     this.runtimeTemperature = t;

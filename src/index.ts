@@ -402,6 +402,24 @@ program
                   modelRouter.setDefaultModel(v);
                   break;
                 }
+                case "addModel": {
+                  const v = value as { key?: string; model?: string; baseURL?: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number };
+                  const m = v?.model;
+                  const b = v?.baseURL;
+                  if (!v?.key || !m || !b) {
+                    return { ok: false, error: "添加模型需 key/model/baseURL" };
+                  }
+                  if (!modelRouter.addProfile(v.key, { model: m, baseURL: b, provider: v.provider, apiKey: v.apiKey, temperature: v.temperature, maxTokens: v.maxTokens })) {
+                    return { ok: false, error: `添加失败: key「${v.key}」已存在或非法` };
+                  }
+                  // 写回 config/models.json（保留 default/pricing/routing 等字段）
+                  const modelsPath = resolve(process.cwd(), "config", "models.json");
+                  const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & { profiles?: Record<string, unknown> };
+                  if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
+                  cfg.profiles[v.key.trim().toLowerCase()] = modelRouter.getProfileRaw(v.key);
+                  writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+                  break;
+                }
                 case "temperature": {
                   const t = Number(value);
                   if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
