@@ -34,16 +34,17 @@
     file?: DiffFile;
   }
 
+  /** 共享空集合（未折叠任何目录的会话用，避免每次派生创建新 Set） */
+  const EMPTY_SET: ReadonlySet<string> = new Set();
+
   let loading = $state(false);
   let sessions: DiffSession[] = $state([]);
   let selected: DiffFile | null = $state(null);
   let listWidth = $state<number | null>(null); // null = 默认 25% (1:3)
-  /** 折叠的目录路径（会话目录树） */
-  let collapsedDirs = $state<Set<string>>(new Set());
+  /** 折叠状态：sessionId → 该会话内折叠的目录路径集合（会话间隔离） */
+  let collapsedDirs = $state<Map<string, Set<string>>>(new Map());
   /** 折叠的会话 id */
   let collapsedSessions = $state<Set<string>>(new Set());
-  /** 树展平缓存版本号（Set 修改不触发响应式） */
-  let treeVer = $state(0);
   /** 最近复制的行号（提示用） */
   let copiedLine = $state<number | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -128,33 +129,37 @@
     return root;
   }
 
-  function flattenTree(node: DirNode, depth: number, out: TreeRow[]): void {
+  function flattenTree(node: DirNode, depth: number, out: TreeRow[], collapsed: ReadonlySet<string>): void {
     // 目录在前、文件在后，按名称排序
     const dirs = [...node.dirs].sort((a, b) => a.name.localeCompare(b.name));
     const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
     for (const d of dirs) {
-      const collapsed = collapsedDirs.has(d.path);
-      out.push({ kind: "dir", name: d.name, path: d.path, depth, collapsed });
-      if (!collapsed) flattenTree(d, depth + 1, out);
+      const isCollapsed = collapsed.has(d.path);
+      out.push({ kind: "dir", name: d.name, path: d.path, depth, collapsed: isCollapsed });
+      if (!isCollapsed) flattenTree(d, depth + 1, out, collapsed);
     }
     for (const f of files) {
       out.push({ kind: "file", name: basename(f.path), path: f.path, depth, file: f });
     }
   }
 
-  /** 当前会话的树行（flat，含折叠状态） */
-  function rowsForSession(s: DiffSession): TreeRow[] {
-    const out: TreeRow[] = [];
-    flattenTree(buildTree(s.files), 0, out);
-    return out;
-  }
+  /** 每个会话的树行（$derived 自动追踪 sessions/collapsedDirs/collapsedSessions 变化） */
+  const sessionItems = $derived.by(() =>
+    sessions.map((s) => {
+      const collapsedSet = collapsedDirs.get(s.sessionId) ?? EMPTY_SET;
+      const rows: TreeRow[] = [];
+      flattenTree(buildTree(s.files), 0, rows, collapsedSet);
+      return { id: s.sessionId, updatedAt: s.updatedAt, collapsed: collapsedSessions.has(s.sessionId), rows };
+    }),
+  );
 
-  function toggleDir(path: string) {
-    const next = new Set(collapsedDirs);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
+  function toggleDir(sessionId: string, path: string) {
+    const next = new Map(collapsedDirs);
+    const set = new Set(next.get(sessionId) ?? []);
+    if (set.has(path)) set.delete(path);
+    else set.add(path);
+    next.set(sessionId, set);
     collapsedDirs = next;
-    treeVer++;
   }
 
   function toggleSession(id: string) {
@@ -162,7 +167,6 @@
     if (next.has(id)) next.delete(id);
     else next.add(id);
     collapsedSessions = next;
-    treeVer++;
   }
 
   // ── 列表拖拽滚动（按住拖动；>4px 视为滚动，不触发文件选择） ──
@@ -223,21 +227,21 @@
     {:else if sessions.length === 0}
       <div class="dl-empty">暂无文件变更</div>
     {:else}
-      {#each sessions as s}
+      {#each sessionItems as item (item.id)}
         <div class="dl-session" role="button" tabindex="0"
-          onclick={() => toggleSession(s.id)}
-          onkeydown={(e) => e.key === "Enter" && toggleSession(s.id)}>
-          <span class="dl-caret">{collapsedSessions.has(s.id) ? "▸" : "▾"}</span>
-          <span class="dl-sid">{s.sessionId.slice(0, 8)}...</span>
-          <span class="dl-stime">{fmtTime(s.updatedAt)}</span>
+          onclick={() => toggleSession(item.id)}
+          onkeydown={(e) => e.key === "Enter" && toggleSession(item.id)}>
+          <span class="dl-caret">{item.collapsed ? "▸" : "▾"}</span>
+          <span class="dl-sid">{item.id.slice(0, 8)}...</span>
+          <span class="dl-stime">{fmtTime(item.updatedAt)}</span>
         </div>
-        {#if !collapsedSessions.has(s.id)}
-          {#each rowsForSession(s) as row (row.path)}
+        {#if !item.collapsed}
+          {#each item.rows as row (row.path)}
             {#if row.kind === "dir"}
               <div class="dl-dir" style:padding-left={`${10 + row.depth * 12}px`}
                 role="button" tabindex="0"
-                onclick={() => toggleDir(row.path)}
-                onkeydown={(e) => e.key === "Enter" && toggleDir(row.path)}>
+                onclick={() => toggleDir(item.id, row.path)}
+                onkeydown={(e) => e.key === "Enter" && toggleDir(item.id, row.path)}>
                 <span class="dl-caret">{row.collapsed ? "▸" : "▾"}</span>
                 <span class="dl-folder">📁</span>
                 <span class="dl-dirname">{row.name}</span>
