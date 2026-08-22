@@ -36,7 +36,7 @@ systemPrompt: |
   ## 参考来源
 
 modelPreference: reasoning
-maxIterations: 60
+maxIterations: 120
 sandbox: false
 
 tools:

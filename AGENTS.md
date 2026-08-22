@@ -41,7 +41,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### 核心引擎 `src/core/`
 
-- `agent-loop.ts` — `runAgentLoop`（同步）/ `runAgentLoopStream`（流式 + AbortSignal）。空响应 3 次断路器；**工具调用统一超时**（`withTimeout`，默认 60s，`deps.toolTimeoutMs` 可注入）；**防循环提醒**（连续 ≥3 次相同 (tool, args) 注入 system 提醒，streak 只提醒一次）；token 压缩阈值 75%；循环边界发 `step/start`/`step/end`（**`endStep()` 必须先于 `iterations++`**，编号才一致）；`executeTool` 包装层发 `tool/call`/`tool/result`；每轮 `assistant(tool_calls)` 经 appendMessage 持久化
+- `agent-loop.ts` — `runAgentLoop`（同步）/ `runAgentLoopStream`（流式 + AbortSignal）。空响应 3 次断路器；**工具调用统一超时**（`withTimeout`，默认 60s，`deps.toolTimeoutMs` 可注入）；**迭代预算管理**：剩余 ≤5 轮注入一次收敛提示（`BUDGET_WARN_AT`）、连续相同 (tool,args) ≥3 注入提醒 / **≥6 强制终止**（`REPEAT_FORCE_STOP`，`repeatStreak` 共用计数）、连续 4 轮全部工具失败提前终止（`TOOL_FAIL_STREAK_MAX`）；**撞顶返回最后进展 + 建议**（不再裸返回"达到迭代上限"）；token 压缩阈值 75%；循环边界发 `step/start`/`step/end`（**`endStep()` 必须先于 `iterations++`**，编号才一致）；`executeTool` 包装层发 `tool/call`/`tool/result`；每轮 `assistant(tool_calls)` 经 appendMessage 持久化
 - `model-router.ts` — 多 profile（`config/models.json`，支持 `${ENV}`）。**思考模式**：`thinking: true` 时 temperature 失效，经 `extra_body` 传递；流式 usage 只在循环外一次性 `+=`；`lastUsage` 供 assistant 事件携带 token
 - `context-manager.ts` — `assembleContext()` 组装 + 压缩 + `getContextBreakdown()` 分层统计；`freezeSnapshot()` 捕获记忆快照保证前缀缓存；历史源用 `replayEvents`（含 tool 结果）；**工具结果剪枝**：组装输出前截断 >20K 字符的 tool 消息（完整内容仍在事件日志，replay-safe）
 - `team-coordinator.ts` — DAG 编排：Kahn 环路检测 + 死锁检测；4 模板；非关键步骤失败跳过，关键失败中止；导出 `pickDebateAgents`（CLI 与 HTTP 共用）
@@ -133,7 +133,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 /plugins                 查看插件（config/plugins/ 状态与注册工具）
 /trace [序号]            会话轨迹时间线（事件级复盘，--json 输出）
 /status                  运行状态（版本/模式/模型/专家/token）
-/config                  模型/温度/max-tokens/thinking/skill-evo（持久化 data/runtime-config.json）
+/config                  模型/温度/max-tokens/iterations/thinking/skill-evo（持久化 data/runtime-config.json）
 /sessions                浏览会话
 /switch <序号>           切换
 /copy                    复制最后回答 Markdown

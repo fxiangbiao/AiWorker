@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (2026-08-22)
+
+### 迭代预算管理
+- **默认上限扩容**：default 30→60 / coding 50→100 / product-ops 40→80 / financial 60→120 / data-analysis 60→120 / game-dev 70→140 / research 80→160（`config/agents/*.yaml` + default TS）
+- **运行时可调**：`/config iterations <10-1000>` 设置当前专家上限，持久化 `data/runtime-config.json`（`iterations` 字段，启动自动恢复；向后兼容旧文件）
+- **预算感知收尾**：剩余迭代 ≤5 轮注入一次收敛提示；撞顶不再裸返回"达到迭代上限"，改为返回最后进展 + 建议（继续追问或 /plan 拆分）
+- **空转强制终止**：连续相同 (tool, args) ≥6 次强制终止（提醒阈值 3 之上），报告进展
+- **工具全失败终止**：连续 4 轮全部工具调用失败提前终止
+
 ## 0.3.0 (2026-08-15)
 
 ### 执行沙箱（对比报告 #3）

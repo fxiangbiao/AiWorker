@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.3.0-blue)
+![version](https://img.shields.io/badge/version-0.4.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -31,6 +31,7 @@
 
 **Agent 核心**
 - 流式逐 token 输出 + AbortSignal 中断 + 空响应断路器 + **防循环提醒**（连续相同工具调用自动注入提示）+ token 压缩（75% 阈值，保留最近 3-8 轮）
+- **迭代预算管理**：每专家可配上限（`config/agents/*.yaml` 或 `/config iterations` 运行时调整）；剩余 ≤5 轮自动注入收敛提示；重复调用/工具全失败自动终止防 token 浪费；撞顶返回进展摘要
 - 多 profile 模型路由：coding / reasoning / writing / creative / lite + DeepSeek 思考模式（`extra_body`）
 - 7 个专家智能体：通用 / 研究 / 编码 / 数据分析 / 理财 / 游戏 / 产品运营，关键词正则 → LLM 语义两阶段路由
 - Team 协调器：`/plan` DAG 编排（4 种模板 + Kahn 环路检测）、`/debate` 双专家互审
@@ -160,7 +161,7 @@ npm run dev -- [选项]
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/trace [序号]` | 会话轨迹时间线（事件级复盘，--json 输出） |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
-| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
+| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/**iterations**/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
 | `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |

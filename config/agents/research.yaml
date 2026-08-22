@@ -33,7 +33,7 @@ systemPrompt: |
   - 区分事实与观点
 
 modelPreference: reasoning
-maxIterations: 80
+maxIterations: 160
 sandbox: false
 
 tools:

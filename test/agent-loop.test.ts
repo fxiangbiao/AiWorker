@@ -129,9 +129,9 @@ describe("D. 工具调用统一超时", () => {
 describe("E. 防循环提醒", () => {
   it("连续 3 次以上相同 (工具, 参数) 调用注入一次 system 提醒", async () => {
     const sessionId = store.createSession("test").id;
-    // 前 6 次都返回相同 fs_read 调用（参数一致），第 7 次收尾
+    // 前 5 次都返回相同 fs_read 调用（参数一致，< 强停阈值 6），第 6 次收尾
     const script: Array<() => ModelResponse> = [];
-    for (let i = 1; i <= 6; i++) {
+    for (let i = 1; i <= 5; i++) {
       script.push(() => toolCall(`t${i}`, "fs_read", '{"path":"package.json"}'));
     }
     script.push(() => plain("完成"));
@@ -155,10 +155,11 @@ describe("E. 防循环提醒", () => {
 
   it("不同参数交替调用不触发提醒", async () => {
     const sessionId = store.createSession("test").id;
-    const script: Array<() => ModelResponse> = [];
-    for (let i = 1; i <= 4; i++) {
-      script.push(() => toolCall(`t${i}`, "fs_read", JSON.stringify({ path: `file-${i}.txt` })));
-    }
+    // 交替读存在的文件（全部成功，避免触发工具失败终止），参数不同不触发提醒
+    const files = ["package.json", "README.md", "src/types.ts", "package.json"];
+    const script: Array<() => ModelResponse> = files.map((f, i) =>
+      () => toolCall(`t${i}`, "fs_read", JSON.stringify({ path: f })),
+    );
     script.push(() => plain("完成"));
     const modelRouter = mockRouter(script);
 
@@ -173,6 +174,107 @@ describe("E. 防循环提醒", () => {
     const reminders = result.messages.filter((m) => m.role === "system" && m.content.includes("停止重复调用"));
     expect(reminders).toHaveLength(0);
     expect(result.text).toBe("完成");
+  });
+});
+
+describe("Sprint 29: 迭代预算与智能收敛", () => {
+  it("剩余迭代 ≤5 时注入一次收敛提示", async () => {
+    const sessionId = store.createSession("test").id;
+    // 6 次成功调用（交替读文件避免强停/失败终止）+ 收尾；maxIterations=10
+    const script: Array<() => ModelResponse> = [];
+    const files = ["package.json", "README.md", "src/types.ts"];
+    for (let i = 1; i <= 6; i++) {
+      const f = files[i % files.length]!;
+      script.push(() => toolCall(`t${i}`, "fs_read", JSON.stringify({ path: f })));
+    }
+    script.push(() => plain("完成"));
+    const modelRouter = mockRouter(script);
+
+    const result = await runAgentLoop(makeConfig(), "长任务", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    const budgetMsgs = result.messages.filter(
+      (m) => m.role === "system" && m.content.includes("剩余迭代预算"),
+    );
+    expect(budgetMsgs).toHaveLength(1);
+    expect(budgetMsgs[0]!.content).toContain("立即收敛");
+    expect(result.text).toBe("完成");
+  });
+
+  it("连续 6 次相同调用强制终止", async () => {
+    const sessionId = store.createSession("test").id;
+    const script: Array<() => ModelResponse> = [];
+    for (let i = 1; i <= 6; i++) {
+      script.push(() => toolCall(`t${i}`, "fs_read", '{"path":"package.json"}'));
+    }
+    script.push(() => plain("完成")); // 不会执行到
+    const modelRouter = mockRouter(script);
+
+    const result = await runAgentLoop(makeConfig(), "死循环", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.text).toContain("已强制终止");
+    expect(result.text).toContain("重复循环调用");
+    expect(result.toolCallsExecuted).toBe(6);
+  });
+
+  it("工具连续失败 4 轮提前终止", async () => {
+    const sessionId = store.createSession("test").id;
+    const script: Array<() => ModelResponse> = [];
+    for (let i = 1; i <= 4; i++) {
+      script.push(() => toolCall(`t${i}`, "fs_read", JSON.stringify({ path: `not-exist-${i}.txt` })));
+    }
+    script.push(() => plain("完成")); // 不会执行到
+    const modelRouter = mockRouter(script);
+
+    const result = await runAgentLoop(makeConfig(), "读不存在文件", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.text).toContain("工具连续失败");
+    expect(result.toolCallsExecuted).toBe(4);
+  });
+
+  it("撞顶返回带进展与建议（不再裸返回）", async () => {
+    const sessionId = store.createSession("test").id;
+    const config = makeConfig();
+    config.maxIterations = 3;
+    // 3 次成功工具调用（不同参数）后撞顶
+    const script: Array<() => ModelResponse> = [
+      () => toolCall("t1", "fs_read", '{"path":"package.json"}'),
+      () => toolCall("t2", "fs_read", '{"path":"README.md"}'),
+      () => toolCall("t3", "fs_read", '{"path":"src/types.ts"}'),
+    ];
+    const modelRouter = mockRouter(script);
+
+    const result = await runAgentLoop(config, "撞顶任务", {
+      modelRouter,
+      contextManager: ctxMgr,
+      sessionStore: store,
+      sessionId,
+      workingDir: process.cwd(),
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.text).toContain("已达迭代上限 3 轮");
+    expect(result.text).toContain("调用工具"); // 最后进展保留
+    expect(result.text).toContain("/plan");
   });
 });
 

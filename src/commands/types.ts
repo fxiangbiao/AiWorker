@@ -26,6 +26,8 @@ export interface CommandContext {
   lastAnswer: { value: string };
   // 服务
   agents: Record<string, BaseAgent>;
+  /** 当前路由专家（/config iterations 用；index.ts 注入 routeToExpert("") 语义） */
+  currentAgent: () => BaseAgent;
   coordinator: TeamCoordinator;
   modelRouter: ModelRouter;
   sessionStore: SessionStore;

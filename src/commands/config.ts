@@ -68,7 +68,7 @@ export const configCommands: CliCommand[] = [
     name: "config",
     usage: "config",
     description: "查看/配置模型与系统参数",
-    detail: "持久化到 data/runtime-config.json",
+    detail: "持久化到 data/runtime-config.json（model/temperature/max-tokens/iterations/thinking/skill-evo）",
     handler: async (ctx, _arg, line) => {
       const parts = line.split(/\s+/).slice(1);
       const sub = parts[0] ?? "";
@@ -127,6 +127,20 @@ export const configCommands: CliCommand[] = [
           hookManager.on("onTaskComplete", handler, { id, priority: 10 });
           ctx.writeLine(chalk.green("✓ 技能自动沉淀: 开启"));
         }
+      } else if (sub === "iterations" || sub === "iter") {
+        const agent = ctx.currentAgent();
+        if (!arg) {
+          ctx.writeLine(chalk.gray(`用法: /config iterations <10-1000>  当前专家 ${agent.getName()} 上限: ${agent.getMaxIterations()}`));
+        } else {
+          const n = parseInt(arg, 10);
+          if (isNaN(n) || n < 10 || n > 1000) {
+            ctx.writeLine(chalk.red("✗ 迭代上限需在 10-1000 之间"));
+          } else {
+            agent.setMaxIterations(n);
+            persist();
+            ctx.writeLine(chalk.green(`✓ ${agent.getName()} 迭代上限 → ${n}（已持久化，重启后仍生效）`));
+          }
+        }
       } else if (sub === "thinking" || sub === "thought") {
         ctx.toggleThinking();
         ctx.writeLine(chalk.green(`✓ 思考展示: ${ctx.showThinking() ? "展开" : "折叠"}`));
@@ -157,7 +171,7 @@ export const configCommands: CliCommand[] = [
         ctx.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /config skill-evo 切换)\n\n`));
         ctx.write(
           chalk.dim(
-            `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config thinking | /config skill-evo | /config reset\n`,
+            `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config iterations <10-1000> | /config thinking | /config skill-evo | /config reset\n`,
           ),
         );
       }

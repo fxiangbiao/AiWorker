@@ -35,6 +35,11 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
   const writes: string[] = [];
   const writeLines: string[] = [];
   const prefillQueue: string[] = [];
+  const mockAgent = {
+    getName: () => "测试专家",
+    getMaxIterations: () => 100,
+    setMaxIterations: vi.fn(),
+  };
   const ctx: CommandContext = {
     mode: () => "auto",
     setMode: () => {},
@@ -45,6 +50,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     prefillQueue,
     lastAnswer: { value: "answer" },
     agents: {},
+    currentAgent: () => mockAgent as unknown as CommandContext["agents"][string],
     coordinator: {} as TeamCoordinator,
     modelRouter: modelRouterMock(),
     sessionStore: store,
@@ -232,6 +238,37 @@ describe("配置命令", () => {
     await find("config").handler(ctx, "", "/config model");
     expect(writeLines.some((l) => l.includes("/config model <名称>"))).toBe(true);
     expect(printStatus).toHaveBeenCalled();
+  });
+
+  it("config iterations 设置当前专家上限并持久化", async () => {
+    const persist = vi.fn();
+    const printStatus = vi.fn();
+    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist, printStatus });
+    await find("config").handler(ctx, "", "/config iterations 150");
+    const agent = (ctx as CommandContext).currentAgent() as {
+      setMaxIterations: ReturnType<typeof vi.fn>;
+      getMaxIterations: () => number;
+    };
+    expect(agent.setMaxIterations).toHaveBeenCalledWith(150);
+    expect(persist).toHaveBeenCalled();
+    expect(printStatus).toHaveBeenCalled();
+    expect(writeLines.some((l) => l.includes("迭代上限 → 150"))).toBe(true);
+  });
+
+  it("config iterations 越界值被拒绝", async () => {
+    const persist = vi.fn();
+    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist });
+    await find("config").handler(ctx, "", "/config iterations 5");
+    expect(writeLines.some((l) => l.includes("10-1000"))).toBe(true);
+    await find("config").handler(ctx, "", "/config iterations 5000");
+    expect(writeLines.some((l) => l.includes("10-1000"))).toBe(true);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("config iterations 无参数显示当前专家上限", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("config").handler(ctx, "", "/config iterations");
+    expect(writeLines.some((l) => l.includes("当前专家 测试专家 上限: 100"))).toBe(true);
   });
 });
 

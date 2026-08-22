@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 默认通用智能体
  */
 
@@ -30,7 +30,7 @@ const defaultConfig: AgentConfig = loadAgentConfig("default") ?? {
 3. 高危操作会被自动拦截
 4. 回答要简洁准确，用中文回复`,
   modelPreference: "default",
-  maxIterations: 30,
+  maxIterations: 60,
   sandbox: false,
   tools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search", "web_fetch"],
   mcpServers: [],

@@ -117,11 +117,23 @@ program
     const skillCount = skillRegistry.loadFromDir(skillsDir);
 
     const modelRouter = new ModelRouter();
-    // 恢复运行时覆盖（/config 持久化）
+    // 恢复运行时覆盖（/config 持久化；iterations 字段在 agents 创建后应用）
     const runtimeConfigPath = resolve(dataDir, "runtime-config.json");
+    let savedIterations: Record<string, number> = {};
     if (existsSync(runtimeConfigPath)) {
       try {
-        modelRouter.applyOverrides(JSON.parse(readFileSync(runtimeConfigPath, "utf-8")) as Record<string, unknown>);
+        const parsed = JSON.parse(readFileSync(runtimeConfigPath, "utf-8")) as Record<string, unknown> & {
+          iterations?: Record<string, unknown>;
+        };
+        const { iterations, ...modelOverrides } = parsed;
+        modelRouter.applyOverrides(modelOverrides as Parameters<typeof modelRouter.applyOverrides>[0]);
+        if (iterations && typeof iterations === "object") {
+          savedIterations = Object.fromEntries(
+            Object.entries(iterations)
+              .map(([id, n]): [string, number] => [id, Number(n)])
+              .filter(([, n]) => Number.isFinite(n) && n >= 10 && n <= 1000),
+          ) as Record<string, number>;
+        }
       } catch {
         /* 损坏则忽略 */
       }
@@ -215,6 +227,11 @@ program
       financial: new FinancialAgent(deps),
       "game-dev": new GameDevAgent(deps),
     };
+
+    // 应用持久化的每专家迭代上限（/config iterations）
+    for (const [id, n] of Object.entries(savedIterations)) {
+      agents[id]?.setMaxIterations(n);
+    }
 
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
@@ -370,11 +387,14 @@ program
       runtimeConfigPath,
       persistRuntimeConfig: () => {
         try {
-          writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
+          const iterations: Record<string, number> = {};
+          for (const [id, a] of Object.entries(agents)) iterations[id] = a.getConfig().maxIterations;
+          writeFileSync(runtimeConfigPath, JSON.stringify({ ...modelRouter.getOverrides(), iterations }, null, 2));
         } catch {
           /* 持久化失败静默 */
         }
       },
+      currentAgent: () => agents[routeToExpert("")]!,
       getContextBreakdown: (query: string) => {
         const agent = agents[routeToExpert("")]!;
         return contextManager.getContextBreakdown(agent.getConfig().systemPrompt, currentSessionId ?? "", query);

@@ -58,6 +58,9 @@ export async function runAgentLoop(
   let toolCallsExecuted = 0;
   let consecutiveLength = 0;
   let emptyResponseCount = 0;
+  let budgetWarned = false;
+  let lastAssistantText = "";
+  let toolFailStreak = 0;
   const mode = config.permissions.defaultMode;
   const endStep = () => sessionStore.appendEvent(sessionId, "step/end", { step: iterations }, "agent-loop");
   /** 防循环：最近工具调用记录 + 已提醒的 streak 标记 */
@@ -86,6 +89,16 @@ export async function runAgentLoop(
       // 防循环提醒：连续相同工具调用时注入提示（在模型请求前）
       maybeInjectRepeatReminder(messages, recentToolCalls, reminderStreak);
 
+      // 预算感知收尾：剩余迭代不足时注入收敛提示（每任务一次）
+      const remaining = MAX_ITER - iterations;
+      if (!budgetWarned && remaining <= BUDGET_WARN_AT) {
+        budgetWarned = true;
+        messages.push({
+          role: "system",
+          content: `注意：剩余迭代预算不足（约 ${remaining} 轮）。请立即收敛：优先完成当前关键步骤并给出最终总结。`,
+        });
+      }
+
       // 作用域视图取工具定义（scope 遮蔽 + 全局回退），再按 agent 白名单收窄；
       // 插件工具与 MCP 工具（mcp_ 前缀）豁免白名单（即插即用）；ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截
       const availableTools = toolView
@@ -95,6 +108,7 @@ export async function runAgentLoop(
       const tools = filterVisibleTools(availableTools, config, isPluginRegistered);
 
       const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools);
+      if (response.text) lastAssistantText = response.text;
 
       // 模型达到 token 上限导致截断 → 压缩重试（含断路器）
       if (response.finishReason === "length" && !response.hasToolCalls) {
@@ -177,6 +191,31 @@ export async function runAgentLoop(
         });
       }
 
+      // 空转强制终止：连续相同 (tool, args) 达阈值（提醒已注入过，仍未收敛）
+      if (repeatStreak(recentToolCalls) >= REPEAT_FORCE_STOP) {
+        endStep();
+        return {
+          text: `[检测到重复循环调用（${repeatStreak(recentToolCalls)} 次相同工具与参数），已强制终止]\n${lastAssistantText}`,
+          messages,
+          iterations: iterations + 1,
+          truncated: true,
+          toolCallsExecuted,
+        };
+      }
+
+      // 工具全失败终止：连续全部失败轮数达阈值
+      toolFailStreak = toolResults.length > 0 && toolResults.every((r) => !r.success) ? toolFailStreak + 1 : 0;
+      if (toolFailStreak >= TOOL_FAIL_STREAK_MAX) {
+        endStep();
+        return {
+          text: `[工具连续失败 ${TOOL_FAIL_STREAK_MAX} 轮，已提前终止]\n${lastAssistantText}`,
+          messages,
+          iterations: iterations + 1,
+          truncated: true,
+          toolCallsExecuted,
+        };
+      }
+
       consecutiveLength = 0;
       emptyResponseCount = 0;
       endStep();
@@ -212,7 +251,9 @@ export async function runAgentLoop(
 
   endStep();
   return {
-    text: "达到迭代上限",
+    text: lastAssistantText
+      ? `${lastAssistantText}\n\n[已达迭代上限 ${MAX_ITER} 轮，任务可能未完成。可继续追问，或使用 /plan 拆分为子任务]`
+      : `[已达迭代上限 ${MAX_ITER} 轮，任务可能未完成。可继续追问，或使用 /plan 拆分为子任务]`,
     messages,
     iterations,
     truncated: true,
@@ -244,6 +285,9 @@ export async function runAgentLoopStream(
   let toolCallsExecuted = 0;
   let consecutiveLength = 0;
   let emptyResponseCount = 0;
+  let budgetWarned = false;
+  let lastAssistantText = "";
+  let toolFailStreak = 0;
   const mode = config.permissions.defaultMode;
   /** 本轮最后一次主请求的 usage（completeStream onUsage 收集；压缩请求走 complete 不污染此值） */
   let lastUsage: ModelResponse["usage"] | undefined;
@@ -283,6 +327,16 @@ export async function runAgentLoopStream(
 
       // 防循环提醒：连续相同工具调用时注入提示（在模型请求前）
       maybeInjectRepeatReminder(messages, recentToolCalls, reminderStreak);
+
+      // 预算感知收尾：剩余迭代不足时注入收敛提示（每任务一次）
+      const remaining = MAX_ITER - iterations;
+      if (!budgetWarned && remaining <= BUDGET_WARN_AT) {
+        budgetWarned = true;
+        messages.push({
+          role: "system",
+          content: `注意：剩余迭代预算不足（约 ${remaining} 轮）。请立即收敛：优先完成当前关键步骤并给出最终总结。`,
+        });
+      }
 
       // 作用域视图取工具定义（scope 遮蔽 + 全局回退），再按 agent 白名单收窄；
       // 插件工具与 MCP 工具（mcp_ 前缀）豁免白名单（即插即用）；ask 模式语义保留：白名单内写工具仍可见，尝试后由 permissionCheck 拦截
@@ -339,6 +393,8 @@ export async function runAgentLoopStream(
             throw new Error(chunk.error ?? "stream error");
         }
       }
+
+      if (fullText) lastAssistantText = fullText;
 
       if (signal?.aborted) {
         endStep();
@@ -401,6 +457,31 @@ export async function runAgentLoopStream(
               content: result.success ? result.content : `Error: ${result.error}`,
               tool_call_id: result.tool_call_id,
             });
+          }
+
+          // 空转强制终止：连续相同 (tool, args) 达阈值
+          if (repeatStreak(recentToolCalls) >= REPEAT_FORCE_STOP) {
+            endStep();
+            return {
+              text: `[检测到重复循环调用（${repeatStreak(recentToolCalls)} 次相同工具与参数），已强制终止]\n${lastAssistantText}`,
+              messages,
+              iterations: iterations + 1,
+              truncated: true,
+              toolCallsExecuted,
+            };
+          }
+
+          // 工具全失败终止：连续全部失败轮数达阈值
+          toolFailStreak = toolResults.length > 0 && toolResults.every((r) => !r.success) ? toolFailStreak + 1 : 0;
+          if (toolFailStreak >= TOOL_FAIL_STREAK_MAX) {
+            endStep();
+            return {
+              text: `[工具连续失败 ${TOOL_FAIL_STREAK_MAX} 轮，已提前终止]\n${lastAssistantText}`,
+              messages,
+              iterations: iterations + 1,
+              truncated: true,
+              toolCallsExecuted,
+            };
           }
 
           endStep();
@@ -501,7 +582,9 @@ export async function runAgentLoopStream(
 
   endStep();
   return {
-    text: "达到迭代上限",
+    text: lastAssistantText
+      ? `${lastAssistantText}\n\n[已达迭代上限 ${MAX_ITER} 轮，任务可能未完成。可继续追问，或使用 /plan 拆分为子任务]`
+      : `[已达迭代上限 ${MAX_ITER} 轮，任务可能未完成。可继续追问，或使用 /plan 拆分为子任务]`,
     messages,
     iterations,
     truncated: true,
@@ -512,10 +595,29 @@ export async function runAgentLoopStream(
 /** 工具调用统一超时护栏（ms；terminal_exec 自身超时更短时先触发） */
 export const TOOL_TIMEOUT_MS = 60_000;
 
+/** 预算感知收尾：剩余迭代 ≤ 该值时注入收敛提示（每任务一次） */
+const BUDGET_WARN_AT = 5;
+/** 空转强制终止：连续相同 (tool, args) 达到该次数直接终止（提醒阈值 3 之上） */
+const REPEAT_FORCE_STOP = 6;
+/** 工具全失败终止：连续全部失败轮数达到该值提前终止 */
+const TOOL_FAIL_STREAK_MAX = 4;
 /** 防循环提醒：连续相同 (tool, args) 调用次数阈值 */
 const REPEAT_REMINDER_MIN = 3;
 /** 保留的最近工具调用记录条数 */
 const RECENT_TOOL_CALLS_MAX = 10;
+
+/** 末尾连续相同 (tool, args) 调用次数（防循环提醒与强停共用） */
+function repeatStreak(recentToolCalls: { name: string; argsKey: string }[]): number {
+  if (recentToolCalls.length === 0) return 0;
+  const last = recentToolCalls[recentToolCalls.length - 1]!;
+  let n = 0;
+  for (let i = recentToolCalls.length - 1; i >= 0; i--) {
+    const c = recentToolCalls[i]!;
+    if (c.name === last.name && c.argsKey === last.argsKey) n++;
+    else break;
+  }
+  return n;
+}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, toolName: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -538,21 +640,15 @@ function maybeInjectRepeatReminder(
   recentToolCalls: { name: string; argsKey: string }[],
   lastReminderStreakKey: { value: string },
 ): void {
-  if (recentToolCalls.length < REPEAT_REMINDER_MIN) return;
+  const streak = repeatStreak(recentToolCalls);
+  if (streak < REPEAT_REMINDER_MIN) return;
   const last = recentToolCalls[recentToolCalls.length - 1]!;
-  let suffix = 0;
-  for (let i = recentToolCalls.length - 1; i >= 0; i--) {
-    const c = recentToolCalls[i]!;
-    if (c.name === last.name && c.argsKey === last.argsKey) suffix++;
-    else break;
-  }
-  if (suffix < REPEAT_REMINDER_MIN) return;
   const streakKey = `${last.name}:${last.argsKey}`;
   if (lastReminderStreakKey.value === streakKey) return;
   lastReminderStreakKey.value = streakKey;
   messages.push({
     role: "system",
-    content: `你已连续 ${suffix} 次以相同参数调用工具 ${last.name}，结果没有变化。请停止重复调用，改用其他方式（如先读取其他文件、换个思路）或直接给出最终回答。`,
+    content: `你已连续 ${streak} 次以相同参数调用工具 ${last.name}，结果没有变化。请停止重复调用，改用其他方式（如先读取其他文件、换个思路）或直接给出最终回答。`,
   });
 }
 

@@ -29,7 +29,7 @@ systemPrompt: |
   - 使用中文
 
 modelPreference: writing
-maxIterations: 40
+maxIterations: 80
 sandbox: false
 
 tools:
