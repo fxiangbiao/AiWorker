@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.5.0-blue)
+![version](https://img.shields.io/badge/version-0.5.1-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -65,7 +65,7 @@
 
 **后台任务与定时调度**
 - **后台任务**（`/bg`）：长任务后台执行不阻塞交互，并发上限 2 自动排队；完成写独立会话 + **WebSocket 实时推送**（Web 调度 Tab 即时刷新）；后台任务 fail-closed（高危自动拒）
-- **定时调度**：`config/schedule.json` 或 `/schedule` 定义 cron 任务（5 字段标准 cron），到点自动执行；`/api/v1/schedule` 与 `/api/v1/jobs` REST 端点
+- **定时调度**：`config/schedule.json` 或 `/schedule` 定义 cron 任务（5 字段标准 cron），到点自动执行；**支持自然语言添加**（如"每天早上8点生成早报"→ 规则解析 + LLM 兜底）；`/api/v1/schedule` 与 `/api/v1/jobs` REST 端点
 
 **首次运行引导**
 - 首次启动（TUI + 未配置 API Key）自动引导：输入 Key（写 `.env` 立即生效）→ 选权限模式 → 确认目录；`/setup` 随时重配；`.env` 加载零依赖、不覆盖已有环境变量
@@ -163,7 +163,7 @@ npm run dev -- [选项]
 | `/debate <话题>` | 双专家辩论 |
 | `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
 | `/jobs [cancel <id>]` | 查看/取消后台任务 |
-| `/schedule` | 定时任务管理：`add "<cron>" "<任务>" [agentId]` / `remove <id>`（cron 5 字段） |
+| `/schedule` | 定时任务管理：`add "<cron>" "<任务>" [agentId]` / `add "<自然语言>"` / `remove <id>`（cron 5 字段） |
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |

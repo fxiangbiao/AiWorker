@@ -365,11 +365,37 @@ describe("bg / jobs / schedule 命令", () => {
     expect(writeLines.some((l) => l.includes("定时任务已添加"))).toBe(true);
 
     await find("schedule").handler(ctx, "", '/schedule add "junk" "坏任务"');
-    expect(writeLines.some((l) => l.includes("cron 表达式无效"))).toBe(true);
+    // 非 cron 首参 → 自然语言解析失败（mock 无 LLM 兜底）
+    expect(writeLines.some((l) => l.includes("无法解析调度需求"))).toBe(true);
 
     const jobs = scheduler.getJobs();
     expect(jobs).toHaveLength(1);
     await find("schedule").handler(ctx, "", `/schedule remove ${jobs[0]!.id}`);
+    expect(scheduler.getJobs()).toHaveLength(0);
+  });
+
+  it("/schedule add 支持自然语言（规则解析）", async () => {
+    const dir = makeTestDir("cli-schedule-nl");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx();
+
+    await find("schedule").handler(ctx, "", '/schedule add "每天早上8点生成早报"');
+    expect(writeLines.some((l) => l.includes("定时任务已添加"))).toBe(true);
+    const jobs = scheduler.getJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.cron).toBe("0 8 * * *");
+    expect(jobs[0]!.prompt).toBe("生成早报");
+  });
+
+  it("/schedule add 自然语言无法解析时提示", async () => {
+    const dir = makeTestDir("cli-schedule-nl2");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx();
+    // "帮我写个程序" 无时间无频率 → 规则失败；mock modelRouter 无 complete → LLM 兜底失败
+    await find("schedule").handler(ctx, "", '/schedule add "帮我写个程序"');
+    expect(writeLines.some((l) => l.includes("无法解析调度需求"))).toBe(true);
     expect(scheduler.getJobs()).toHaveLength(0);
   });
 

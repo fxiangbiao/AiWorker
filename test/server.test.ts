@@ -840,4 +840,26 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     });
     expect(resp.status).toBe(400);
   });
+
+  it("POST /schedule 支持自然语言（无 cron 字段）", async () => {
+    const add = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "每天晚上9点写日记" }),
+    });
+    expect(add.status).toBe(200);
+    const list = await (await fetch(`${base4}${API}/schedule`)).json();
+    const found = (list.jobs as Array<{ cron: string; prompt: string }>).find((j) => j.prompt === "写日记");
+    expect(found).toBeDefined();
+    expect(found!.cron).toBe("0 21 * * *");
+  });
+
+  it("POST /schedule 自然语言无法解析返回 400", async () => {
+    const resp = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "随便写点东西" }),
+    });
+    expect(resp.status).toBe(400);
+  });
 });

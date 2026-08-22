@@ -20,6 +20,7 @@ import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-
 import { eventBus } from "./server/event-bus.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
+import { parseNaturalSchedule } from "./core/nl-schedule.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -530,13 +531,24 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 400, { error: "Invalid JSON" });
         return;
       }
-      if (!sched.cron || !sched.prompt || typeof sched.cron !== "string" || typeof sched.prompt !== "string") {
+      if (!sched.prompt || typeof sched.prompt !== "string") {
         sendJSON(res, 400, { error: "Missing 'cron' or 'prompt' field" });
         return;
       }
+      // 未提供 cron → 自然语言解析（规则；失败提示手填 cron）
+      let cron = sched.cron;
+      if (!cron || !cron.trim()) {
+        const parsed = parseNaturalSchedule(sched.prompt);
+        if (!parsed) {
+          sendJSON(res, 400, { error: "无法解析调度需求，请提供 cron 表达式（如 0 8 * * *）" });
+          return;
+        }
+        cron = parsed.cron;
+        sched.prompt = parsed.prompt;
+      }
       const ok = scheduler.addJob({
         id: `sched-${Date.now().toString(36)}`,
-        cron: sched.cron,
+        cron,
         prompt: sched.prompt,
         agentId: sched.agentId ?? "default",
       });

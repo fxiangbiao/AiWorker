@@ -4,9 +4,45 @@
 
 import chalk from "chalk";
 import { jobRunner } from "../core/job-runner.js";
-import { scheduler } from "../core/scheduler.js";
+import { scheduler, nextFireAt } from "../core/scheduler.js";
+import { parseNaturalSchedule, type NaturalSchedule } from "../core/nl-schedule.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
+
+/** 是否为合法 cron 表达式（5 字段或 6 字段） */
+function looksLikeCron(s: string): boolean {
+  return /^[\d*/,\- ]+$/.test(s) && s.trim().split(/\s+/).length >= 5;
+}
+
+/** LLM 兜底：把任意自然语言调度需求解析为 cron + prompt */
+async function parseWithLLM(
+  modelRouter: { complete: (opts: { messages: { role: string; content: string }[] }) => Promise<{ text: string }> },
+  text: string,
+): Promise<NaturalSchedule | null> {
+  try {
+    const system = `你是 cron 表达式解析器。把用户的自然语言定时任务解析为 JSON，只输出 JSON：
+{"cron": "5字段cron（分 时 日 月 周）", "prompt": "任务描述（去掉时间表达）"}
+示例：每天上午9点生成日报 → {"cron":"0 9 * * *","prompt":"生成日报"}
+每30分钟检查服务 → {"cron":"*/30 * * * *","prompt":"检查服务"}
+每周一18点提醒健身 → {"cron":"0 18 * * 1","prompt":"提醒健身"}`;
+    const res = await modelRouter.complete({
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: text },
+      ],
+    });
+    const m = /{[^{}]*}/.exec(res.text);
+    if (!m) return null;
+    const parsed = JSON.parse(m[0]) as { cron?: unknown; prompt?: unknown };
+    if (typeof parsed.cron !== "string" || typeof parsed.prompt !== "string") return null;
+    const cron = parsed.cron.trim();
+    const prompt = parsed.prompt.trim();
+    if (!cron || !prompt || nextFireAt(cron) === null) return null;
+    return { cron, prompt };
+  } catch {
+    return null;
+  }
+}
 
 export const jobsCommands: CliCommand[] = [
   {
@@ -68,24 +104,56 @@ export const jobsCommands: CliCommand[] = [
   },
   {
     name: "schedule",
-    usage: "schedule [add \"<cron>\" \"<任务>\" [agentId]] [remove <id>]",
+    usage: "schedule [add \"<cron>\" \"<任务>\" [agentId] | add \"自然语言\"] [remove <id>]",
     description: "查看/管理定时任务",
-    detail: "cron 5 字段（分 时 日 月 周）；持久化 config/schedule.json",
+    detail: "支持自然语言（如\"每天早上8点生成早报\"）；cron 5 字段；持久化 config/schedule.json",
     handler: async (ctx, _arg, line) => {
       const parts = line.split(/\s+/).slice(1);
       const sub = parts[0] ?? "";
       if (sub === "add") {
-        const m = line.match(/^\/schedule\s+add\s+"([^"]+)"\s+"([^"]+)"(?:\s+(\S+))?$/);
-        if (!m) {
-          ctx.writeLine(chalk.gray('用法: /schedule add "<cron>" "<任务描述>" [agentId]'));
+        const rest = line.replace(/^\/schedule\s+add\s+/, "").trim();
+        if (!rest) {
+          ctx.writeLine(chalk.gray('用法: /schedule add "<cron>" "<任务>" [agentId]  或  /schedule add "每天早上8点生成早报"'));
           return "continue";
         }
-        const cron = m[1]!;
-        const prompt = m[2]!;
-        const agentId = m[3] ?? "default";
-        const ok = scheduler.addJob({ id: `sched-${Date.now().toString(36)}`, cron, prompt, agentId });
+        let nl: string;
+        let agentId = "default";
+        // 旧格式："cron" "任务" [agentId]
+        const legacy = rest.match(/^"([^"]+)"\s+"([^"]+)"(?:\s+(\S+))?$/);
+        if (legacy && looksLikeCron(legacy[1]!)) {
+          const ok = scheduler.addJob({
+            id: `sched-${Date.now().toString(36)}`,
+            cron: legacy[1]!,
+            prompt: legacy[2]!,
+            agentId: legacy[3] ?? "default",
+          });
+          ctx.writeLine(
+            ok ? chalk.green(`✓ 定时任务已添加: ${legacy[1]} → ${legacy[2]!.slice(0, 40)}`) : chalk.red(`✗ cron 表达式无效: ${legacy[1]}`),
+          );
+          return "continue";
+        }
+        if (legacy) {
+          nl = `${legacy[1]} ${legacy[2]}`;
+          agentId = legacy[3] ?? "default";
+        } else {
+          nl = rest.replace(/^"|"$/g, "").trim();
+        }
+        // 自然语言：规则解析 → LLM 兜底
+        let parsed = parseNaturalSchedule(nl);
+        if (!parsed) {
+          ctx.writeLine(chalk.gray("规则解析失败，尝试模型解析…"));
+          parsed = await parseWithLLM(ctx.modelRouter as never, nl);
+        }
+        if (!parsed) {
+          ctx.writeLine(chalk.red(`✗ 无法解析调度需求: ${nl}`));
+          ctx.writeLine(chalk.gray('  请直接填写 cron，如 /schedule add "0 8 * * *" "任务"'));
+          return "continue";
+        }
+        const ok = scheduler.addJob({ id: `sched-${Date.now().toString(36)}`, cron: parsed.cron, prompt: parsed.prompt, agentId });
         ctx.writeLine(
-          ok ? chalk.green(`✓ 定时任务已添加: ${cron} → ${prompt.slice(0, 40)}`) : chalk.red(`✗ cron 表达式无效: ${cron}`),
+          ok
+            ? chalk.green(`✓ 定时任务已添加: ${parsed.cron} → ${parsed.prompt.slice(0, 40)}`)
+            : chalk.red(`✗ cron 表达式无效: ${parsed.cron}`),
         );
         return "continue";
       }

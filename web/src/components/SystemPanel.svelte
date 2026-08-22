@@ -87,6 +87,7 @@
   let jobList = $state<JobCard[]>([]);
   let newCron = $state("0 8 * * *");
   let newPrompt = $state("");
+  let newNlPrompt = $state("");
   let newAgent = $state("default");
   let schedMsg = $state("");
 
@@ -190,17 +191,25 @@
   }
 
   function addSchedule() {
-    if (!newPrompt.trim()) { schedMsg = "请输入任务描述"; return; }
+    const nl = newNlPrompt.trim();
+    const prompt = newPrompt.trim();
+    if (!nl && !prompt) { schedMsg = "请输入任务描述（自然语言或 cron+任务）"; return; }
     schedMsg = "";
     fetch(`${API}/schedule`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cron: newCron.trim(), prompt: newPrompt.trim(), agentId: newAgent.trim() || "default" }),
+      // 自然语言优先（后端解析为 cron）；否则用 cron + 任务
+      body: JSON.stringify(
+        nl
+          ? { prompt: nl, agentId: newAgent.trim() || "default" }
+          : { cron: newCron.trim(), prompt, agentId: newAgent.trim() || "default" },
+      ),
     })
       .then((r) => r.json())
       .then((d) => {
         if (d.error) { schedMsg = d.error; return; }
         newPrompt = "";
+        newNlPrompt = "";
         loadSchedule();
       })
       .catch(() => { schedMsg = "添加失败"; });
@@ -398,10 +407,14 @@
         </div>
       {/if}
       <div class="sp-sched-form">
-        <input class="sp-sched-input" bind:value={newCron} placeholder="cron 5 字段，如 0 8 * * *" />
+        <input class="sp-sched-input" bind:value={newNlPrompt} placeholder="自然语言，如：每天早上8点生成早报" />
         <input class="sp-sched-input sp-sched-agent" bind:value={newAgent} placeholder="专家" />
-        <input class="sp-sched-input" bind:value={newPrompt} placeholder="任务描述" />
         <button class="sp-sched-btn" onclick={addSchedule}>添加定时任务</button>
+      </div>
+      <div class="sp-sched-form sp-sched-alt">
+        <span class="sp-sched-hint">或直接填 cron：</span>
+        <input class="sp-sched-input" bind:value={newCron} placeholder="cron 5 字段，如 0 8 * * *" />
+        <input class="sp-sched-input" bind:value={newPrompt} placeholder="任务描述" />
       </div>
       {#if schedMsg}
         <div class="sp-mcp-error">{schedMsg}</div>
@@ -624,6 +637,8 @@
   .sp-mcp-error { font-size: 11px; color: var(--error); margin-top: 4px; word-break: break-word; }
   .sp-warn { font-size: 11px; color: #d97706; margin-top: 4px; word-break: break-word; }
   .sp-sched-form { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .sp-sched-alt { margin-top: 6px; }
+  .sp-sched-hint { font-size: 11px; color: var(--dim); }
   .sp-sched-input { font-size: 11px; font-family: var(--font-mono); padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); }
   .sp-sched-agent { font-family: var(--font-ui); }
   .sp-sched-btn { padding: 6px 10px; background: var(--primary); color: #fff; border: none; border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; }
