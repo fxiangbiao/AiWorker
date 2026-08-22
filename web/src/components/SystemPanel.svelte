@@ -492,7 +492,7 @@
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}
-      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入 .aw</button></div>
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if mcpServers.length === 0}
         <div class="sp-empty">暂无 MCP 服务器</div>
       {:else}
@@ -535,7 +535,7 @@
         </div>
       {/if}
     {:else if tab === "plugins"}
-      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入 .aw</button></div>
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if pluginList.length === 0}
         <div class="sp-empty">暂无插件（config/plugins/）</div>
       {:else}
@@ -545,7 +545,7 @@
               <div class="sp-mcp-head">
                 <span class="sp-mcp-name">{p.name}</span>
                 <span class="sp-mcp-right">
-                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("plugin", p.name); }}>导出</button>
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("plugin", p.name); }}>导出 .aw</button>
                   {#if p.version}
                     <span class="sp-card-ver">v{p.version}</span>
                   {/if}
@@ -680,7 +680,7 @@
         </div>
       {/if}
     {:else}
-      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入 .aw</button></div>
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if skillList.length === 0}
         <div class="sp-empty">暂无技能</div>
       {:else if detail}
