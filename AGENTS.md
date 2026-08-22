@@ -51,7 +51,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `tool-registry.ts` — 工具注册 + 可用性检查；**作用域视图**：`getScope(scopeId)` 返回 `ToolScopeView`（scope 注册 + 全局回退，同名遮蔽全局；agent-loop 传 `toolScope: agentId`，模型可见性与执行解析共用同一 view）；agent 可见性白名单（`config.tools` 非空时仅保留白名单；`mcp_` 前缀与插件注册工具豁免）
 - `plugin-manager.ts` — 轻量插件契约（详见 README「插件开发」）：`config/plugins/<name>/` 默认导出 `setup(ctx)`；fail-soft + 幂等；**同名冲突警告**（记录到 `PluginInfo.warnings`）；插件工具默认全局可见，`{scope}` 注册可限定专家
 - `zip.ts` — **零依赖 zip 读写**（.aw 包用）：`parseZip`（EOCD + Central Directory + Local Headers，deflateRaw/store）+ `readZipEntry`/`readZipFile` + `packZip`（导出打包，压缩后更大则 store，与 scripts/pack-aw.mjs 结构一致）
-- `package-installer.ts` — **.aw 资产包安装/导出**：manifest（formatVersion/type/name 白名单/semver/minAppVersion）校验；三类型路由 **plugin→config/plugins/（入口探测+回滚）、skill→skills/（SKILL.md）、mcp→config/mcp.json 合并（冲突需 force）**；解压路径穿越防护（`relative` 校验）；`exportPackage(type,name)` 打包 .aw；`listInstalled`/`listExportable`；单例 `packageInstaller`（pluginsDir/skillsDir/mcpConfigPath）
+- `package-installer.ts` — **.aw 资产包安装/导出 + 裸格式**：manifest（formatVersion/type/name 白名单/semver/minAppVersion）校验；三类型路由 **plugin→config/plugins/（入口探测+回滚）、skill→skills/（SKILL.md）、mcp→config/mcp.json 合并（冲突需 force）**；解压路径穿越防护（`relative` 校验）；`installAny(path)` 按扩展名/目录自动识别（.aw / .md 技能 / .json MCP（文件名作服务器名）/ 插件目录）；`exportPackage(type,name)` 打包 .aw、`exportRaw(type,name)` 裸导出（skill .md / mcp .json）、`copyPluginDir(name,dest)` 插件目录复制；`listInstalled`/`listExportable`；导出 `parseSkillMeta`（frontmatter）；单例 `packageInstaller`（pluginsDir/skillsDir/mcpConfigPath）
 - `job-runner.ts` — **后台任务**：`submit(agentId, prompt)` 立即返回 jobId；状态机 queued→running→done/failed；**并发上限 2**（FIFO 排队）；后台不注册 ask/confirm 通道（fail-closed 自动拒高危）、不写 TUI；结果写独立会话 + 审计（`job:done|failed`）+ `eventBus.broadcast({type:"job/done"})`；`cancel` 仅排队中；`clear()` 测试/重置用；`init(deps)` 由 index.ts 在 agents 创建后调用
 - `scheduler.ts` — **定时调度**：`config/schedule.json`（BOM 容错）；**cron-parser v5 = 6 字段（秒 分 时 日 月 周），5 字段标准 cron 自动补秒前缀**（`normalizeCron`）；`nextFireAt` 无效返回 null；到点 `submit` + 重新调度；`addJob`/`removeJob` 写回配置；`start`/`stop`；超长延时（>24.8 天）分段 setTimeout
 - `nl-schedule.ts` — **自然语言调度解析**（规则优先）：每 N 分钟/小时、每天/每晚、每周X（含"每周一到周五"区间）、每月X号、每工作日/每周末；时间词（凌晨~午夜，下午/晚上 hour<12 +12）+ 整点/半点/X点X分/X:XX；**无时间无频率返回 null**（LLM 兜底在命令层）；任务描述按**原始索引区间合并剥离**（防"每晚10点"词重叠）
@@ -124,7 +124,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - 工具与插件：`tools.test.ts` / `spill.test.ts` / `ask-channel.test.ts` / `terminal-session.test.ts`（真实 spawn cmd）/ `plugin-manager.test.ts`（临时目录插件加载：setup/工具/hook/config/scope/fail-soft/幂等/冲突警告）
 - 安全与 Hook：`approval-service.test.ts`（决策矩阵 + fail-closed）/ `hooks.test.ts`（生命周期 + fail-soft）/ `sandbox.test.ts`（策略加载/BOM/cwd 越界/denyCommands/sanitizeEnv/接入 terminal_exec）
 - 调度与引导：`job-runner.test.ts`（状态机/并发排队/失败/取消/WS 广播）/ `scheduler.test.ts`（nextFireAt/加载/增删持久化/fake timers 触发）/ `nl-schedule.test.ts`（自然语言→cron：频率/时间词/区间/剥离/无效 null）/ `env-loader.test.ts`（解析/注释/引号/不覆盖）/ `onboarding.test.ts`（触发/写文件/跳过/非法模式回退）
-- 资产包：`package-installer.test.ts`（zip round-trip / manifest 校验 / 三类型安装含 mcp 冲突合并 / 路径穿越 / 回滚 / exportPackage round-trip / listInstalled）
+- 资产包：`package-installer.test.ts`（zip round-trip / manifest 校验 / 三类型安装含 mcp 冲突合并 / 路径穿越 / 回滚 / exportPackage round-trip / **裸格式 installAny（.md/.json/目录）+ exportRaw + copyPluginDir** / listInstalled）
 - 其余：`memory.test.ts` / `mcp.test.ts` / `team.test.ts` / `llm-adapter.test.ts` / `skill-evolution.test.ts` / `cli-commands.test.ts` / `screen.test.ts` / `tui.test.ts` / `streaming-terminal.test.ts`
 - vitest 配置在 `vitest.config.ts`（include `test/**/*.test.ts`）；CI 在 `.github/workflows/ci.yml`（windows+ubuntu 双平台，`npm ci` + lint + build + test + web:build）
 
@@ -137,8 +137,8 @@ npm run web:build      # Web UI 构建 → web/dist/
 /bg <任务>               提交后台任务（不阻塞交互）
 /jobs [cancel <id>]     查看/取消后台任务
 /schedule               定时任务管理（add 支持自然语言如"每天早上8点生成早报"/remove/list，cron 5 字段）
-/install <path> [-f]    安装 .aw 包（plugin/skill/mcp 按 manifest 路由，-f 覆盖）
-/pkg export <类型> <名> 打包导出 .aw；/pkg list 查看可导出与已安装
+/install <path> [-f]    安装 .aw 包或裸格式（.md 技能 / .json MCP / 插件目录，自动识别，-f 覆盖）
+/pkg export <类型> <名> 打包导出 .aw；--raw 输出裸格式（skill .md / mcp .json / plugin 目录）；/pkg list
 /setup                  重新运行首次引导（API Key/权限模式）
 /skill <名称>            手动激活技能
 /skills                  查看全部技能（分组+描述）

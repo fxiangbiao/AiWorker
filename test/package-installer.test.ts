@@ -268,6 +268,103 @@ describe("PackageInstaller.install", () => {
   });
 });
 
+describe("PackageInstaller 裸格式（非 .aw）", () => {
+  it("installAny 识别 .md 技能并写入 frontmatter 元信息", () => {
+    const mdPath = join(testRoot, "raw-skill.md");
+    writeFileSync(mdPath, "---\nname: raw-skill\nversion: 2.1.0\nexpert: common\n---\n# 裸技能", "utf-8");
+    const r = installer.installAny(mdPath);
+    expect(r.success).toBe(true);
+    expect(r.type).toBe("skill");
+    expect(r.name).toBe("raw-skill");
+    expect(existsSync(join(testRoot, "skills", "raw-skill", "SKILL.md"))).toBe(true);
+    // 附带生成 manifest.json（listInstalled 可识别）
+    expect(existsSync(join(testRoot, "skills", "raw-skill", "manifest.json"))).toBe(true);
+  });
+
+  it("installAny 识别 .json MCP 配置（文件名作服务器名）", () => {
+    const mcpConfigPath = join(testRoot, "config", "mcp.json");
+    mkdirSync(dirname(mcpConfigPath), { recursive: true });
+    writeFileSync(mcpConfigPath, JSON.stringify({ servers: {} }), "utf-8");
+    const rawInstaller = new PackageInstaller({
+      pluginsDir: join(testRoot, "plugins"),
+      skillsDir: join(testRoot, "skills"),
+      mcpConfigPath,
+    });
+    const jsonPath = join(testRoot, "raw-mcp-server.json");
+    writeFileSync(jsonPath, JSON.stringify({ transport: "http", url: "http://localhost:9000" }), "utf-8");
+    const r = rawInstaller.installAny(jsonPath);
+    expect(r.success).toBe(true);
+    expect(r.type).toBe("mcp");
+    expect(r.name).toBe("raw-mcp-server");
+    const cfg = JSON.parse(readFileSync(mcpConfigPath, "utf-8")) as { servers: Record<string, unknown> };
+    expect(cfg.servers["raw-mcp-server"]).toMatchObject({ transport: "http" });
+  });
+
+  it("installAny 识别插件目录（入口探测 + manifest）", () => {
+    const srcDir = join(testRoot, "src-plugin");
+    mkdirSync(srcDir, { recursive: true });
+    writeFileSync(join(srcDir, "plugin.ts"), "export default async (c) => {};", "utf-8");
+    writeFileSync(join(srcDir, "config.json"), '{"k":1}', "utf-8");
+    const r = installer.installAny(srcDir);
+    expect(r.success).toBe(true);
+    expect(r.type).toBe("plugin");
+    expect(existsSync(join(testRoot, "plugins", "src-plugin", "plugin.ts"))).toBe(true);
+    expect(existsSync(join(testRoot, "plugins", "src-plugin", "manifest.json"))).toBe(true);
+  });
+
+  it("installAny 插件目录缺入口拒绝", () => {
+    const srcDir = join(testRoot, "bad-plugin");
+    mkdirSync(srcDir, { recursive: true });
+    writeFileSync(join(srcDir, "readme.txt"), "no entry", "utf-8");
+    const r = installer.installAny(srcDir);
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/入口/);
+  });
+
+  it("installAny 未知格式拒绝", () => {
+    const txt = join(testRoot, "x.txt");
+    writeFileSync(txt, "hi", "utf-8");
+    const r = installer.installAny(txt);
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/不支持的格式/);
+  });
+
+  it("exportRaw 技能导出 .md / MCP 导出 .json", () => {
+    // 先装一个技能再裸导出
+    const mdPath = join(testRoot, "round-skill.md");
+    writeFileSync(mdPath, "---\nname: round-skill\n---\n# 往返", "utf-8");
+    installer.installAny(mdPath);
+    const out = installer.exportRaw("skill", "round-skill");
+    expect(out).not.toBeNull();
+    expect(out!.filename).toBe("round-skill.md");
+    expect(out!.data.toString("utf-8")).toContain("# 往返");
+
+    const mcpConfigPath = join(testRoot, "config", "mcp.json");
+    mkdirSync(dirname(mcpConfigPath), { recursive: true });
+    writeFileSync(mcpConfigPath, JSON.stringify({ servers: { "raw-mcp-server": { transport: "http", url: "x" } } }), "utf-8");
+    const rawInstaller = new PackageInstaller({
+      pluginsDir: join(testRoot, "plugins"),
+      skillsDir: join(testRoot, "skills"),
+      mcpConfigPath,
+    });
+    const out2 = rawInstaller.exportRaw("mcp", "raw-mcp-server");
+    expect(out2).not.toBeNull();
+    expect(out2!.filename).toBe("raw-mcp-server.json");
+    expect(JSON.parse(out2!.data.toString("utf-8"))).toMatchObject({ transport: "http" });
+  });
+
+  it("copyPluginDir 复制插件目录", () => {
+    const srcDir = join(testRoot, "cp-plugin");
+    mkdirSync(srcDir, { recursive: true });
+    writeFileSync(join(srcDir, "plugin.ts"), "export default async (c) => {};", "utf-8");
+    installer.installAny(srcDir);
+    const dest = join(testRoot, "exported-plugin");
+    const out = installer.copyPluginDir("cp-plugin", dest);
+    expect(out).toBe(dest);
+    expect(existsSync(join(dest, "plugin.ts"))).toBe(true);
+  });
+});
+
 describe("PackageInstaller MCP 支持", () => {
   const mcpManifest = Buffer.from(
     JSON.stringify({ formatVersion: 1, type: "mcp", name: "test-mcp", version: "1.0.0" }),

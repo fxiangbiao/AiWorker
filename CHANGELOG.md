@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 (2026-08-22)
+
+### 裸格式导入导出（除 .aw 外）
+- **导入**（`/install <路径>` 自动识别 + Web 导入按钮接受 `.md`/`.json`）：
+  - `SKILL.md` → 解析 frontmatter 装到 `skills/<name>/`（附 manifest.json）
+  - MCP 配置 `.json` → 文件名作服务器名合并 `config/mcp.json`
+  - 插件目录 → 入口探测后拷贝到 `config/plugins/<name>/`
+- **导出**（`/pkg export <类型> <名称> --raw` + Web「导出 .md/.json」按钮）：技能 → 裸 `SKILL.md`；MCP → 裸 server 配置 JSON；插件 → 复制目录（CLI）
+- HTTP：`/packages/peek` 与 `/packages/import` 支持裸格式（`filename` 分发）；`/packages/export?raw=1`
+- 测试 +7（installer 裸格式 7 例 + cli/server 裸格式用例）
+
 ## 0.6.0 (2026-08-22)
 
 ### .aw 资产包导入导出（技能 / MCP / 插件）

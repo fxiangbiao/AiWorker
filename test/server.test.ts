@@ -868,6 +868,37 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     expect(missing.status).toBe(404);
     const badType = await fetch(`${base4}${API}/packages/export?type=xxx&name=a`);
     expect(badType.status).toBe(400);
+    // raw 模式：插件不支持（需 CLI），skill/mcp 返回对应类型
+    const rawPlugin = await fetch(`${base4}${API}/packages/export?type=plugin&name=x&raw=1`);
+    expect(rawPlugin.status).toBe(400);
+  });
+
+  it("POST /packages/peek 支持裸 SKILL.md（.md）与 MCP 配置（.json）", async () => {
+    const md = await fetch(`${base4}${API}/packages/peek`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data: Buffer.from("---\nname: peek-skill\nexpert: coding\n---\n# 技能").toString("base64"),
+        filename: "peek-skill.md",
+      }),
+    });
+    expect(md.status).toBe(200);
+    const mdData = (await md.json()) as { type?: string; name?: string };
+    expect(mdData.type).toBe("skill");
+    expect(mdData.name).toBe("peek-skill");
+
+    const j = await fetch(`${base4}${API}/packages/peek`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data: Buffer.from(JSON.stringify({ transport: "http", url: "x" })).toString("base64"),
+        filename: "peek-server.json",
+      }),
+    });
+    expect(j.status).toBe(200);
+    const jData = (await j.json()) as { type?: string; name?: string };
+    expect(jData.type).toBe("mcp");
+    expect(jData.name).toBe("peek-server");
   });
 
   it("POST /packages/import 缺 data 返回 400；坏 zip 安装失败", async () => {

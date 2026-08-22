@@ -8,7 +8,7 @@
  */
 
 import { mkdirSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
-import { resolve, normalize, relative, sep, dirname } from "node:path";
+import { resolve, normalize, relative, sep, dirname, basename } from "node:path";
 import { parseZip, readZipFile, readZipEntry, packZip, type ZipFileInput } from "./zip.js";
 import { mcpManager } from "../mcp/mcp-manager.js";
 
@@ -71,7 +71,7 @@ function isValidName(name: string): boolean {
 }
 
 /** 解析 SKILL.md frontmatter 的 name/version/description */
-function parseSkillMeta(raw: string): { name?: string; version?: string; description?: string } {
+export function parseSkillMeta(raw: string): { name?: string; version?: string; description?: string } {
   const m = raw.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return {};
   const out: { name?: string; version?: string; description?: string } = {};
@@ -149,6 +149,142 @@ export class PackageInstaller {
       }
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, entry.data);
+    }
+  }
+
+  /** 按输入类型自动识别安装：.aw 标准包 / .md 技能 / .json MCP 配置 / 插件目录 */
+  installAny(inputPath: string, opts?: { force?: boolean }): InstallResult {
+    const lower = inputPath.toLowerCase();
+    if (lower.endsWith(AW_EXTENSION)) return this.install(inputPath, opts);
+    if (lower.endsWith(".md")) return this.installSkillRaw(inputPath, opts);
+    if (lower.endsWith(".json")) return this.installMcpRaw(inputPath, opts);
+    if (statIsDir(inputPath)) return this.installPluginDir(inputPath, opts);
+    return {
+      success: false,
+      type: "unknown",
+      name: "unknown",
+      version: "0",
+      targetDir: "",
+      error: `不支持的格式: ${inputPath}（支持 .aw / .md / .json / 插件目录）`,
+    };
+  }
+
+  /** 裸 SKILL.md 导入：解析 frontmatter → 写 skills/<name>/SKILL.md + manifest.json */
+  private installSkillRaw(mdPath: string, opts?: { force?: boolean }): InstallResult {
+    const fail = (error: string): InstallResult => ({
+      success: false,
+      type: "skill",
+      name: "unknown",
+      version: "0",
+      targetDir: "",
+      error,
+    });
+    try {
+      const raw = readFileSync(mdPath, "utf-8");
+      const meta = parseSkillMeta(raw);
+      const name = meta.name;
+      if (!name || !isValidName(name)) {
+        return fail("SKILL.md frontmatter 缺少合法 name");
+      }
+      const target = resolve(this.opts.skillsDir, name);
+      if (existsSync(target) && !opts?.force) {
+        return { ...fail(`技能 ${name} 已存在，使用 force 覆盖`), name, targetDir: target };
+      }
+      mkdirSync(target, { recursive: true });
+      writeFileSync(resolve(target, "SKILL.md"), raw, "utf-8");
+      writeFileSync(
+        resolve(target, MANIFEST_FILE),
+        JSON.stringify(
+          {
+            formatVersion: AW_FORMAT_VERSION,
+            type: "skill",
+            name,
+            version: meta.version ?? "1.0.0",
+            description: meta.description,
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      return { success: true, type: "skill", name, version: meta.version ?? "1.0.0", targetDir: target };
+    } catch (err) {
+      return fail(`技能导入失败: ${(err as Error).message}`);
+    }
+  }
+
+  /** 裸 MCP 配置 JSON 导入：文件名为 server 名 → 合并 config/mcp.json */
+  private installMcpRaw(jsonPath: string, opts?: { force?: boolean }): InstallResult {
+    const fail = (error: string): InstallResult => ({
+      success: false,
+      type: "mcp",
+      name: "unknown",
+      version: "0",
+      targetDir: "",
+      error,
+    });
+    try {
+      const base = basename(jsonPath).replace(/\.json$/i, "");
+      if (!isValidName(base)) return fail(`MCP 服务器名非法: ${base}（用文件名命名，如 my-server.json）`);
+      let entry: unknown;
+      try {
+        entry = JSON.parse(readFileSync(jsonPath, "utf-8").replace(/^\uFEFF/, ""));
+      } catch {
+        return fail("JSON 内容不是合法配置");
+      }
+      const cfgPath = this.opts.mcpConfigPath ?? resolve(process.cwd(), "config", "mcp.json");
+      const cfg = existsSync(cfgPath)
+        ? (JSON.parse(readFileSync(cfgPath, "utf-8").replace(/^\uFEFF/, "")) as { servers?: Record<string, unknown> })
+        : { servers: {} as Record<string, unknown> };
+      if (!cfg.servers) cfg.servers = {};
+      if (cfg.servers[base] && !opts?.force) {
+        return { ...fail(`MCP 服务器 ${base} 已存在，使用 force 覆盖`), name: base, targetDir: cfgPath };
+      }
+      cfg.servers[base] = entry;
+      mkdirSync(dirname(cfgPath), { recursive: true });
+      writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+      void mcpManager.loadConfig(cfgPath).catch(() => {});
+      return { success: true, type: "mcp", name: base, version: "1.0.0", targetDir: cfgPath };
+    } catch (err) {
+      return fail(`MCP 导入失败: ${(err as Error).message}`);
+    }
+  }
+
+  /** 插件目录导入：入口探测 → 拷贝到 config/plugins/<name>/ + manifest.json */
+  private installPluginDir(dir: string, opts?: { force?: boolean }): InstallResult {
+    const name = basename(dir);
+    const fail = (error: string): InstallResult => ({
+      success: false,
+      type: "plugin",
+      name,
+      version: "0",
+      targetDir: "",
+      error,
+    });
+    try {
+      if (!isValidName(name)) return fail(`插件目录名非法: ${name}`);
+      const entryCandidates = ["plugin.ts", "plugin.js", "index.ts", "index.js"];
+      const hasEntry = entryCandidates.some((f) => existsSync(resolve(dir, f)));
+      if (!hasEntry) return fail("插件目录缺少入口（plugin.ts|js 或 index.ts|js）");
+      const target = resolve(this.opts.pluginsDir, name);
+      if (existsSync(target) && !opts?.force) {
+        return { ...fail(`插件 ${name} 已存在，使用 force 覆盖`), targetDir: target };
+      }
+      rmSync(target, { recursive: true, force: true });
+      mkdirSync(target, { recursive: true });
+      for (const f of collectDir(dir)) {
+        const dest = resolve(target, f.rel);
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, readFileSync(f.full));
+      }
+      writeFileSync(
+        resolve(target, MANIFEST_FILE),
+        JSON.stringify({ formatVersion: AW_FORMAT_VERSION, type: "plugin", name, version: "1.0.0" }, null, 2),
+        "utf-8",
+      );
+      return { success: true, type: "plugin", name, version: "1.0.0", targetDir: target };
+    } catch (err) {
+      return fail(`插件导入失败: ${(err as Error).message}`);
     }
   }
 
@@ -298,6 +434,47 @@ export class PackageInstaller {
         files.push({ name: "mcp.json", data: Buffer.from(JSON.stringify(entry, null, 2), "utf-8") });
       }
       return { data: packZip(files), manifest };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 导出裸格式（单文件）：skill → .md、mcp → .json；plugin 返回 null（用 copyPluginDir） */
+  exportRaw(type: "skill" | "mcp", name: string): { data: Buffer; filename: string; ext: string } | null {
+    try {
+      if (type === "skill") {
+        const dir = this.findSkillDir(name);
+        if (!dir) return null;
+        return { data: Buffer.from(readFileSync(resolve(dir, "SKILL.md"), "utf-8"), "utf-8"), filename: `${name}.md`, ext: ".md" };
+      }
+      // mcp
+      const cfgPath = this.opts.mcpConfigPath ?? resolve(process.cwd(), "config", "mcp.json");
+      if (!existsSync(cfgPath)) return null;
+      const cfg = JSON.parse(readFileSync(cfgPath, "utf-8").replace(/^\uFEFF/, "")) as {
+        servers?: Record<string, unknown>;
+      };
+      const entry = cfg.servers?.[name];
+      if (!entry) return null;
+      return { data: Buffer.from(JSON.stringify(entry, null, 2) + "\n", "utf-8"), filename: `${name}.json`, ext: ".json" };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 插件裸导出：复制 config/plugins/<name>/ 目录到目标路径（返回目标目录） */
+  copyPluginDir(name: string, destDir: string): string | null {
+    try {
+      const src = resolve(this.opts.pluginsDir, name);
+      if (!existsSync(src) || !statIsDir(src)) return null;
+      mkdirSync(destDir, { recursive: true });
+      rmSync(destDir, { recursive: true, force: true });
+      mkdirSync(destDir, { recursive: true });
+      for (const f of collectDir(src)) {
+        const dest = resolve(destDir, f.rel);
+        mkdirSync(dirname(dest), { recursive: true });
+        writeFileSync(dest, readFileSync(f.full));
+      }
+      return destDir;
     } catch {
       return null;
     }

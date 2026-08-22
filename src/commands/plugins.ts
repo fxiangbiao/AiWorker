@@ -13,32 +13,27 @@ import type { CliCommand } from "./types.js";
 export const pluginsCommands: CliCommand[] = [
   {
     name: "install",
-    usage: "install <path> [-f]",
-    description: "安装 .aw 插件/技能/MCP 包",
-    detail: "解压 .aw 包（按 manifest.type 路由）：plugin→config/plugins/，skill→skills/，mcp→config/mcp.json；-f 覆盖安装",
+    usage: "install <路径|目录> [-f]",
+    description: "安装 .aw 包或裸格式（.md 技能 / .json MCP / 插件目录）",
+    detail: ".aw 按 manifest 路由；裸格式自动识别：.md→技能，.json→MCP（文件名作服务器名），目录→插件；-f 覆盖",
     handler: async (ctx, arg) => {
       const parts = arg.trim().split(/\s+/).filter(Boolean);
       const force = parts.includes("-f") || parts.includes("--force");
       const pkgPath = parts.find((p) => p !== "-f" && p !== "--force");
       if (!pkgPath) {
-        ctx.writeLine(chalk.gray("用法: /install <path> [-f]  例: /install ./git-tools-v1.3.aw"));
-        ctx.printStatus();
-        return "continue";
-      }
-      if (!pkgPath.toLowerCase().endsWith(".aw")) {
-        ctx.writeLine(chalk.yellow(`⚠ "${pkgPath}" 不是 .aw 包（后缀必须为 .aw）`));
+        ctx.writeLine(chalk.gray("用法: /install <路径> [-f]  例: /install ./git-tools-1.3.aw | ./SKILL.md | ./my-mcp.json | ./plugin-dir"));
         ctx.printStatus();
         return "continue";
       }
       const abs = existsSync(pkgPath) ? pkgPath : resolvePath(ctx.workingDir, pkgPath);
       if (!existsSync(abs)) {
-        ctx.writeLine(chalk.red(`✗ 文件不存在: ${abs}`));
+        ctx.writeLine(chalk.red(`✗ 路径不存在: ${abs}`));
         ctx.printStatus();
         return "continue";
       }
 
-      ctx.writeLine(chalk.cyan(`\n📦 安装包: ${abs}`));
-      const result = packageInstaller.install(abs, { force });
+      ctx.writeLine(chalk.cyan(`\n📦 安装: ${abs}`));
+      const result = packageInstaller.installAny(abs, { force });
       if (result.success) {
         ctx.writeLine(chalk.green(`✓ 安装成功 [${result.type}] ${result.name} v${result.version}`));
         if (result.type === "plugin") {

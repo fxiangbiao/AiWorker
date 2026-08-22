@@ -267,23 +267,24 @@
     });
   }
 
-  /** 选择 .aw 文件：先 peek manifest → 安全确认 → 导入 */
+  /** 选择文件导入：.aw 包 / 裸 SKILL.md / 裸 MCP 配置（先 peek → 安全确认 → 导入） */
   function importAsset() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".aw,application/octet-stream";
+    input.accept = ".aw,.md,.json,application/octet-stream,text/markdown";
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
+      const filename = file.name;
       const data = await fileToBase64(file);
       const peekResp = await fetch(`${API}/packages/peek`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data }),
+        body: JSON.stringify({ data, filename }),
       });
       const peek = (await peekResp.json()) as { ok: boolean; type?: string; name?: string; version?: string; error?: string };
       if (!peekResp.ok) {
-        alert(`不是有效的 .aw 包: ${peek.error ?? peekResp.status}`);
+        alert(`无法识别包: ${peek.error ?? peekResp.status}`);
         return;
       }
       // 安全确认：插件执行代码 / MCP 启动进程
@@ -294,7 +295,7 @@
       let resp = await fetch(`${API}/packages/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ data }),
+        body: JSON.stringify({ data, filename }),
       });
       if (!resp.ok) {
         const r = (await resp.json()) as { error?: string; success?: boolean };
@@ -303,7 +304,7 @@
             resp = await fetch(`${API}/packages/import`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ data, force: true }),
+              body: JSON.stringify({ data, filename, force: true }),
             });
           } else {
             return;
@@ -321,6 +322,23 @@
       }
     };
     input.click();
+  }
+
+  /** 导出裸格式（技能 .md / MCP .json） */
+  async function exportRawAsset(type: "skill" | "mcp", name: string) {
+    try {
+      const resp = await fetch(`${API}/packages/export?type=${type}&name=${encodeURIComponent(name)}&raw=1`);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = type === "skill" ? `${name}.md` : `${name}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 忽略 */
+    }
   }
 
   function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace") {
@@ -405,7 +423,8 @@
               <div class="sp-mcp-head" onclick={() => (mcpExpanded = mcpExpanded === s.name ? null : s.name)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (mcpExpanded = mcpExpanded === s.name ? null : s.name)}>
                 <span class="sp-mcp-name">{s.name}</span>
                 <span class="sp-mcp-right">
-                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("mcp", s.name); }}>导出</button>
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportRawAsset("mcp", s.name); }}>导出 .json</button>
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("mcp", s.name); }}>导出 .aw</button>
                   <span class="sp-dot" class:on={s.connected} class:off={!s.connected}>
                     {s.connected ? "已连接" : mcpStateLabel[s.state || "disconnected"] || "未连接"}
                   </span>
@@ -544,7 +563,8 @@
           <div class="sp-detail-back" onclick={() => (detail = null)}>&#8592; 返回技能列表</div>
           <div class="sp-detail-name">
             {detail.name} <span class="sp-detail-ver">v{detail.version}</span>
-            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", detail.name)}>导出</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportRawAsset("skill", detail.name)}>导出 .md</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", detail.name)}>导出 .aw</button>
           </div>
           <div class="sp-detail-expert">{detail.expert}</div>
           {#if detail.description}

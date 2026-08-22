@@ -5,7 +5,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { resolve, dirname, relative, isAbsolute } from "node:path";
+import { resolve, dirname, relative, isAbsolute, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -21,7 +21,7 @@ import { eventBus } from "./server/event-bus.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
-import { packageInstaller } from "./core/package-installer.js";
+import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -473,13 +473,32 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    // ─── .aw 资产包导出/导入/列表 ───
+    // ─── .aw 资产包导出/导入/列表（含裸格式） ───
     if (url.startsWith(apiUrl("/packages/export")) && req.method === "GET") {
       const u = new URL(req.url ?? "", "http://localhost");
       const type = u.searchParams.get("type") ?? "";
       const name = u.searchParams.get("name") ?? "";
+      const raw = u.searchParams.get("raw") === "1";
       if (!["skill", "mcp", "plugin"].includes(type) || !name) {
         sendJSON(res, 400, { error: "Missing type/name" });
+        return;
+      }
+      if (raw) {
+        if (type === "plugin") {
+          sendJSON(res, 400, { error: "插件裸导出请用 CLI: /pkg export plugin <名称> <目录> --raw" });
+          return;
+        }
+        const out = packageInstaller.exportRaw(type as "skill" | "mcp", name);
+        if (!out) {
+          sendJSON(res, 404, { error: `未找到 ${type}: ${name}` });
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": type === "skill" ? "text/markdown; charset=utf-8" : "application/json",
+          "Content-Disposition": `attachment; filename="${encodeURIComponent(out.filename)}"`,
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(out.data);
         return;
       }
       const out = packageInstaller.exportPackage(type as "skill" | "mcp" | "plugin", name);
@@ -504,24 +523,43 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 413, { error: "Body too large" });
         return;
       }
-      let peek: { data?: string };
+      let peek: { data?: string; filename?: string };
       try {
-        peek = JSON.parse(body) as { data?: string };
+        peek = JSON.parse(body) as { data?: string; filename?: string };
       } catch {
         sendJSON(res, 400, { error: "Invalid JSON" });
         return;
       }
       if (!peek.data || typeof peek.data !== "string") {
-        sendJSON(res, 400, { error: "Missing 'data' (base64 .aw)" });
+        sendJSON(res, 400, { error: "Missing 'data' (base64)" });
         return;
       }
       const tmpDir = deps.dataDir ?? resolve(process.cwd(), "data");
       mkdirSync(tmpDir, { recursive: true });
-      const tmp = resolve(tmpDir, `peek-${Date.now().toString(36)}.aw`);
+      const ext = (peek.filename ?? "pkg.aw").toLowerCase().endsWith(".md")
+        ? ".md"
+        : (peek.filename ?? "pkg.aw").toLowerCase().endsWith(".json")
+          ? ".json"
+          : ".aw";
+      const tmp = resolve(tmpDir, `peek-${Date.now().toString(36)}${ext}`);
       writeFileSync(tmp, Buffer.from(peek.data, "base64"));
       try {
-        const manifest = packageInstaller.readManifest(tmp);
-        sendJSON(res, 200, { ok: true, type: manifest.type, name: manifest.name, version: manifest.version, description: manifest.description });
+        if (ext === ".md") {
+          const raw = readFileSync(tmp, "utf-8");
+          const meta = parseSkillMeta(raw);
+          const name = meta.name;
+          if (!name) {
+            sendJSON(res, 400, { ok: false, error: "SKILL.md 缺少 name frontmatter" });
+          } else {
+            sendJSON(res, 200, { ok: true, type: "skill", name, version: meta.version ?? "1.0.0", description: meta.description });
+          }
+        } else if (ext === ".json") {
+          const base = basename(peek.filename ?? "server").replace(/\.json$/i, "");
+          sendJSON(res, 200, { ok: true, type: "mcp", name: base, version: "1.0.0" });
+        } else {
+          const manifest = packageInstaller.readManifest(tmp);
+          sendJSON(res, 200, { ok: true, type: manifest.type, name: manifest.name, version: manifest.version, description: manifest.description });
+        }
       } catch (err) {
         sendJSON(res, 400, { ok: false, error: (err as Error).message });
       } finally {
@@ -536,22 +574,25 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 413, { error: "Body too large" });
         return;
       }
-      let req3: { data?: string; force?: boolean };
+      let req3: { data?: string; filename?: string; force?: boolean };
       try {
-        req3 = JSON.parse(body) as { data?: string; force?: boolean };
+        req3 = JSON.parse(body) as { data?: string; filename?: string; force?: boolean };
       } catch {
         sendJSON(res, 400, { error: "Invalid JSON" });
         return;
       }
       if (!req3.data || typeof req3.data !== "string") {
-        sendJSON(res, 400, { error: "Missing 'data' (base64 .aw)" });
+        sendJSON(res, 400, { error: "Missing 'data' (base64)" });
         return;
       }
+      // 按文件名扩展名分发：.aw 标准包 / .md 技能 / .json MCP
+      const lower = (req3.filename ?? "pkg.aw").toLowerCase();
+      const ext = lower.endsWith(".md") ? ".md" : lower.endsWith(".json") ? ".json" : ".aw";
       const tmpDir = deps.dataDir ?? resolve(process.cwd(), "data");
       mkdirSync(tmpDir, { recursive: true });
-      const tmp = resolve(tmpDir, `import-${Date.now().toString(36)}.aw`);
+      const tmp = resolve(tmpDir, `import-${Date.now().toString(36)}${ext}`);
       writeFileSync(tmp, Buffer.from(req3.data, "base64"));
-      const result = packageInstaller.install(tmp, { force: req3.force === true });
+      const result = packageInstaller.installAny(tmp, { force: req3.force === true });
       rmSync(tmp, { force: true });
       sendJSON(res, result.success ? 200 : 400, result);
       return;

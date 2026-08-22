@@ -430,9 +430,18 @@ describe("bg / jobs / schedule 命令", () => {
     expect(writeLines.some((l) => l.includes("未找到"))).toBe(true);
   });
 
-  it("/install 非 .aw 后缀被拒绝", async () => {
+  it("/install 未知格式被拒绝（不再限 .aw）", async () => {
+    const dir = makeTestDir("install-unknown");
+    const file = resolve(dir, "thing.txt");
+    writeFileSync(file, "hi", "utf-8");
     const { ctx, writeLines } = makeCtx();
-    await find("install").handler(ctx, "foo.zip", "/install foo.zip");
-    expect(writeLines.some((l) => l.includes("不是 .aw 包"))).toBe(true);
+    await find("install").handler(ctx, file, `/install ${file}`);
+    expect(writeLines.some((l) => l.includes("不支持的格式"))).toBe(true);
+  });
+
+  it("/install 不存在路径提示", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("install").handler(ctx, "no-such-file.aw", "/install no-such-file.aw");
+    expect(writeLines.some((l) => l.includes("路径不存在"))).toBe(true);
   });
 });
