@@ -48,7 +48,7 @@ class SkillRegistry {
   private parseSkillFile(filePath: string): SkillDef {
     const raw = readFileSync(filePath, "utf-8");
 
-    const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    const frontmatterMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
     if (!frontmatterMatch) {
       throw new Error(`SKILL.md 缺少 YAML frontmatter: ${filePath}`);
     }

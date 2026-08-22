@@ -73,7 +73,7 @@ export class SkillEvolution {
     const errors: string[] = [];
     try {
       const raw = readFileSync(filePath, "utf-8");
-      const fm = raw.match(/^---\n([\s\S]*?)\n---/);
+      const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       if (!fm) {
         errors.push("缺少 YAML frontmatter");
         return { valid: false, errors };
@@ -116,7 +116,7 @@ export class SkillEvolution {
   register(filePath: string, expertId: string): boolean {
     try {
       const raw = readFileSync(filePath, "utf-8");
-      const fm = raw.match(/^---\n([\s\S]*?)\n---/);
+      const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
       if (!fm) return false;
 
       const nameMatch = fm[1].match(/^name:\s*(.+)$/m);
@@ -140,7 +140,7 @@ export class SkillEvolution {
     const existing = skillRegistry.getSkillsForAgent(agentId);
     if (existing.length === 0) return false;
 
-    const fm = raw.match(/^---\n([\s\S]*?)\n---/);
+    const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!fm) return true;
 
     const nameMatch = fm[1].match(/^name:\s*(.+)$/m);
@@ -201,7 +201,7 @@ export class SkillEvolution {
       return null;
     }
 
-    const nameMatch = rawGenerated.match(/^---\n[\s\S]*?^name:\s*(.+)$/m);
+    const nameMatch = rawGenerated.match(/^---\r?\n[\s\S]*?^name:\s*(.+)$/m);
     const name = nameMatch ? nameMatch[1].trim() : `auto-${agentId}-${Date.now().toString(36)}`;
 
     const pendingDir = resolve(process.cwd(), "skills", "pending");

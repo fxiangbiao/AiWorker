@@ -72,7 +72,7 @@ function isValidName(name: string): boolean {
 
 /** 解析 SKILL.md frontmatter 的 name/version/description */
 export function parseSkillMeta(raw: string): { name?: string; version?: string; description?: string } {
-  const m = raw.match(/^---\n([\s\S]*?)\n---/);
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!m) return {};
   const out: { name?: string; version?: string; description?: string } = {};
   for (const line of m[1]!.split("\n")) {
