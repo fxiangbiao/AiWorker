@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { buildCliCommands } from "../src/commands/registry.js";
 import { pluginManager } from "../src/core/plugin-manager.js";
@@ -35,6 +35,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
   const writes: string[] = [];
   const writeLines: string[] = [];
   const prefillQueue: string[] = [];
+  let currentSid: string | undefined;
   const mockAgent = {
     getId: () => "default",
     getName: () => "测试专家",
@@ -46,8 +47,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     setMode: () => {},
     showThinking: () => false,
     toggleThinking: () => {},
-    currentSessionId: () => undefined,
-    setCurrentSessionId: () => {},
+    currentSessionId: () => currentSid,
+    setCurrentSessionId: (id) => { currentSid = id; },
     prefillQueue,
     lastAnswer: { value: "answer" },
     agents: {},
@@ -432,6 +433,33 @@ describe("bg / jobs / schedule 命令", () => {
     const row = joined.split("\n").find((l) => l.includes("第一轮")) ?? "";
     expect(row).toContain(" 2 ");
     expect(row).toContain(" 3 ");
+  });
+
+  it("/export 导出当前会话为 Markdown 文件", async () => {
+    const dir = makeTestDir("export-cli");
+    const { ctx, store, writeLines } = makeCtx({ workingDir: dir });
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "你好" });
+    store.appendMessage(sess.id, { role: "assistant", content: "你好！" });
+    ctx.setCurrentSessionId(sess.id);
+
+    await find("export").handler(ctx, "", "/export");
+    expect(writeLines.some((l) => l.includes("已导出会话"))).toBe(true);
+    const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    expect(files.length).toBeGreaterThan(0);
+    const md = readFileSync(resolve(dir, files[0]!), "utf-8");
+    expect(md).toContain("你好！");
+  });
+
+  it("/export 指定序号导出（/sessions 序号）", async () => {
+    const dir = makeTestDir("export-cli2");
+    const { ctx, store, writeLines } = makeCtx({ workingDir: dir });
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "指定会话" });
+    store.appendMessage(sess.id, { role: "assistant", content: "内容A" });
+
+    await find("export").handler(ctx, "1", "/export 1");
+    expect(writeLines.some((l) => l.includes("已导出会话"))).toBe(true);
   });
 
   it("/pkg list 列出可导出资产（.aw）", async () => {

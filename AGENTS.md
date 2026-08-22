@@ -83,6 +83,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 - `session-store.ts` — SQLite（WAL）+ FTS5；`turn_logs`/`tool_call_logs` snake_case → camelCase 显式映射；**事件溯源**：`session_events` 仅追加日志（唯一真源），`appendEvent`/`getEvents`/`replayEvents`/`verifyProjection`；`appendMessage` 单点同事务双写（assistant 可携带 usage）；**自动标题**：首条 user 消息且 summary 为空时首行截断 ≤24 字符并发 `title/set` 事件（不覆盖手动重命名）
 - `telemetry.ts` — 遥测导出：`TelemetrySink` seam + `TelemetryJsonlSink`（data/telemetry/<id>.jsonl）+ `TelemetryCoordinator`（脱敏瀑布、`(session.id, seq)` 幂等、emit 错误隔离 fail-closed）
+- `session-export.ts` — 会话 Markdown 导出渲染（TUI `/export` 与 HTTP `/sessions/:id/export` 共用）：`renderSessionMarkdown(title, sessionId, messages)`
 - 三层记忆：工作（消息历史）/ 情景（FTS5 + `Intl.Segmenter` 分词 + 每天 15% 时间衰减）/ 语义（MEMORY.md ≈2200 字 + USER.md ≈1375 字，互斥锁防 lost-update）
 - **FTS5 MATCH 查询前清洗特殊字符**（`*` `AND` `OR` 等）防注入；token 估算统一 `Math.ceil(chars / 3.5)`
 
@@ -107,13 +108,13 @@ npm run web:build      # Web UI 构建 → web/dist/
 ### HTTP Server 与 Web UI
 
 - `server.ts` — **API 统一 `/api/v1` 前缀**（`API_PREFIX` + `apiUrl()`）；静态资源托管仅排除 `/api`，新端点用 `apiUrl("/xxx")` 注册即生效；托管 `web/dist/`（路径穿越防护 + favicon 204 + Cache-Control）
-- 端点：GET `/api/v1/agents` `/status`(含 version) `/tools` `/sessions`(+/:id, rename, export, DELETE) `/context` `/logs` `/skills` `/diffs` `/trace/:id` `/stats` `/telemetry/:id` `/mcp` `/plugins`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` `/ask`（SSE 流式）
+- 端点：GET `/api/v1/agents` `/status`(含 version) `/tools` `/sessions`(+/:id, rename, export, DELETE) `/context` `/logs` `/skills` `/diffs` `/trace/:id` `/stats` `/telemetry/:id` `/mcp` `/plugins` `/config`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` `/ask`（SSE 流式）
 - **WebSocket 实时总线**：`event-bus.ts` 单例 EventBus（subscribe/broadcast）；`server.on("upgrade")` 处理 `/api/v1/ws`（`WebSocketServer({noServer:true})`，非 /ws 路径 destroy）；30s 心跳清理死连接；chat/plan/debate 的 `write` 闭包 **SSE + eventBus 双写**；会话创建/重命名/删除/新消息广播 `session/update`；前端 `web/src/lib/stores/ws.svelte.ts` 消费（指数退避重连），仅处理同步事件（`session/update` + 非流式中 `done`），避免与 SSE 双通道重复渲染
 - `/plan` SSE 事件序列：plan → step_start → step_end → done；`/debate`：debate_start → done；均经 `deps.coordinator`（ServerDeps 依赖注入）
 - `/chat` 接受 `sessionId`：Web UI 用 chat id 作为 sessionId 持久化
 - `web/` — Svelte 5 + Vite 6；API 常量在 `chat.svelte.ts` 导出 `API = "/api/v1"`；vite proxy `/api → :3000`（需 `ws: true` 转发 WS）
 - `ChatPanel.handleSSE()` 直接 mutate `store.messages`；`DOMPurify` 消毒 `marked.parse()` 输出防 XSS；`store.inputMode` 控制 chat/plan/debate
-- 组件：`SystemPanel.svelte`（context/logs/skills/mcp/plugins/schedule/trace 七 Tab）、`TracePanel.svelte`（两栏）、`PlanStepsBlock.svelte`（步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`AskCard.svelte`（提问卡片）、`FileDiffPanel.svelte`（diff 分栏）
+- 组件：`SystemPanel.svelte`（context/logs/skills/mcp/plugins/schedule/config/trace 八 Tab）、`TracePanel.svelte`（两栏）、`PlanStepsBlock.svelte`（步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`AskCard.svelte`（提问卡片）、`FileDiffPanel.svelte`（diff 分栏）
 - `/chat` 透传 `task.mode`；`permissionCheck` 读请求级 `ctx.data.permissions`；`captureDiff` 写磁盘快照 + 审计，`/diffs` 读取展示
 
 ## 测试
@@ -152,6 +153,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 /config                  模型/温度/max-tokens/iterations/thinking/skill-evo（持久化 data/runtime-config.json）
 /sessions                浏览会话
 /switch <序号>           切换
+/export [序号]           导出会话为 Markdown（默认当前会话，写工作目录）
 /copy                    复制最后回答 Markdown
 /help                    帮助
 /exit                    退出

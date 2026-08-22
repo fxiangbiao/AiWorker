@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.6.2-blue)
+![version](https://img.shields.io/badge/version-0.6.3-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -182,6 +182,7 @@ npm run dev -- [选项]
 | `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/**iterations**/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
 | `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
+| `/export [序号]` | 导出会话为 Markdown 文件（默认当前会话，写入工作目录） |
 | `/copy` | 复制最后回答原始 Markdown |
 | `/help [命令]` / `/exit` | 帮助（`/help <命令>` 或 `/<命令> --help` 查看详细用法）/ 退出 |
 

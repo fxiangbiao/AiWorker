@@ -925,4 +925,61 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     expect(Array.isArray(data.exportable.mcp)).toBe(true);
     expect(Array.isArray(data.exportable.plugins)).toBe(true);
   });
+
+  it("GET /api/v1/config 返回配置状态；POST 设置并持久化", async () => {
+    // mock deps 未提供 getConfigState → 503
+    const missing = await fetch(`${base4}${API}/config`);
+    expect(missing.status).toBe(503);
+  });
+
+  it("POST /config 校验字段与值", async () => {
+    // mock 未提供 setConfigField → 503
+    const resp = await fetch(`${base4}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "temperature", value: 0.3 }),
+    });
+    expect(resp.status).toBe(503);
+  });
+
+  it("GET /config 与 POST /config 真实实现（注入回调）", async () => {
+    let state = { model: "m1", availableModels: [{ key: "m1", model: "m1", provider: "p" }], runtimeConfig: {}, iterations: { default: 60 }, thinking: false, skillEvo: false, appVersion: "0.6.2" };
+    const deps = mockDeps();
+    deps.getConfigState = () => state;
+    deps.setConfigField = (field, value) => {
+      if (field === "temperature") {
+        const t = Number(value);
+        if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
+        state = { ...state, runtimeConfig: { temperature: t } };
+        return { ok: true };
+      }
+      return { ok: false, error: "未知配置项" };
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const base5 = `http://127.0.0.1:${port}`;
+
+    const get = await fetch(`${base5}${API}/config`);
+    expect(get.status).toBe(200);
+    const got = (await get.json()) as { model: string };
+    expect(got.model).toBe("m1");
+
+    const post = await fetch(`${base5}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "temperature", value: 0.5 }),
+    });
+    expect(post.status).toBe(200);
+    const after = (await post.json()) as { state: { runtimeConfig: { temperature: number } } };
+    expect(after.state.runtimeConfig.temperature).toBe(0.5);
+
+    const bad = await fetch(`${base5}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "temperature", value: 9 }),
+    });
+    expect(bad.status).toBe(400);
+    local.close();
+  });
 });

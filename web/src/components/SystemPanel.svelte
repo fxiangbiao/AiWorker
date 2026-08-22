@@ -4,7 +4,7 @@
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace">("context");
+  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace">("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -234,6 +234,83 @@
     failed: "失败",
   };
 
+  // ── 系统配置（等价 TUI /config） ──
+  interface ConfigState {
+    model: string;
+    availableModels: { key: string; model: string; provider: string }[];
+    runtimeConfig: { profileKey?: string; temperature?: number | null; maxTokens?: number | null };
+    iterations: Record<string, number>;
+    thinking: boolean;
+    skillEvo: boolean;
+    appVersion: string;
+  }
+  let configState = $state<ConfigState | null>(null);
+  let cfgModel = $state("default");
+  let cfgTemperature = $state("");
+  let cfgMaxTokens = $state("");
+  let cfgIterAgent = $state("default");
+  let cfgIterValue = $state("");
+  let cfgMsg = $state("");
+
+  function loadConfig() {
+    loading = true;
+    fetch(`${API}/config`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        configState = d as ConfigState;
+        cfgModel = configState.runtimeConfig.profileKey || "default";
+        cfgTemperature = configState.runtimeConfig.temperature != null ? String(configState.runtimeConfig.temperature) : "";
+        cfgMaxTokens = configState.runtimeConfig.maxTokens != null ? String(configState.runtimeConfig.maxTokens) : "";
+        cfgIterAgent = Object.keys(configState.iterations)[0] || "default";
+        cfgIterValue = configState.iterations[cfgIterAgent] != null ? String(configState.iterations[cfgIterAgent]) : "";
+      })
+      .catch(() => { configState = null; })
+      .finally(() => { loading = false; });
+  }
+
+  async function applyConfig(field: string, value: unknown): Promise<boolean> {
+    cfgMsg = "";
+    const resp = await fetch(`${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field, value }),
+    });
+    const data = (await resp.json()) as { ok?: boolean; error?: string; state?: ConfigState };
+    if (!resp.ok || !data.ok) {
+      cfgMsg = `设置失败: ${data.error ?? resp.status}`;
+      return false;
+    }
+    if (data.state) configState = data.state;
+    loadConfig();
+    return true;
+  }
+
+  function onModelChange() {
+    void applyConfig("model", cfgModel);
+  }
+  function onTemperature() {
+    void applyConfig("temperature", parseFloat(cfgTemperature));
+  }
+  function onMaxTokens() {
+    void applyConfig("maxTokens", parseInt(cfgMaxTokens, 10));
+  }
+  function onIterAgentChange() {
+    cfgIterValue = configState?.iterations[cfgIterAgent] != null ? String(configState.iterations[cfgIterAgent]) : "";
+  }
+  function onIterations() {
+    void applyConfig("iterations", { agentId: cfgIterAgent, value: parseInt(cfgIterValue, 10) });
+  }
+  function onThinking(e: Event) {
+    void applyConfig("thinking", (e.target as HTMLInputElement).checked);
+  }
+  function onSkillEvo(e: Event) {
+    void applyConfig("skillEvo", (e.target as HTMLInputElement).checked);
+  }
+  function onReset() {
+    if (!confirm("恢复配置文件默认（模型/温度/max-tokens）？")) return;
+    void applyConfig("reset", null);
+  }
+
   // ── .aw 资产包导入/导出 ──
 
   async function exportAsset(type: "skill" | "mcp" | "plugin", name: string) {
@@ -341,7 +418,7 @@
     }
   }
 
-  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace") {
+  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
@@ -350,6 +427,7 @@
     else if (t === "mcp") loadMcp();
     else if (t === "plugins") loadPlugins();
     else if (t === "schedule") loadSchedule();
+    else if (t === "config") loadConfig();
   }
 
   // WS job/done 事件 → 调度 Tab 数据实时刷新
@@ -371,6 +449,7 @@
     <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
+    <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
     <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
@@ -552,6 +631,52 @@
               <div class="sp-mcp-meta">{j.agentId} · {(j.summary || j.error || j.prompt).slice(0, 80)}</div>
             </div>
           {/each}
+        </div>
+      {/if}
+    {:else if tab === "config"}
+      {#if !configState}
+        <div class="sp-empty">配置不可用（需 --server 模式）</div>
+      {:else}
+        <div class="sp-section">
+          <div class="sp-row"><span>版本</span><b>v{configState.appVersion}</b></div>
+          <div class="sp-row"><span>当前模型</span><b>{configState.model}</b></div>
+          <label class="sp-cfg-row">模型
+            <select class="sp-cfg-input" bind:value={cfgModel} onchange={onModelChange}>
+              {#each configState.availableModels as m}
+                <option value={m.key}>{m.key}（{m.model} · {m.provider}）</option>
+              {/each}
+            </select>
+          </label>
+          <label class="sp-cfg-row">温度（0-2，空=默认）
+            <input class="sp-cfg-input" bind:value={cfgTemperature} placeholder="默认" />
+            <button class="sp-io-mini" onclick={onTemperature}>应用</button>
+          </label>
+          <label class="sp-cfg-row">max-tokens（≥100，空=默认）
+            <input class="sp-cfg-input" bind:value={cfgMaxTokens} placeholder="默认" />
+            <button class="sp-io-mini" onclick={onMaxTokens}>应用</button>
+          </label>
+          <label class="sp-cfg-row">迭代上限（专家 + 10-1000）
+            <select class="sp-cfg-input" bind:value={cfgIterAgent} onchange={onIterAgentChange}>
+              {#each Object.keys(configState.iterations) as agentId}
+                <option value={agentId}>{agentId}</option>
+              {/each}
+            </select>
+            <input class="sp-cfg-input sp-cfg-num" bind:value={cfgIterValue} placeholder="10-1000" />
+            <button class="sp-io-mini" onclick={onIterations}>应用</button>
+          </label>
+          <label class="sp-cfg-row">思考展示
+            <input type="checkbox" checked={configState.thinking} onchange={onThinking} />
+          </label>
+          <label class="sp-cfg-row">技能自动沉淀
+            <input type="checkbox" checked={configState.skillEvo} onchange={onSkillEvo} />
+          </label>
+          <div class="sp-cfg-row">
+            <button class="sp-io-btn" onclick={onReset}>恢复模型默认（reset）</button>
+          </div>
+          {#if cfgMsg}
+            <div class="sp-mcp-error">{cfgMsg}</div>
+          {/if}
+          <div class="sp-note">设置持久化到 data/runtime-config.json，重启后仍生效</div>
         </div>
       {/if}
     {:else}
@@ -768,4 +893,8 @@
   .sp-io-mini { padding: 1px 8px; font-size: 10px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
   .sp-io-mini:hover { color: var(--primary); border-color: var(--primary); }
   .sp-io-mini-inline { margin-left: 8px; vertical-align: middle; }
+  .sp-cfg-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); padding: 4px 0; }
+  .sp-cfg-input { font-size: 11px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); min-width: 120px; }
+  .sp-cfg-num { min-width: 80px; width: 80px; }
+  .sp-note { font-size: 10px; color: var(--dim); margin-top: 8px; }
 </style>

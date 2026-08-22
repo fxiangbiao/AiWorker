@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.3 (2026-08-22)
+
+### TUI 会话导出 + Web 系统配置
+- **TUI `/export [序号]`**：导出会话为 Markdown 文件（默认当前会话，`/export <序号>` 按 `/sessions` 序号；写入工作目录 `<标题>.md`）；渲染逻辑与 Web 共用（`memory/session-export.ts` 抽取）
+- **Web 系统配置**（SystemPanel 新增「配置」Tab，等价 TUI `/config`）：模型下拉 / 温度 / max-tokens / **每专家迭代上限** / 思考展示开关 / 技能自动沉淀开关 / 恢复默认（reset）；设置持久化 `data/runtime-config.json`
+- HTTP：`GET/POST /api/v1/config`（`setConfigField` 由 index.ts 注入，复用 modelRouter/agents/hookManager/persistRuntimeConfig）
+- `persistRuntimeConfig` 提升为 server 与 CLI 共用闭包
+- 测试 +5（/export 2 例 + config 端点 3 例）
+
 ## 0.6.2 (2026-08-22)
 
 ### 帮助系统精简

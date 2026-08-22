@@ -27,6 +27,8 @@ import { PermissionModel } from "./security/permission-model.js";
 import { ApprovalService } from "./security/approval-service.js";
 import { requestConfirm } from "./hooks/confirm-channel.js";
 import { loadHooksFromConfig } from "./hooks/hook-config-loader.js";
+import { hookManager } from "./hooks/hook-manager.js";
+import { createEvaluateSkillCreation } from "./hooks/handlers.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
@@ -340,6 +342,19 @@ program
     }
     stdout.write("\n");
 
+    // server 与 CLI 共用：思考展示开关（server 经配置端点可改）
+    let showThinking = !!options.showThinking;
+    // 持久化运行时配置（server 配置端点与 CLI /config 共用）
+    const persistRuntimeConfig = () => {
+      try {
+        const iterations: Record<string, number> = {};
+        for (const [id, a] of Object.entries(agents)) iterations[id] = a.getConfig().maxIterations;
+        writeFileSync(runtimeConfigPath, JSON.stringify({ ...modelRouter.getOverrides(), iterations }, null, 2));
+      } catch {
+        /* 持久化失败静默 */
+      }
+    };
+
     if (options.server) {
       const port = parseInt(options.port, 10);
       startServer(
@@ -368,6 +383,74 @@ program
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
           getMcpStatuses: () => mcpManager.getStatuses(),
           getPlugins: () => pluginManager.getPlugins(),
+          getConfigState: () => ({
+            model: modelRouter.getDisplayModel(),
+            availableModels: modelRouter.getAvailableModels().map((m) => ({ key: m.key, model: m.model, provider: m.provider })),
+            runtimeConfig: modelRouter.getRuntimeConfig(),
+            iterations: Object.fromEntries(Object.entries(agents).map(([id, a]) => [id, a.getConfig().maxIterations])),
+            thinking: showThinking,
+            skillEvo: hookManager.has("onTaskComplete:evaluateSkillCreation"),
+            appVersion: getAppVersion(),
+          }),
+          setConfigField: (field, value) => {
+            try {
+              switch (field) {
+                case "model": {
+                  const v = String(value);
+                  const valid = modelRouter.getAvailableModels().find((m) => m.key === v);
+                  if (!valid) return { ok: false, error: `未知模型: ${v}` };
+                  modelRouter.setDefaultModel(v);
+                  break;
+                }
+                case "temperature": {
+                  const t = Number(value);
+                  if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
+                  modelRouter.setTemperature(t);
+                  break;
+                }
+                case "maxTokens": {
+                  const n = Number(value);
+                  if (Number.isNaN(n) || n < 100) return { ok: false, error: "max-tokens 需 ≥ 100" };
+                  modelRouter.setMaxTokens(n);
+                  break;
+                }
+                case "iterations": {
+                  const v = value as { agentId?: string; value?: unknown };
+                  const n = Number(v.value);
+                  if (!v.agentId || !agents[v.agentId] || Number.isNaN(n) || n < 10 || n > 1000) {
+                    return { ok: false, error: "迭代上限需 10-1000（需 agentId）" };
+                  }
+                  agents[v.agentId]!.setMaxIterations(n);
+                  break;
+                }
+                case "thinking":
+                  showThinking = value === true;
+                  break;
+                case "skillEvo":
+                  if (hookManager.has("onTaskComplete:evaluateSkillCreation")) {
+                    hookManager.off("onTaskComplete:evaluateSkillCreation");
+                  } else {
+                    hookManager.on(
+                      "onTaskComplete",
+                      createEvaluateSkillCreation({ sessionStore, modelRouter }),
+                      { id: "onTaskComplete:evaluateSkillCreation", priority: 10 },
+                    );
+                  }
+                  break;
+                case "reset":
+                  modelRouter.setDefaultModel("");
+                  modelRouter.setTemperature(null);
+                  modelRouter.setMaxTokens(null);
+                  break;
+                default:
+                  return { ok: false, error: `未知配置项: ${field}` };
+              }
+              persistRuntimeConfig();
+              return { ok: true };
+            } catch (err) {
+              return { ok: false, error: (err as Error).message };
+            }
+          },
         },
         port,
       );
@@ -375,7 +458,6 @@ program
     }
 
     let currentMode = options.mode as PermissionMode;
-    let showThinking = !!options.showThinking;
     for (const a of Object.values(agents)) {
       a.setMode(currentMode);
     }
@@ -436,15 +518,7 @@ program
       skillCount,
       workingDir,
       runtimeConfigPath,
-      persistRuntimeConfig: () => {
-        try {
-          const iterations: Record<string, number> = {};
-          for (const [id, a] of Object.entries(agents)) iterations[id] = a.getConfig().maxIterations;
-          writeFileSync(runtimeConfigPath, JSON.stringify({ ...modelRouter.getOverrides(), iterations }, null, 2));
-        } catch {
-          /* 持久化失败静默 */
-        }
-      },
+      persistRuntimeConfig,
       currentAgent: () => agents[routeToExpert("")]!,
       getContextBreakdown: (query: string) => {
         const agent = agents[routeToExpert("")]!;

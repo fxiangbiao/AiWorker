@@ -22,6 +22,7 @@ import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
 import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
+import { renderSessionMarkdown } from "./memory/session-export.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -59,6 +60,10 @@ interface ServerDeps {
   >;
   getPlugins?: () => PluginInfo[];
   dataDir?: string;
+  /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
+  getConfigState?: () => Record<string, unknown>;
+  /** Web 配置：应用并持久化单个配置项（index.ts 注入） */
+  setConfigField?: (field: string, value: unknown) => { ok: boolean; error?: string };
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -220,35 +225,7 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
   }
 }
 
-/** 将会话消息渲染为 Markdown 导出内容 */
-function renderSessionMarkdown(
-  title: string,
-  sessionId: string,
-  messages: Array<import("./types.js").Message & { seq: number; createdAt: number }>,
-): string {
-  const lines: string[] = [`# ${title}`, "", `> 会话 ID: ${sessionId}`, ""];
-  for (const m of messages) {
-    const time = new Date(m.createdAt).toLocaleString("zh-CN", { hour12: false });
-    if (m.role === "user") {
-      lines.push(`## 🧑 用户 · ${time}`, "", m.content.trim(), "");
-    } else if (m.role === "assistant") {
-      if (m.tool_calls && m.tool_calls.length > 0) {
-        lines.push(`## 🤖 助手 · ${time}`, "");
-        for (const tc of m.tool_calls) {
-          lines.push(`- \`${tc.function.name}\` \`\`\`json\n${tc.function.arguments}\n\`\`\``);
-        }
-        lines.push("");
-      }
-      if (m.content.trim()) {
-        if (!m.tool_calls || m.tool_calls.length === 0) lines.push(`## 🤖 助手 · ${time}`, "");
-        lines.push(m.content.trim(), "");
-      }
-    } else if (m.role === "tool") {
-      lines.push(`> 🔧 工具结果${m.name ? ` (${m.name})` : ""}: ${m.content.slice(0, 200)}`, "");
-    }
-  }
-  return lines.join("\n");
-}
+/** 将会话消息渲染为 Markdown 导出内容（TUI /export 共用） */
 
 export function startServer(deps: ServerDeps, port: number) {
   const startTime = Date.now();
@@ -470,6 +447,43 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/plugins") && req.method === "GET") {
       const plugins = deps.getPlugins?.() ?? [];
       sendJSON(res, 200, { plugins });
+      return;
+    }
+
+    // ─── 系统配置（Web 端 /config 等价能力） ───
+    if (url === apiUrl("/config") && req.method === "GET") {
+      if (!deps.getConfigState) {
+        sendJSON(res, 503, { error: "Config not available" });
+        return;
+      }
+      sendJSON(res, 200, deps.getConfigState());
+      return;
+    }
+    if (url === apiUrl("/config") && req.method === "POST") {
+      if (!deps.setConfigField) {
+        sendJSON(res, 503, { error: "Config not available" });
+        return;
+      }
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let cfg: { field?: string; value?: unknown };
+      try {
+        cfg = JSON.parse(body) as { field?: string; value?: unknown };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!cfg.field || typeof cfg.field !== "string") {
+        sendJSON(res, 400, { error: "Missing 'field'" });
+        return;
+      }
+      const result = deps.setConfigField(cfg.field, cfg.value);
+      sendJSON(res, result.ok ? 200 : 400, result.ok ? { ok: true, state: deps.getConfigState?.() } : result);
       return;
     }
 
