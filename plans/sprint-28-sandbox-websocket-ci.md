@@ -17,7 +17,7 @@
 
 ## 提交
 
-- 待提交（本次批次完成后补充 commit hash）
+- `f392bbf` feat(release): 0.3.0 — 执行沙箱 + WebSocket 实时总线 + CI + 测试隔离（已推送 GitHub 443 / Gitee）
 
 ---
 
