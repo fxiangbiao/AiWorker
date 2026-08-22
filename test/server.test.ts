@@ -528,6 +528,24 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(store.getMessages(sess.id)).toHaveLength(0);
   });
 
+  it("GET /sessions 返回真实轮数（用户消息条数）", async () => {
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "第一轮" });
+    store.appendMessage(sess.id, { role: "assistant", content: "回复1" });
+    store.appendMessage(sess.id, { role: "user", content: "第二轮" });
+    store.appendMessage(sess.id, { role: "assistant", content: "回复2" });
+
+    const resp = await fetch(`${base2}${API}/sessions`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    const found = (data.sessions as Array<{ id: string; turnCount?: number; messageCount?: number }>).find(
+      (s) => s.id === sess.id,
+    );
+    expect(found).toBeDefined();
+    expect(found!.turnCount).toBe(2);
+    expect(found!.messageCount).toBe(4);
+  });
+
   it("删除不存在的会话返回 404", async () => {
     const resp = await fetch(`${base2}${API}/sessions/nonexistent`, { method: "DELETE" });
     expect(resp.status).toBe(404);

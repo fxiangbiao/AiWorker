@@ -352,7 +352,7 @@ export class SessionStore {
     return { ok: mismatches.length === 0, eventCount: events.length, messageCount: stored.length, mismatches };
   }
 
-  /** 列出最近会话（含消息数 + 首条用户消息摘要） */
+  /** 列出最近会话（含消息数 + 用户轮数 + 首条用户消息摘要） */
   listSessions(limit = 20): Array<{
     id: string;
     agentId: string;
@@ -360,12 +360,14 @@ export class SessionStore {
     updatedAt: number;
     summary: string | null;
     messageCount: number;
+    turnCount: number;
     firstUserMsg: string | null;
   }> {
     const rows = this.db
       .prepare(
         `SELECT s.id, s.agent_id, s.created_at, s.updated_at, s.summary,
                 (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
+                (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id AND m3.role = 'user') AS turn_count,
                 (SELECT content FROM messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.seq ASC LIMIT 1) AS first_user
          FROM sessions s
          ORDER BY s.updated_at DESC
@@ -378,6 +380,7 @@ export class SessionStore {
       updated_at: number;
       summary: string | null;
       msg_count: number;
+      turn_count: number;
       first_user: string | null;
     }>;
 
@@ -388,6 +391,7 @@ export class SessionStore {
       updatedAt: r.updated_at,
       summary: r.summary,
       messageCount: r.msg_count,
+      turnCount: r.turn_count,
       firstUserMsg: r.first_user ? r.first_user.replace(/\s+/g, " ").slice(0, 60) : null,
     }));
   }

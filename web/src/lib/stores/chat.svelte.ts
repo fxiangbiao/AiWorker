@@ -134,7 +134,7 @@ export function saveMessages(id: string, msgs: UIMessage[]) {
   if (id) save(MSGS_PREFIX + id, msgs);
 }
 
-/** 从服务器 /sessions 合并会话列表（服务器有而本地没有的补进来，按创建时间最新在前） */
+/** 从服务器 /sessions 合并会话列表（服务器为轮数/标题事实源；本地无的补进来，按创建时间最新在前） */
 export async function syncServerSessions(): Promise<boolean> {
   try {
     const resp = await fetch(`${API}/sessions`);
@@ -146,6 +146,7 @@ export async function syncServerSessions(): Promise<boolean> {
       agentId?: string;
       created_at?: number;
       createdAt?: number;
+      turnCount?: number;
       firstUserMsg?: string | null;
       summary?: string | null;
     }) => {
@@ -154,19 +155,24 @@ export async function syncServerSessions(): Promise<boolean> {
         id: s.id,
         title,
         agentId: s.agentId || s.agent_id || "default",
-        turns: 0,
+        turns: s.turnCount ?? 0,
         createdAt: s.createdAt || s.created_at || 0,
       };
     });
-    const localIds = new Set(store.chats.map((c) => c.id));
-    let hadNew = false;
     const merged = [...store.chats];
-    for (const r of remote) {
-      if (!localIds.has(r.id)) {
-        merged.push(r);
-        localIds.add(r.id);
-        hadNew = true;
+    const remoteById = new Map(remote.map((r) => [r.id, r]));
+    let hadNew = false;
+    // 服务器有的会话：更新轮数（服务器为准）；本地没有的补进来
+    for (let i = 0; i < merged.length; i++) {
+      const remoteItem = remoteById.get(merged[i]!.id);
+      if (remoteItem) {
+        merged[i] = { ...merged[i]!, turns: remoteItem.turns };
+        remoteById.delete(merged[i]!.id);
       }
+    }
+    for (const r of remoteById.values()) {
+      merged.push(r);
+      hadNew = true;
     }
     // 统一按创建时间降序（最新在前）：TUI 等新产生的会话排到最前，重启后能正确选中
     store.chats = merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
