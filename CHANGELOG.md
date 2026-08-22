@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.0 (2026-08-15)
+
+### 执行沙箱（对比报告 #3）
+- **策略化命令沙箱**：`config/sandbox.json` + `src/security/sandbox.ts`
+  - cwd 越界约束（fail-closed）：`terminal_exec` 工作目录必须位于 workingDir/allowDirs 内
+  - `denyCommands` 配置化命令黑名单（叠加 danger-detector 正则层）
+  - `stripSecretEnv`：执行时剥离含 KEY/TOKEN/SECRET/PASSWORD 的环境变量
+- 接入 `terminal_exec` 与 `terminal_session`（spawn env 清理 + exec 前策略检查）
+- 说明：不做 OS 级进程沙箱（bwrap/restricted-token）——Node 无原生 API、信任模型为本人执行
+
+### WebSocket 实时总线（对比报告 #8）
+- `EventBus` 事件总线 + `GET /api/v1/ws`（ws 包，心跳 30s 清理死连接）
+- chat/plan/debate 事件 SSE 与 WS 双写广播；会话创建/重命名/删除/新消息广播 `session/update`
+- Web UI WS 连接 + 指数退避重连：会话列表/消息多标签页实时同步（SSE 仍为单次任务主通道，双通道不重复渲染）
+- vite dev proxy 支持 WS 转发
+
+### CI / 测试
+- **GitHub Actions**：`.github/workflows/ci.yml`（windows + ubuntu 双平台：lint + build + vitest + web:build）
+- npm scripts 跨平台化（cross-env 替代 Windows `set` 语法）
+- 测试与真实配置解耦：`test/fixtures/models.json`（ModelRouter 注入 fixture，改配置不再碎测试）
+- terminal-session 测试平台守卫（非 Windows 跳过）
+- 新增沙箱 9 例 + WebSocket 4 例，共 **345 测试**
+
+### 其他
+- `config/models.json`：default profile 移除冗余 temperature/maxTokens；lite 本地模型更新（Qwen3.8-27B-UD-IQ2_XXS, 4096）
+
 ## 0.2.0 (2026-08-15)
 
 ### 插件系统与工具作用域（Sprint 27）

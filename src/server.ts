@@ -8,6 +8,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { WebSocketServer, type WebSocket } from "ws";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
@@ -16,6 +17,7 @@ import { getAppVersion } from "./core/version.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
+import { eventBus } from "./server/event-bus.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -248,9 +250,7 @@ export function startServer(deps: ServerDeps, port: number) {
   const startTime = Date.now();
 
   const server = createServer(async (req, res) => {
-    const url = req.url ?? "/";
-
-    if (req.method === "OPTIONS") {
+    const url = req.url ?? "/";    if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -383,6 +383,7 @@ export function startServer(deps: ServerDeps, port: number) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       const ok = deps.sessionStore.deleteSession(sessionId);
+      if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
@@ -401,6 +402,7 @@ export function startServer(deps: ServerDeps, port: number) {
       }
       if (!parsedTitle) { sendJSON(res, 400, { error: "Missing 'title' field" }); return; }
       const ok = deps.sessionStore.renameSession(sessionId, parsedTitle);
+      if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "rename", title: parsedTitle });
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
@@ -499,6 +501,7 @@ export function startServer(deps: ServerDeps, port: number) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(data)}\n\n`);
         }
+        eventBus.broadcast(data);
       };
 
       try {
@@ -588,6 +591,7 @@ export function startServer(deps: ServerDeps, port: number) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(data)}\n\n`);
         }
+        eventBus.broadcast(data);
       };
 
       try {
@@ -725,6 +729,7 @@ export function startServer(deps: ServerDeps, port: number) {
       let sessionId = chatReq.sessionId;
       if (!sessionId && deps.sessionStore) {
         sessionId = deps.sessionStore.createSession(agentId).id;
+        eventBus.broadcast({ type: "session/update", sessionId, kind: "create" });
       }
 
       const abort = new AbortController();
@@ -737,12 +742,14 @@ export function startServer(deps: ServerDeps, port: number) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(data)}\n\n`);
         }
+        eventBus.broadcast(data);
       };
 
       try {
         if (deps.sessionStore && sessionId) {
           deps.sessionStore.ensureSession(sessionId, agentId);
           deps.sessionStore.appendMessage(sessionId, { role: "user", content: chatReq.message });
+          eventBus.broadcast({ type: "session/update", sessionId, kind: "message" });
         }
 
         // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
@@ -793,9 +800,53 @@ export function startServer(deps: ServerDeps, port: number) {
     sendJSON(res, 404, { error: "Not found" });
   });
 
+  // ===== WebSocket 全局实时总线（/api/v1/ws）=====
+  // SSE 是单次任务（chat/plan/debate）的请求-响应事件流；WS 是全局下行通道，
+  // 服务端主动推送（会话元数据变更 / 任务事件广播），支持多端同步。
+  const wss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    if (req.url === apiUrl("/ws")) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  interface AliveSocket extends WebSocket {
+    isAlive?: boolean;
+  }
+
+  wss.on("connection", (raw) => {
+    const ws = raw as AliveSocket;
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+    const unsubscribe = eventBus.subscribe((data) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(data));
+    });
+    ws.on("close", unsubscribe);
+    ws.on("error", () => {});
+  });
+
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      const ws = client as AliveSocket;
+      if (ws.isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, 30000);
+  server.on("close", () => clearInterval(heartbeat));
+
   server.listen(port, () => {
     stdout.write(chalk.green(`\n✓ HTTP Server 已启动: http://localhost:${port}\n`));
-    stdout.write(chalk.gray(`  端点: POST ${API_PREFIX}/chat | ${API_PREFIX}/plan | ${API_PREFIX}/debate | GET ${API_PREFIX}/status | ${API_PREFIX}/tools | ${API_PREFIX}/agents\n`));
+    stdout.write(chalk.gray(`  端点: POST ${API_PREFIX}/chat | ${API_PREFIX}/plan | ${API_PREFIX}/debate | GET ${API_PREFIX}/status | ${API_PREFIX}/tools | ${API_PREFIX}/agents | WS ${API_PREFIX}/ws\n`));
   });
 
   return server;

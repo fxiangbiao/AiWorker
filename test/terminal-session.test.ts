@@ -12,7 +12,7 @@ afterAll(() => {
   terminalSessionPool.clear();
 });
 
-describe("terminal_session 持久会话", () => {
+describe.skipIf(process.platform !== "win32")("terminal_session 持久会话", () => {
   it("exec 解析命令输出（marker 分隔）", async () => {
     const r = await terminalSessionPool.exec("t-echo", "echo AWN-HELLO", 5000);
     expect(r.ok).toBe(true);

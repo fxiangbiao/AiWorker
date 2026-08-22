@@ -3,11 +3,12 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
 ![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
+![ci](https://github.com/fxiangbiao/AiWorker/actions/workflows/ci.yml/badge.svg)
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP 协议、技能库自动匹配、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种交互界面。
 
@@ -44,6 +45,7 @@
 **安全与合规**
 - Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
 - **审批服务（ApprovalService）**：权限决策单点（模式矩阵 + fail-closed，无确认通道默认拒绝），hooks 内权限 handler 均为薄委托
+- **策略化命令沙箱**（`config/sandbox.json`）：terminal_exec 工作目录越界拦截（fail-closed）+ 配置化命令黑名单 + 执行时剥离敏感环境变量（KEY/TOKEN/SECRET）
 - **工具调用统一超时护栏**（默认 60s），任何工具不会无限挂起
 - Hooks 5 生命周期点 + 14 个 Handler：敏感数据过滤 / 高危确认 / 权限检查 / Diff 快照 / 审计日志 / 重试退避 / 模型降级
 
@@ -62,8 +64,9 @@
 
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
-- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
-- **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
+- **Web UI**：Svelte 5 + Vite，SSE 流式 + **WebSocket 实时总线**（会话列表/消息多标签页实时同步、断线自动重连），DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
+- **HTTP Server**：`--server` 模式提供 REST API + `GET /api/v1/ws` WebSocket，可独立承载 Web UI；对话与会话持久化到 SQLite
+- **CI**：GitHub Actions 双平台（Windows/Ubuntu）自动跑 lint + 构建 + 345 项测试
 
 ---
 

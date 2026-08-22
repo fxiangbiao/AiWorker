@@ -6,6 +6,7 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
+import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
@@ -604,5 +605,126 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(Array.isArray(data.servers)).toBe(true);
+  });
+});
+
+describe("HTTP Server — WebSocket 实时总线", () => {
+  let server3: Server | undefined;
+  let base3: string;
+  let wsPort: number;
+  let store: SessionStore;
+
+  beforeAll(async () => {
+    setupEnv(testDir);
+    store = new SessionStore(resolve(testDir, "ws-sessions.db"));
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store,
+    };
+    server3 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server3!.once("listening", () => resolve()));
+    wsPort = (server3!.address() as AddressInfo).port;
+    base3 = `http://127.0.0.1:${wsPort}`;
+  });
+
+  afterAll(() => {
+    if (server3) {
+      server3.close();
+      server3 = undefined;
+    }
+    if (store) store.close();
+    teardownEnv();
+  });
+
+  function connectWs(): Promise<WsClient> {
+    return new Promise((resolve, reject) => {
+      const ws = new WsClient(`ws://127.0.0.1:${wsPort}${API}/ws`);
+      ws.on("open", () => resolve(ws));
+      ws.on("error", reject);
+    });
+  }
+
+  function waitFor<T extends { type: string }>(
+    ws: WsClient,
+    pred: (d: T) => boolean,
+    timeoutMs = 3000,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("WS event timeout")), timeoutMs);
+      const onMsg = (raw: RawData) => {
+        const data = JSON.parse(String(raw)) as T;
+        if (pred(data)) {
+          clearTimeout(timer);
+          ws.off("message", onMsg);
+          resolve(data);
+        }
+      };
+      ws.on("message", onMsg);
+    });
+  }
+
+  function postChat(message: string): Promise<Response> {
+    return fetch(`${base3}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, mode: "auto" }),
+    });
+  }
+
+  it("连接 /api/v1/ws 成功并收到 chat 事件广播", async () => {
+    const ws = await connectWs();
+    const doneP = waitFor(ws, (d) => d.type === "done");
+    const resp = await postChat("hi");
+    expect(resp.status).toBe(200);
+    const done = await doneP;
+    expect(done.type).toBe("done");
+    ws.close();
+  });
+
+  it("多客户端均收到广播（含 tool_result 事件）", async () => {
+    const wsA = await connectWs();
+    const wsB = await connectWs();
+    const seenA = waitFor(wsA, (d) => d.type === "tool_result");
+    const seenB = waitFor(wsB, (d) => d.type === "tool_result");
+    const resp = await postChat("执行任务");
+    expect(resp.status).toBe(200);
+    await seenA;
+    await seenB;
+    wsA.close();
+    wsB.close();
+  });
+
+  it("会话重命名经 WS 广播 session/update", async () => {
+    const sess = store.createSession("default");
+    const ws = await connectWs();
+    const updP = waitFor(ws, (d) => d.type === "session/update" && d.kind === "rename" && d.sessionId === sess.id);
+    const resp = await fetch(`${base3}${API}/sessions/${sess.id}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "新标题" }),
+    });
+    expect(resp.status).toBe(200);
+    const upd = await updP;
+    expect(upd.title).toBe("新标题");
+    ws.close();
+  });
+
+  it("非 /ws 路径 upgrade 被拒绝", async () => {
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const ws = new WsClient(`ws://127.0.0.1:${wsPort}${API}/chat`);
+        ws.on("open", () => {
+          ws.close();
+          reject(new Error("should not open"));
+        });
+        ws.on("error", () => resolve());
+      }),
+    ).resolves.toBeUndefined();
   });
 });

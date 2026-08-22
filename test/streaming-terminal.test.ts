@@ -3,6 +3,10 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const FIXTURE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "./fixtures/models.json");
 
 describe("12. Streaming + 终端模块", () => {
   it("StreamChunk 类型可构造", () => {
@@ -33,7 +37,7 @@ describe("12. Streaming + 终端模块", () => {
 
   it("ModelRouter 运行时配置：覆盖 + 持久化接口", async () => {
     const { ModelRouter } = await import("../src/core/model-router.js");
-    const r = new ModelRouter();
+    const r = new ModelRouter(FIXTURE_PATH);
     const models = r.getAvailableModels();
     expect(models.length).toBeGreaterThanOrEqual(2);
     expect(models.some((m) => m.key === "default")).toBe(true);
@@ -47,13 +51,13 @@ describe("12. Streaming + 终端模块", () => {
     expect(overrides.profile).toBe("coding");
     expect(overrides.temperature).toBe(0.4);
     // applyOverrides 恢复（含旧字段 model 兼容）
-    const r2 = new ModelRouter();
+    const r2 = new ModelRouter(FIXTURE_PATH);
     r2.applyOverrides({ profile: "lite", temperature: 0.1 });
     expect(r2.getRuntimeConfig().profileKey).toBe("lite");
-    expect(r2.getCurrentModel()).toBe("Qwen3.6-35B-A3B-UD-IQ3_S");
+    expect(r2.getCurrentModel()).toBe("Qwen3.8-27B-UD-IQ2_XXS");
     expect(r2.getRuntimeConfig().temperature).toBe(0.1);
     // model 字段兼容：显式 model 优先
-    const r3 = new ModelRouter();
+    const r3 = new ModelRouter(FIXTURE_PATH);
     r3.applyOverrides({ profile: "lite", model: "custom-model" });
     expect(r3.getCurrentModel()).toBe("custom-model");
     // reset 恢复默认
@@ -65,12 +69,12 @@ describe("12. Streaming + 终端模块", () => {
 
   it("ModelRouter 运行时配置：覆盖影响 completeStream 请求", async () => {
     const { ModelRouter } = await import("../src/core/model-router.js");
-    const r = new ModelRouter();
+    const r = new ModelRouter(FIXTURE_PATH);
     // 用 lite profile 验证覆盖后的 maxTokens 生效（不实际发请求，仅验证 getProfile 内部路径）
     r.setMaxTokens(12345);
     r.setTemperature(0.77);
     r.setDefaultModel("lite");
-    expect(r.getCurrentModel()).toBe("Qwen3.6-35B-A3B-UD-IQ3_S");
+    expect(r.getCurrentModel()).toBe("Qwen3.8-27B-UD-IQ2_XXS");
     // 通过 getAvailableModels 确认默认 model 可被覆盖读取
     expect(r.getRuntimeConfig().maxTokens).toBe(12345);
     expect(r.getRuntimeConfig().profileKey).toBe("lite");

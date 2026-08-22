@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "allowDirs": [],
+  "denyCommands": [],
+  "stripSecretEnv": true
+}

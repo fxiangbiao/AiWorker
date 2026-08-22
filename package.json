@@ -1,6 +1,6 @@
 {
   "name": "aiworker",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AiWorker - 个人 AI Agent 助手，多智能体协作 + MCP + Skills + Hooks",
   "type": "module",
   "main": "dist/index.js",
@@ -9,12 +9,12 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "set NODE_OPTIONS=--no-deprecation && tsx src/index.ts",
+    "dev": "cross-env NODE_OPTIONS=--no-deprecation tsx src/index.ts",
     "web:dev": "cd web && npx vite --port 5173",
     "web:build": "cd web && npx vite build",
-    "start": "set NODE_OPTIONS=--no-deprecation && node dist/index.js",
-    "test": "set NODE_OPTIONS=--no-deprecation && vitest run",
-    "test:watch": "set NODE_OPTIONS=--no-deprecation && vitest",
+    "start": "cross-env NODE_OPTIONS=--no-deprecation node dist/index.js",
+    "test": "cross-env NODE_OPTIONS=--no-deprecation vitest run",
+    "test:watch": "cross-env NODE_OPTIONS=--no-deprecation vitest",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write \"src/**/*.ts\""
@@ -28,12 +28,15 @@
     "commander": "^12.1.0",
     "inquirer": "^12.3.0",
     "openai": "^4.77.0",
+    "ws": "^8.21.3",
     "yaml": "^2.7.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.20.1",
+    "@types/ws": "^8.18.1",
+    "cross-env": "^10.1.0",
     "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.6",
