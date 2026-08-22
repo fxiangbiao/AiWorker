@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { resolve } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { buildCliCommands } from "../src/commands/registry.js";
 import { pluginManager } from "../src/core/plugin-manager.js";
@@ -35,6 +35,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
   const writes: string[] = [];
   const writeLines: string[] = [];
   const prefillQueue: string[] = [];
+  let currentSid: string | undefined;
   const mockAgent = {
     getId: () => "default",
     getName: () => "测试专家",
@@ -46,8 +47,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     setMode: () => {},
     showThinking: () => false,
     toggleThinking: () => {},
-    currentSessionId: () => undefined,
-    setCurrentSessionId: () => {},
+    currentSessionId: () => currentSid,
+    setCurrentSessionId: (id) => { currentSid = id; },
     prefillQueue,
     lastAnswer: { value: "answer" },
     agents: {},
@@ -111,26 +112,43 @@ describe("命令注册表", () => {
 
   it("help 从注册表自动生成（含 trace/skill，杜绝遗漏）", async () => {
     const { ctx, writeLines } = makeCtx();
-    await find("help").handler(ctx, "", "/help");
-    const joined = writeLines.join("\n");
+    await find("help").handler(ctx, "", "/help");    const joined = writeLines.join("\n");
     expect(joined).toContain("/trace");
     expect(joined).toContain("/skill");
     expect(joined).toContain("/plan");
     expect(joined).toContain("/exit");
   });
 
-  it("help 表格对齐：所有行 | 分隔符数量一致，单元格内半角 | 被转义", async () => {
+  it("help 表格精简：命令列含全部命令，usage 参数不显示在表格", async () => {
     const { ctx, writeLines } = makeCtx();
     await find("help").handler(ctx, "", "/help");
-    const tableLines = writeLines.filter((l) => l.includes("│"));
-    expect(tableLines.length).toBeGreaterThan(3);
-    const sepCounts = new Set(tableLines.map((l) => (l.match(/│/g) ?? []).length));
-    expect(sepCounts.size).toBe(1);
-    // usage 中的半角 | 已替换为 /（不再破坏表格列结构）
     const joined = writeLines.join("\n");
-    expect(joined).not.toContain("<ask|plan|auto>");
-    expect(joined).toContain("<ask/plan/auto>");
-    expect(joined).not.toContain("[model|temperature");
+    expect(joined).toContain("/trace");
+    expect(joined).toContain("/skill");
+    expect(joined).toContain("/plan");
+    expect(joined).toContain("/exit");
+    // 精简后：usage 长参数不再出现在表格（下沉到 --help）
+    expect(joined).not.toContain("<ask/plan/auto>");
+    expect(joined).not.toContain("<skill|mcp|plugin>");
+  });
+
+  it("/help <命令> 显示命令级详细帮助（usage/功能/说明）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("help").handler(ctx, "install", "/help install");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("/install");
+    expect(joined).toContain("用法");
+    expect(joined).toContain("说明");
+  });
+
+  it("renderCommandHelp 输出命令级帮助（--help 分发层调用此函数）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    const { renderCommandHelp } = await import("../src/commands/misc.js");
+    renderCommandHelp(find("install"), ctx);
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("/install");
+    expect(joined).toContain("用法");
+    expect(joined).toContain("功能");
   });
 });
 
@@ -366,11 +384,110 @@ describe("bg / jobs / schedule 命令", () => {
     expect(writeLines.some((l) => l.includes("定时任务已添加"))).toBe(true);
 
     await find("schedule").handler(ctx, "", '/schedule add "junk" "坏任务"');
-    expect(writeLines.some((l) => l.includes("cron 表达式无效"))).toBe(true);
+    // 非 cron 首参 → 自然语言解析失败（mock 无 LLM 兜底）
+    expect(writeLines.some((l) => l.includes("无法解析调度需求"))).toBe(true);
 
     const jobs = scheduler.getJobs();
     expect(jobs).toHaveLength(1);
     await find("schedule").handler(ctx, "", `/schedule remove ${jobs[0]!.id}`);
     expect(scheduler.getJobs()).toHaveLength(0);
+  });
+
+  it("/schedule add 支持自然语言（规则解析）", async () => {
+    const dir = makeTestDir("cli-schedule-nl");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx();
+
+    await find("schedule").handler(ctx, "", '/schedule add "每天早上8点生成早报"');
+    expect(writeLines.some((l) => l.includes("定时任务已添加"))).toBe(true);
+    const jobs = scheduler.getJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.cron).toBe("0 8 * * *");
+    expect(jobs[0]!.prompt).toBe("生成早报");
+  });
+
+  it("/schedule add 自然语言无法解析时提示", async () => {
+    const dir = makeTestDir("cli-schedule-nl2");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx();
+    // "帮我写个程序" 无时间无频率 → 规则失败；mock modelRouter 无 complete → LLM 兜底失败
+    await find("schedule").handler(ctx, "", '/schedule add "帮我写个程序"');
+    expect(writeLines.some((l) => l.includes("无法解析调度需求"))).toBe(true);
+    expect(scheduler.getJobs()).toHaveLength(0);
+  });
+
+  it("/sessions 显示真实轮数（用户消息数）", async () => {
+    const { ctx, store, writes } = makeCtx();
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "第一轮" });
+    store.appendMessage(sess.id, { role: "assistant", content: "回复1" });
+    store.appendMessage(sess.id, { role: "user", content: "第二轮" });
+
+    await find("sessions").handler(ctx, "", "/sessions");
+    const joined = writes.join("");
+    expect(joined).toContain("轮数");
+    expect(joined).toContain("消息数");
+    // 行内容包含 2 轮、3 消息（含摘要"第一轮"）
+    const row = joined.split("\n").find((l) => l.includes("第一轮")) ?? "";
+    expect(row).toContain(" 2 ");
+    expect(row).toContain(" 3 ");
+  });
+
+  it("/export 导出当前会话为 Markdown 文件", async () => {
+    const dir = makeTestDir("export-cli");
+    const { ctx, store, writeLines } = makeCtx({ workingDir: dir });
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "你好" });
+    store.appendMessage(sess.id, { role: "assistant", content: "你好！" });
+    ctx.setCurrentSessionId(sess.id);
+
+    await find("export").handler(ctx, "", "/export");
+    expect(writeLines.some((l) => l.includes("已导出会话"))).toBe(true);
+    const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+    expect(files.length).toBeGreaterThan(0);
+    const md = readFileSync(resolve(dir, files[0]!), "utf-8");
+    expect(md).toContain("你好！");
+  });
+
+  it("/export 指定序号导出（/sessions 序号）", async () => {
+    const dir = makeTestDir("export-cli2");
+    const { ctx, store, writeLines } = makeCtx({ workingDir: dir });
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "指定会话" });
+    store.appendMessage(sess.id, { role: "assistant", content: "内容A" });
+
+    await find("export").handler(ctx, "1", "/export 1");
+    expect(writeLines.some((l) => l.includes("已导出会话"))).toBe(true);
+  });
+
+  it("/pkg list 列出可导出资产（.aw）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("pkg").handler(ctx, "", "/pkg list");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("可导出资产");
+    expect(joined).toContain("技能");
+  });
+
+  it("/pkg export 不存在的资产提示未找到", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("pkg").handler(ctx, "", "/pkg export skill no-such-skill");
+    expect(writeLines.some((l) => l.includes("未找到"))).toBe(true);
+  });
+
+  it("/install 未知格式被拒绝（不再限 .aw）", async () => {
+    const dir = makeTestDir("install-unknown");
+    const file = resolve(dir, "thing.txt");
+    writeFileSync(file, "hi", "utf-8");
+    const { ctx, writeLines } = makeCtx();
+    await find("install").handler(ctx, file, `/install ${file}`);
+    expect(writeLines.some((l) => l.includes("不支持的格式"))).toBe(true);
+  });
+
+  it("/install 不存在路径提示", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("install").handler(ctx, "no-such-file.aw", "/install no-such-file.aw");
+    expect(writeLines.some((l) => l.includes("路径不存在"))).toBe(true);
   });
 });

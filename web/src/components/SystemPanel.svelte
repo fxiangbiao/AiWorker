@@ -4,7 +4,7 @@
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace">("context");
+  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace">("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -87,6 +87,7 @@
   let jobList = $state<JobCard[]>([]);
   let newCron = $state("0 8 * * *");
   let newPrompt = $state("");
+  let newNlPrompt = $state("");
   let newAgent = $state("default");
   let schedMsg = $state("");
 
@@ -190,17 +191,25 @@
   }
 
   function addSchedule() {
-    if (!newPrompt.trim()) { schedMsg = "请输入任务描述"; return; }
+    const nl = newNlPrompt.trim();
+    const prompt = newPrompt.trim();
+    if (!nl && !prompt) { schedMsg = "请输入任务描述（自然语言或 cron+任务）"; return; }
     schedMsg = "";
     fetch(`${API}/schedule`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cron: newCron.trim(), prompt: newPrompt.trim(), agentId: newAgent.trim() || "default" }),
+      // 自然语言优先（后端解析为 cron）；否则用 cron + 任务
+      body: JSON.stringify(
+        nl
+          ? { prompt: nl, agentId: newAgent.trim() || "default" }
+          : { cron: newCron.trim(), prompt, agentId: newAgent.trim() || "default" },
+      ),
     })
       .then((r) => r.json())
       .then((d) => {
         if (d.error) { schedMsg = d.error; return; }
         newPrompt = "";
+        newNlPrompt = "";
         loadSchedule();
       })
       .catch(() => { schedMsg = "添加失败"; });
@@ -225,7 +234,219 @@
     failed: "失败",
   };
 
-  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace") {
+  // ── 系统配置（等价 TUI /config） ──
+  interface ConfigState {
+    model: string;
+    availableModels: { key: string; model: string; provider: string }[];
+    runtimeConfig: { profileKey?: string; temperature?: number | null; maxTokens?: number | null };
+    iterations: Record<string, number>;
+    thinking: boolean;
+    skillEvo: boolean;
+    appVersion: string;
+  }
+  let configState = $state<ConfigState | null>(null);
+  let cfgModel = $state("default");
+  let cfgTemperature = $state("");
+  let cfgMaxTokens = $state("");
+  let cfgIterAgent = $state("default");
+  let cfgIterValue = $state("");
+  let cfgMsg = $state("");
+  // 添加模型表单
+  let newModelKey = $state("");
+  let newModelName = $state("");
+  let newModelBase = $state("");
+  let newModelProvider = $state("");
+  let newModelKeyVal = $state("");
+
+  function loadConfig() {
+    loading = true;
+    fetch(`${API}/config`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        configState = d as ConfigState;
+        cfgModel = configState.runtimeConfig.profileKey || "default";
+        cfgTemperature = configState.runtimeConfig.temperature != null ? String(configState.runtimeConfig.temperature) : "";
+        cfgMaxTokens = configState.runtimeConfig.maxTokens != null ? String(configState.runtimeConfig.maxTokens) : "";
+        cfgIterAgent = Object.keys(configState.iterations)[0] || "default";
+        cfgIterValue = configState.iterations[cfgIterAgent] != null ? String(configState.iterations[cfgIterAgent]) : "";
+      })
+      .catch(() => { configState = null; })
+      .finally(() => { loading = false; });
+  }
+
+  async function applyConfig(field: string, value: unknown): Promise<boolean> {
+    cfgMsg = "";
+    const resp = await fetch(`${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field, value }),
+    });
+    const data = (await resp.json()) as { ok?: boolean; error?: string; state?: ConfigState };
+    if (!resp.ok || !data.ok) {
+      cfgMsg = `设置失败: ${data.error ?? resp.status}`;
+      return false;
+    }
+    if (data.state) configState = data.state;
+    loadConfig();
+    return true;
+  }
+
+  function onModelChange() {
+    void applyConfig("model", cfgModel);
+  }
+  function onTemperature() {
+    void applyConfig("temperature", parseFloat(cfgTemperature));
+  }
+  function onMaxTokens() {
+    void applyConfig("maxTokens", parseInt(cfgMaxTokens, 10));
+  }
+  function onIterAgentChange() {
+    cfgIterValue = configState?.iterations[cfgIterAgent] != null ? String(configState.iterations[cfgIterAgent]) : "";
+  }
+  function onIterations() {
+    void applyConfig("iterations", { agentId: cfgIterAgent, value: parseInt(cfgIterValue, 10) });
+  }
+  function onThinking(e: Event) {
+    void applyConfig("thinking", (e.target as HTMLInputElement).checked);
+  }
+  function onSkillEvo(e: Event) {
+    void applyConfig("skillEvo", (e.target as HTMLInputElement).checked);
+  }
+  function onReset() {
+    if (!confirm("恢复配置文件默认（模型/温度/max-tokens）？")) return;
+    void applyConfig("reset", null);
+  }
+
+  function onAddModel() {
+    if (!newModelKey.trim() || !newModelName.trim() || !newModelBase.trim()) {
+      cfgMsg = "添加模型需填写 key / 模型名 / baseURL";
+      return;
+    }
+    void applyConfig("addModel", {
+      key: newModelKey.trim(),
+      model: newModelName.trim(),
+      baseURL: newModelBase.trim(),
+      provider: newModelProvider.trim() || undefined,
+      apiKey: newModelKeyVal.trim() || undefined,
+    }).then((ok) => {
+      if (ok) {
+        newModelKey = "";
+        newModelName = "";
+        newModelBase = "";
+        newModelProvider = "";
+        newModelKeyVal = "";
+      }
+    });
+  }
+
+  // ── .aw 资产包导入/导出 ──
+
+  async function exportAsset(type: "skill" | "mcp" | "plugin", name: string) {
+    try {
+      const resp = await fetch(`${API}/packages/export?type=${type}&name=${encodeURIComponent(name)}`);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name}.aw`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const buf = reader.result as ArrayBuffer;
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+        resolve(btoa(bin));
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  /** 选择文件导入：.aw 包 / 裸 SKILL.md / 裸 MCP 配置（先 peek → 安全确认 → 导入） */
+  function importAsset() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".aw,.md,.json,application/octet-stream,text/markdown";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const filename = file.name;
+      const data = await fileToBase64(file);
+      const peekResp = await fetch(`${API}/packages/peek`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, filename }),
+      });
+      const peek = (await peekResp.json()) as { ok: boolean; type?: string; name?: string; version?: string; error?: string };
+      if (!peekResp.ok) {
+        alert(`无法识别包: ${peek.error ?? peekResp.status}`);
+        return;
+      }
+      // 安全确认：插件执行代码 / MCP 启动进程
+      if (peek.type === "plugin" && !confirm(`⚠️ 导入插件会执行其中的代码（第三方插件可能有风险）。继续导入「${peek.name}」？`)) return;
+      if (peek.type === "mcp" && !confirm(`⚠️ 导入 MCP 会启动外部进程/连接服务。继续导入「${peek.name}」？`)) return;
+      if (peek.type === "skill" && !confirm(`导入技能「${peek.name}」v${peek.version}？`)) return;
+
+      let resp = await fetch(`${API}/packages/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, filename }),
+      });
+      if (!resp.ok) {
+        const r = (await resp.json()) as { error?: string; success?: boolean };
+        if (!r.success && r.error && r.error.includes("已存在")) {
+          if (confirm(`同名资产已存在。覆盖？`)) {
+            resp = await fetch(`${API}/packages/import`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ data, filename, force: true }),
+            });
+          } else {
+            return;
+          }
+        }
+      }
+      if (resp.ok) {
+        loadSkills();
+        loadMcp();
+        loadPlugins();
+        alert(`导入成功: ${peek.type}「${peek.name}」`);
+      } else {
+        const r = (await resp.json()) as { error?: string };
+        alert(`导入失败: ${r.error ?? resp.status}`);
+      }
+    };
+    input.click();
+  }
+
+  /** 导出裸格式（技能 .md / MCP .json） */
+  async function exportRawAsset(type: "skill" | "mcp", name: string) {
+    try {
+      const resp = await fetch(`${API}/packages/export?type=${type}&name=${encodeURIComponent(name)}&raw=1`);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = type === "skill" ? `${name}.md` : `${name}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
@@ -234,6 +455,7 @@
     else if (t === "mcp") loadMcp();
     else if (t === "plugins") loadPlugins();
     else if (t === "schedule") loadSchedule();
+    else if (t === "config") loadConfig();
   }
 
   // WS job/done 事件 → 调度 Tab 数据实时刷新
@@ -248,14 +470,15 @@
 </script>
 
 <div class="sys-panel">
-  <div class="sp-tabs">
-    <button class="sp-tab" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
-    <button class="sp-tab" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
-    <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
-    <button class="sp-tab" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
-    <button class="sp-tab" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
-    <button class="sp-tab" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
-    <button class="sp-tab" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
+  <div class="sp-side">
+    <button class="sp-nav" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
+    <button class="sp-nav" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
+    <button class="sp-nav" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
+    <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
+    <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
+    <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
+    <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
+    <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
   <div class="sp-body">
@@ -297,6 +520,7 @@
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if mcpServers.length === 0}
         <div class="sp-empty">暂无 MCP 服务器</div>
       {:else}
@@ -306,6 +530,8 @@
               <div class="sp-mcp-head" onclick={() => (mcpExpanded = mcpExpanded === s.name ? null : s.name)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (mcpExpanded = mcpExpanded === s.name ? null : s.name)}>
                 <span class="sp-mcp-name">{s.name}</span>
                 <span class="sp-mcp-right">
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportRawAsset("mcp", s.name); }}>导出 .json</button>
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("mcp", s.name); }}>导出 .aw</button>
                   <span class="sp-dot" class:on={s.connected} class:off={!s.connected}>
                     {s.connected ? "已连接" : mcpStateLabel[s.state || "disconnected"] || "未连接"}
                   </span>
@@ -337,6 +563,7 @@
         </div>
       {/if}
     {:else if tab === "plugins"}
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if pluginList.length === 0}
         <div class="sp-empty">暂无插件（config/plugins/）</div>
       {:else}
@@ -346,6 +573,7 @@
               <div class="sp-mcp-head">
                 <span class="sp-mcp-name">{p.name}</span>
                 <span class="sp-mcp-right">
+                  <button class="sp-io-mini" onclick={(e) => { e.stopPropagation(); exportAsset("plugin", p.name); }}>导出 .aw</button>
                   {#if p.version}
                     <span class="sp-card-ver">v{p.version}</span>
                   {/if}
@@ -398,10 +626,14 @@
         </div>
       {/if}
       <div class="sp-sched-form">
-        <input class="sp-sched-input" bind:value={newCron} placeholder="cron 5 字段，如 0 8 * * *" />
+        <input class="sp-sched-input" bind:value={newNlPrompt} placeholder="自然语言，如：每天早上8点生成早报" />
         <input class="sp-sched-input sp-sched-agent" bind:value={newAgent} placeholder="专家" />
-        <input class="sp-sched-input" bind:value={newPrompt} placeholder="任务描述" />
         <button class="sp-sched-btn" onclick={addSchedule}>添加定时任务</button>
+      </div>
+      <div class="sp-sched-form sp-sched-alt">
+        <span class="sp-sched-hint">或直接填 cron：</span>
+        <input class="sp-sched-input" bind:value={newCron} placeholder="cron 5 字段，如 0 8 * * *" />
+        <input class="sp-sched-input" bind:value={newPrompt} placeholder="任务描述" />
       </div>
       {#if schedMsg}
         <div class="sp-mcp-error">{schedMsg}</div>
@@ -429,13 +661,83 @@
           {/each}
         </div>
       {/if}
+    {:else if tab === "config"}
+      {#if !configState}
+        <div class="sp-empty">配置不可用（需 --server 模式）</div>
+      {:else}
+        <div class="sp-section">
+          <div class="sp-row"><span>版本</span><b>v{configState.appVersion}</b></div>
+          <div class="sp-row"><span>当前模型</span><b>{configState.model}</b></div>
+          <label class="sp-cfg-row">模型
+            <select class="sp-cfg-input" bind:value={cfgModel} onchange={onModelChange}>
+              {#each configState.availableModels as m}
+                <option value={m.key}>{m.key}（{m.model} · {m.provider}）</option>
+              {/each}
+            </select>
+          </label>
+          <label class="sp-cfg-row">温度（0-2，空=默认）
+            <input class="sp-cfg-input" bind:value={cfgTemperature} placeholder="默认" />
+            <button class="sp-io-mini" onclick={onTemperature}>应用</button>
+          </label>
+          <label class="sp-cfg-row">max-tokens（≥100，空=默认）
+            <input class="sp-cfg-input" bind:value={cfgMaxTokens} placeholder="默认" />
+            <button class="sp-io-mini" onclick={onMaxTokens}>应用</button>
+          </label>
+          <label class="sp-cfg-row">迭代上限（专家 + 10-1000）
+            <select class="sp-cfg-input" bind:value={cfgIterAgent} onchange={onIterAgentChange}>
+              {#each Object.keys(configState.iterations) as agentId}
+                <option value={agentId}>{agentId}</option>
+              {/each}
+            </select>
+            <input class="sp-cfg-input sp-cfg-num" bind:value={cfgIterValue} placeholder="10-1000" />
+            <button class="sp-io-mini" onclick={onIterations}>应用</button>
+          </label>
+          <label class="sp-cfg-row">思考展示
+            <input type="checkbox" checked={configState.thinking} onchange={onThinking} />
+          </label>
+          <label class="sp-cfg-row">技能自动沉淀
+            <input type="checkbox" checked={configState.skillEvo} onchange={onSkillEvo} />
+          </label>
+          <div class="sp-cfg-row">
+            <button class="sp-io-btn" onclick={onReset}>恢复模型默认（reset）</button>
+          </div>
+          <div class="sp-cfg-sep">添加模型 / Provider</div>
+          <label class="sp-cfg-row">key（唯一标识，如 my-gpt）
+            <input class="sp-cfg-input" bind:value={newModelKey} placeholder="如 my-gpt" />
+          </label>
+          <label class="sp-cfg-row">模型名
+            <input class="sp-cfg-input" bind:value={newModelName} placeholder="如 gpt-4o-mini" />
+          </label>
+          <label class="sp-cfg-row">baseURL
+            <input class="sp-cfg-input" bind:value={newModelBase} placeholder="https://api.example.com/v1" />
+          </label>
+          <label class="sp-cfg-row">provider（可选）
+            <input class="sp-cfg-input" bind:value={newModelProvider} placeholder="如 openai / deepseek" />
+          </label>
+          <label class="sp-cfg-row">apiKey（可选，建议环境变量引用）
+            <input class="sp-cfg-input" bind:value={newModelKeyVal} placeholder={'${MY_API_KEY} 或留空继承默认'} />
+          </label>
+          <div class="sp-cfg-row">
+            <button class="sp-io-btn" onclick={onAddModel}>添加模型</button>
+          </div>
+          {#if cfgMsg}
+            <div class="sp-mcp-error">{cfgMsg}</div>
+          {/if}
+          <div class="sp-note">设置持久化到 data/runtime-config.json 与 config/models.json，重启后仍生效</div>
+        </div>
+      {/if}
     {:else}
+      <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if skillList.length === 0}
         <div class="sp-empty">暂无技能</div>
       {:else if detail}
         <div class="sp-detail">
           <div class="sp-detail-back" onclick={() => (detail = null)}>&#8592; 返回技能列表</div>
-          <div class="sp-detail-name">{detail.name} <span class="sp-detail-ver">v{detail.version}</span></div>
+          <div class="sp-detail-name">
+            {detail.name} <span class="sp-detail-ver">v{detail.version}</span>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportRawAsset("skill", detail.name)}>导出 .md</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", detail.name)}>导出 .aw</button>
+          </div>
           <div class="sp-detail-expert">{detail.expert}</div>
           {#if detail.description}
             <div class="sp-detail-desc">{detail.description}</div>
@@ -486,22 +788,33 @@
 </div>
 
 <style>
-  .sys-panel { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
-  .sp-tabs { display: flex; gap: 4px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
-  .sp-tab {
-    flex: 1;
-    padding: 6px 4px;
+  .sys-panel { display: flex; gap: 0; flex: 1; min-height: 0; }
+  .sp-side {
+    width: 92px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .sp-nav {
+    padding: 8px 10px;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-radius: var(--radius-sm);
     color: var(--dim);
     font-family: var(--font-ui);
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
+    text-align: left;
   }
-  .sp-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
-  .sp-body { flex: 1; overflow-y: auto; min-height: 0; }
+  .sp-nav:hover { background: var(--hover-bg); color: var(--text); }
+  .sp-nav.active { background: var(--primary-light); color: var(--primary); }
+  .sp-body { flex: 1; overflow-y: auto; min-height: 0; padding-left: 14px; }
   .sp-section { display: flex; flex-direction: column; gap: 6px; }
   .sp-row {
     display: flex;
@@ -613,10 +926,23 @@
   .sp-mcp-error { font-size: 11px; color: var(--error); margin-top: 4px; word-break: break-word; }
   .sp-warn { font-size: 11px; color: #d97706; margin-top: 4px; word-break: break-word; }
   .sp-sched-form { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .sp-sched-alt { margin-top: 6px; }
+  .sp-sched-hint { font-size: 11px; color: var(--dim); }
   .sp-sched-input { font-size: 11px; font-family: var(--font-mono); padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); }
   .sp-sched-agent { font-family: var(--font-ui); }
   .sp-sched-btn { padding: 6px 10px; background: var(--primary); color: #fff; border: none; border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; }
   .sp-sched-btn:hover { filter: brightness(1.1); }
   .sp-del { padding: 2px 8px; font-size: 11px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
   .sp-del:hover { color: var(--error); border-color: var(--error); }
+  .sp-io-bar { margin-bottom: 8px; display: flex; justify-content: flex-end; }
+  .sp-io-btn { padding: 5px 12px; font-size: 11px; background: var(--primary-light); color: var(--primary); border: none; border-radius: var(--radius-sm); cursor: pointer; font-weight: 600; }
+  .sp-io-btn:hover { filter: brightness(1.05); }
+  .sp-io-mini { padding: 1px 8px; font-size: 10px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
+  .sp-io-mini:hover { color: var(--primary); border-color: var(--primary); }
+  .sp-io-mini-inline { margin-left: 8px; vertical-align: middle; }
+  .sp-cfg-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); padding: 4px 0; }
+  .sp-cfg-input { font-size: 11px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: var(--font-mono); min-width: 120px; }
+  .sp-cfg-num { min-width: 80px; width: 80px; }
+  .sp-note { font-size: 10px; color: var(--dim); margin-top: 8px; }
+  .sp-cfg-sep { font-size: 11px; font-weight: 600; color: var(--dim); border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 10px; }
 </style>

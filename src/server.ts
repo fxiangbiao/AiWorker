@@ -4,8 +4,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
-import { resolve, dirname, relative, isAbsolute } from "node:path";
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { resolve, dirname, relative, isAbsolute, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -20,6 +20,9 @@ import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-
 import { eventBus } from "./server/event-bus.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
+import { parseNaturalSchedule } from "./core/nl-schedule.js";
+import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
+import { renderSessionMarkdown } from "./memory/session-export.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -57,6 +60,10 @@ interface ServerDeps {
   >;
   getPlugins?: () => PluginInfo[];
   dataDir?: string;
+  /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
+  getConfigState?: () => Record<string, unknown>;
+  /** Web 配置：应用并持久化单个配置项（index.ts 注入） */
+  setConfigField?: (field: string, value: unknown) => { ok: boolean; error?: string };
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -218,35 +225,7 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
   }
 }
 
-/** 将会话消息渲染为 Markdown 导出内容 */
-function renderSessionMarkdown(
-  title: string,
-  sessionId: string,
-  messages: Array<import("./types.js").Message & { seq: number; createdAt: number }>,
-): string {
-  const lines: string[] = [`# ${title}`, "", `> 会话 ID: ${sessionId}`, ""];
-  for (const m of messages) {
-    const time = new Date(m.createdAt).toLocaleString("zh-CN", { hour12: false });
-    if (m.role === "user") {
-      lines.push(`## 🧑 用户 · ${time}`, "", m.content.trim(), "");
-    } else if (m.role === "assistant") {
-      if (m.tool_calls && m.tool_calls.length > 0) {
-        lines.push(`## 🤖 助手 · ${time}`, "");
-        for (const tc of m.tool_calls) {
-          lines.push(`- \`${tc.function.name}\` \`\`\`json\n${tc.function.arguments}\n\`\`\``);
-        }
-        lines.push("");
-      }
-      if (m.content.trim()) {
-        if (!m.tool_calls || m.tool_calls.length === 0) lines.push(`## 🤖 助手 · ${time}`, "");
-        lines.push(m.content.trim(), "");
-      }
-    } else if (m.role === "tool") {
-      lines.push(`> 🔧 工具结果${m.name ? ` (${m.name})` : ""}: ${m.content.slice(0, 200)}`, "");
-    }
-  }
-  return lines.join("\n");
-}
+/** 将会话消息渲染为 Markdown 导出内容（TUI /export 共用） */
 
 export function startServer(deps: ServerDeps, port: number) {
   const startTime = Date.now();
@@ -471,6 +450,172 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    // ─── 系统配置（Web 端 /config 等价能力） ───
+    if (url === apiUrl("/config") && req.method === "GET") {
+      if (!deps.getConfigState) {
+        sendJSON(res, 503, { error: "Config not available" });
+        return;
+      }
+      sendJSON(res, 200, deps.getConfigState());
+      return;
+    }
+    if (url === apiUrl("/config") && req.method === "POST") {
+      if (!deps.setConfigField) {
+        sendJSON(res, 503, { error: "Config not available" });
+        return;
+      }
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let cfg: { field?: string; value?: unknown };
+      try {
+        cfg = JSON.parse(body) as { field?: string; value?: unknown };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!cfg.field || typeof cfg.field !== "string") {
+        sendJSON(res, 400, { error: "Missing 'field'" });
+        return;
+      }
+      const result = deps.setConfigField(cfg.field, cfg.value);
+      sendJSON(res, result.ok ? 200 : 400, result.ok ? { ok: true, state: deps.getConfigState?.() } : result);
+      return;
+    }
+
+    // ─── .aw 资产包导出/导入/列表（含裸格式） ───
+    if (url.startsWith(apiUrl("/packages/export")) && req.method === "GET") {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const type = u.searchParams.get("type") ?? "";
+      const name = u.searchParams.get("name") ?? "";
+      const raw = u.searchParams.get("raw") === "1";
+      if (!["skill", "mcp", "plugin"].includes(type) || !name) {
+        sendJSON(res, 400, { error: "Missing type/name" });
+        return;
+      }
+      if (raw) {
+        if (type === "plugin") {
+          sendJSON(res, 400, { error: "插件裸导出请用 CLI: /pkg export plugin <名称> <目录> --raw" });
+          return;
+        }
+        const out = packageInstaller.exportRaw(type as "skill" | "mcp", name);
+        if (!out) {
+          sendJSON(res, 404, { error: `未找到 ${type}: ${name}` });
+          return;
+        }
+        res.writeHead(200, {
+          "Content-Type": type === "skill" ? "text/markdown; charset=utf-8" : "application/json",
+          "Content-Disposition": `attachment; filename="${encodeURIComponent(out.filename)}"`,
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(out.data);
+        return;
+      }
+      const out = packageInstaller.exportPackage(type as "skill" | "mcp" | "plugin", name);
+      if (!out) {
+        sendJSON(res, 404, { error: `未找到 ${type}: ${name}` });
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(`${out.manifest.name}-${out.manifest.version}.aw`)}"`,
+        "Access-Control-Allow-Origin": "*",
+      });
+      res.end(out.data);
+      return;
+    }
+    // 导入前预览 manifest（Web 安全确认用；不落盘）
+    if (url === apiUrl("/packages/peek") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let peek: { data?: string; filename?: string };
+      try {
+        peek = JSON.parse(body) as { data?: string; filename?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!peek.data || typeof peek.data !== "string") {
+        sendJSON(res, 400, { error: "Missing 'data' (base64)" });
+        return;
+      }
+      const tmpDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      mkdirSync(tmpDir, { recursive: true });
+      const ext = (peek.filename ?? "pkg.aw").toLowerCase().endsWith(".md")
+        ? ".md"
+        : (peek.filename ?? "pkg.aw").toLowerCase().endsWith(".json")
+          ? ".json"
+          : ".aw";
+      const tmp = resolve(tmpDir, `peek-${Date.now().toString(36)}${ext}`);
+      writeFileSync(tmp, Buffer.from(peek.data, "base64"));
+      try {
+        if (ext === ".md") {
+          const raw = readFileSync(tmp, "utf-8");
+          const meta = parseSkillMeta(raw);
+          const name = meta.name;
+          if (!name) {
+            sendJSON(res, 400, { ok: false, error: "SKILL.md 缺少 name frontmatter" });
+          } else {
+            sendJSON(res, 200, { ok: true, type: "skill", name, version: meta.version ?? "1.0.0", description: meta.description });
+          }
+        } else if (ext === ".json") {
+          const base = basename(peek.filename ?? "server").replace(/\.json$/i, "");
+          sendJSON(res, 200, { ok: true, type: "mcp", name: base, version: "1.0.0" });
+        } else {
+          const manifest = packageInstaller.readManifest(tmp);
+          sendJSON(res, 200, { ok: true, type: manifest.type, name: manifest.name, version: manifest.version, description: manifest.description });
+        }
+      } catch (err) {
+        sendJSON(res, 400, { ok: false, error: (err as Error).message });
+      } finally {
+        rmSync(tmp, { force: true });
+      }
+      return;
+    }
+    if (url === apiUrl("/packages/import") && req.method === "POST") {      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let req3: { data?: string; filename?: string; force?: boolean };
+      try {
+        req3 = JSON.parse(body) as { data?: string; filename?: string; force?: boolean };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!req3.data || typeof req3.data !== "string") {
+        sendJSON(res, 400, { error: "Missing 'data' (base64)" });
+        return;
+      }
+      // 按文件名扩展名分发：.aw 标准包 / .md 技能 / .json MCP
+      const lower = (req3.filename ?? "pkg.aw").toLowerCase();
+      const ext = lower.endsWith(".md") ? ".md" : lower.endsWith(".json") ? ".json" : ".aw";
+      const tmpDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      mkdirSync(tmpDir, { recursive: true });
+      const tmp = resolve(tmpDir, `import-${Date.now().toString(36)}${ext}`);
+      writeFileSync(tmp, Buffer.from(req3.data, "base64"));
+      const result = packageInstaller.installAny(tmp, { force: req3.force === true });
+      rmSync(tmp, { force: true });
+      sendJSON(res, result.success ? 200 : 400, result);
+      return;
+    }
+    if (url === apiUrl("/packages/list") && req.method === "GET") {
+      sendJSON(res, 200, { exportable: packageInstaller.listExportable(), installed: packageInstaller.listInstalled() });
+      return;
+    }
+
     // ─── 后台任务 ───
     if (url === apiUrl("/jobs") && req.method === "GET") {
       sendJSON(res, 200, { jobs: jobRunner.isInitialized() ? jobRunner.list() : [] });
@@ -530,13 +675,24 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 400, { error: "Invalid JSON" });
         return;
       }
-      if (!sched.cron || !sched.prompt || typeof sched.cron !== "string" || typeof sched.prompt !== "string") {
+      if (!sched.prompt || typeof sched.prompt !== "string") {
         sendJSON(res, 400, { error: "Missing 'cron' or 'prompt' field" });
         return;
       }
+      // 未提供 cron → 自然语言解析（规则；失败提示手填 cron）
+      let cron = sched.cron;
+      if (!cron || !cron.trim()) {
+        const parsed = parseNaturalSchedule(sched.prompt);
+        if (!parsed) {
+          sendJSON(res, 400, { error: "无法解析调度需求，请提供 cron 表达式（如 0 8 * * *）" });
+          return;
+        }
+        cron = parsed.cron;
+        sched.prompt = parsed.prompt;
+      }
       const ok = scheduler.addJob({
         id: `sched-${Date.now().toString(36)}`,
-        cron: sched.cron,
+        cron,
         prompt: sched.prompt,
         agentId: sched.agentId ?? "default",
       });

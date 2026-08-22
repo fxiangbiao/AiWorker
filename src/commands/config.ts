@@ -110,7 +110,7 @@ export const configCommands: CliCommand[] = [
     name: "config",
     usage: "config",
     description: "查看/配置模型与系统参数",
-    detail: "持久化到 data/runtime-config.json（model/temperature/max-tokens/iterations/thinking/skill-evo）",
+    detail: "持久化到 data/runtime-config.json（model/temperature/max-tokens/iterations/thinking/skill-evo/add-model/reset）",
     handler: async (ctx, _arg, line) => {
       const parts = line.split(/\s+/).slice(1);
       const sub = parts[0] ?? "";
@@ -169,6 +169,43 @@ export const configCommands: CliCommand[] = [
           hookManager.on("onTaskComplete", handler, { id, priority: 10 });
           ctx.writeLine(chalk.green("✓ 技能自动沉淀: 开启"));
         }
+      } else if (sub === "add-model" || sub === "addmodel") {
+        // /config add-model <key> <model> <baseURL> [provider] [apiKey]
+        const args = parts.slice(1);
+        const key = args[0];
+        const model = args[1];
+        const baseURL = args[2];
+        const provider = args[3];
+        const apiKey = args[4];
+        if (!key || !model || !baseURL) {
+          ctx.writeLine(chalk.gray("用法: /config add-model <key> <模型名> <baseURL> [provider] [apiKey]"));
+          ctx.writeLine(chalk.gray("  apiKey 建议用 ${ENV} 引用（如 ${MY_API_KEY}），或留空继承默认"));
+          return "continue";
+        }
+        const ok = ctx.modelRouter.addProfile(key, {
+          model,
+          baseURL,
+          provider,
+          apiKey,
+        });
+        if (!ok) {
+          ctx.writeLine(chalk.red(`✗ 添加失败: key「${key}」已存在或非法（需唯一且非 default）`));
+          return "continue";
+        }
+        // 持久化写回 config/models.json
+        try {
+          const modelsPath = resolve(process.cwd(), "config", "models.json");
+          const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & {
+            profiles?: Record<string, unknown>;
+          };
+          if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
+          cfg.profiles[key.trim().toLowerCase()] = ctx.modelRouter.getProfileRaw(key);
+          writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+          ctx.writeLine(chalk.green(`✓ 已添加模型 profile「${key.trim().toLowerCase()}」并持久化到 config/models.json`));
+          ctx.writeLine(chalk.gray(`  切换: /config model ${key.trim().toLowerCase()}`));
+        } catch {
+          ctx.writeLine(chalk.yellow(`✓ 已添加（内存生效），但持久化 config/models.json 失败`));
+        }
       } else if (sub === "iterations" || sub === "iter") {
         const agent = ctx.currentAgent();
         if (!arg) {
@@ -213,7 +250,7 @@ export const configCommands: CliCommand[] = [
         ctx.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /config skill-evo 切换)\n\n`));
         ctx.write(
           chalk.dim(
-            `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config iterations <10-1000> | /config thinking | /config skill-evo | /config reset\n`,
+            `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config iterations <10-1000> | /config add-model <key> <模型> <baseURL> [provider] [apiKey] | /config thinking | /config skill-evo | /config reset\n`,
           ),
         );
       }

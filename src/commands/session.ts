@@ -3,10 +3,13 @@
  */
 
 import chalk from "chalk";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { mcpManager } from "../mcp/mcp-manager.js";
 import { projectTrace, computeSessionStats } from "../core/trace.js";
 import { renderTrace } from "../terminal/trace-view.js";
 import { copyToClipboard } from "./clipboard.js";
+import { renderSessionMarkdown } from "../memory/session-export.js";
 import { displayWidth, padToWidth, formatDuration, fmtK } from "./format.js";
 import type { CliCommand } from "./types.js";
 
@@ -97,11 +100,11 @@ export const sessionCommands: CliCommand[] = [
       if (sessions.length === 0) {
         ctx.writeLine(chalk.gray("暂无历史会话"));
       } else {
-        ctx.write("\n┌──────┬────────────┬────────────┬──────────────┬──────────────────────┐\n");
+        ctx.write("\n┌──────┬────────────┬──────────┬────────────┬──────────────┬──────────────────────┐\n");
         ctx.write(
-          `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
+          `│ ${padToWidth("序号", 4)} │ ${padToWidth("时间", 10)} │ ${padToWidth("轮数", 8)} │ ${padToWidth("消息数", 10)} │ ${padToWidth("Agent", 12)} │ ${padToWidth("摘要", 20)} │\n`,
         );
-        ctx.write("├──────┼────────────┼────────────┼──────────────┼──────────────────────┤\n");
+        ctx.write("├──────┼────────────┼──────────┼────────────┼──────────────┼──────────────────────┤\n");
         sessions.forEach((s, i) => {
           const time = new Date(s.updatedAt).toLocaleDateString();
           const agentLabel = s.agentId.length > 12 ? s.agentId.slice(0, 12) : s.agentId;
@@ -109,10 +112,10 @@ export const sessionCommands: CliCommand[] = [
           // CJK 安全截断（displayWidth 计 2 列/字，列宽 20）
           while (displayWidth(summary) > 20) summary = summary.slice(0, -1);
           ctx.write(
-            `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
+            `│ ${String(i + 1).padEnd(4)} │ ${time.padEnd(10)} │ ${String(s.turnCount).padEnd(8)} │ ${String(s.messageCount).padEnd(10)} │ ${padToWidth(agentLabel, 12)} │ ${padToWidth(summary, 20)} │\n`,
           );
         });
-        ctx.write(`└──────┴────────────┴────────────┴──────────────┴──────────────────────┘\n`);
+        ctx.write(`└──────┴────────────┴──────────┴────────────┴──────────────┴──────────────────────┘\n`);
         ctx.write(chalk.gray(`共 ${sessions.length} 个会话，/switch <序号> 切换\n`));
       }
       ctx.printStatus();
@@ -139,6 +142,44 @@ export const sessionCommands: CliCommand[] = [
       } else {
         ctx.writeLine(chalk.red("未找到该会话，/sessions 查看列表"));
       }
+      ctx.printStatus();
+      return "continue";
+    },
+  },
+  {
+    name: "export",
+    usage: "export [序号]",
+    description: "导出会话为 Markdown 文件",
+    detail: "默认当前会话；/export <序号> 按 /sessions 序号导出；写入工作目录 <标题>.md",
+    handler: async (ctx, arg) => {
+      let targetId = ctx.currentSessionId();
+      if (arg.trim()) {
+        const sessions = ctx.sessionStore.listSessions(20);
+        const idx = parseInt(arg.trim(), 10);
+        if (!Number.isNaN(idx) && idx >= 1 && idx <= sessions.length) {
+          targetId = sessions[idx - 1]!.id;
+        } else {
+          const found = sessions.find((s) => s.id.startsWith(arg.trim()));
+          if (found) targetId = found.id;
+        }
+      }
+      if (!targetId) {
+        ctx.writeLine(chalk.gray("暂无会话可导出（先进行一轮对话，或 /export <序号> 指定会话）"));
+        ctx.printStatus();
+        return "continue";
+      }
+      const messages = ctx.sessionStore.getSessionMessages(targetId);
+      const sessions = ctx.sessionStore.listSessions(1000);
+      const meta = sessions.find((s) => s.id === targetId);
+      const title = meta?.summary ?? targetId.slice(0, 12);
+      const md = renderSessionMarkdown(title, targetId, messages);
+      // 文件名安全化：非法字符替换
+      const safeTitle = title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 50) || "session";
+      const outPath = resolve(ctx.workingDir, `${safeTitle}.md`);
+      mkdirSync(ctx.workingDir, { recursive: true });
+      writeFileSync(outPath, md, "utf-8");
+      ctx.writeLine(chalk.green(`✓ 已导出会话「${title}」→ ${outPath}`));
+      ctx.writeLine(chalk.gray(`  ${messages.length} 条消息 · ${md.length} 字符`));
       ctx.printStatus();
       return "continue";
     },

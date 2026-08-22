@@ -27,6 +27,8 @@ import { PermissionModel } from "./security/permission-model.js";
 import { ApprovalService } from "./security/approval-service.js";
 import { requestConfirm } from "./hooks/confirm-channel.js";
 import { loadHooksFromConfig } from "./hooks/hook-config-loader.js";
+import { hookManager } from "./hooks/hook-manager.js";
+import { createEvaluateSkillCreation } from "./hooks/handlers.js";
 import { DefaultAgent } from "./agents/default-agent.js";
 import { ResearchAgent } from "./agents/research-agent.js";
 import { CodingAgent } from "./agents/coding-agent.js";
@@ -44,6 +46,7 @@ import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
 import { StreamOutputRenderer } from "./terminal/output.js";
 import { buildCliCommands } from "./commands/registry.js";
+import { renderCommandHelp, hasRequiredArgs } from "./commands/misc.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
 import { setAskProvider, isAskWaiting } from "./tools/ask-channel.js";
@@ -339,6 +342,19 @@ program
     }
     stdout.write("\n");
 
+    // server 与 CLI 共用：思考展示开关（server 经配置端点可改）
+    let showThinking = !!options.showThinking;
+    // 持久化运行时配置（server 配置端点与 CLI /config 共用）
+    const persistRuntimeConfig = () => {
+      try {
+        const iterations: Record<string, number> = {};
+        for (const [id, a] of Object.entries(agents)) iterations[id] = a.getConfig().maxIterations;
+        writeFileSync(runtimeConfigPath, JSON.stringify({ ...modelRouter.getOverrides(), iterations }, null, 2));
+      } catch {
+        /* 持久化失败静默 */
+      }
+    };
+
     if (options.server) {
       const port = parseInt(options.port, 10);
       startServer(
@@ -367,6 +383,92 @@ program
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
           getMcpStatuses: () => mcpManager.getStatuses(),
           getPlugins: () => pluginManager.getPlugins(),
+          getConfigState: () => ({
+            model: modelRouter.getDisplayModel(),
+            availableModels: modelRouter.getAvailableModels().map((m) => ({ key: m.key, model: m.model, provider: m.provider })),
+            runtimeConfig: modelRouter.getRuntimeConfig(),
+            iterations: Object.fromEntries(Object.entries(agents).map(([id, a]) => [id, a.getConfig().maxIterations])),
+            thinking: showThinking,
+            skillEvo: hookManager.has("onTaskComplete:evaluateSkillCreation"),
+            appVersion: getAppVersion(),
+          }),
+          setConfigField: (field, value) => {
+            try {
+              switch (field) {
+                case "model": {
+                  const v = String(value);
+                  const valid = modelRouter.getAvailableModels().find((m) => m.key === v);
+                  if (!valid) return { ok: false, error: `未知模型: ${v}` };
+                  modelRouter.setDefaultModel(v);
+                  break;
+                }
+                case "addModel": {
+                  const v = value as { key?: string; model?: string; baseURL?: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number };
+                  const m = v?.model;
+                  const b = v?.baseURL;
+                  if (!v?.key || !m || !b) {
+                    return { ok: false, error: "添加模型需 key/model/baseURL" };
+                  }
+                  if (!modelRouter.addProfile(v.key, { model: m, baseURL: b, provider: v.provider, apiKey: v.apiKey, temperature: v.temperature, maxTokens: v.maxTokens })) {
+                    return { ok: false, error: `添加失败: key「${v.key}」已存在或非法` };
+                  }
+                  // 写回 config/models.json（保留 default/pricing/routing 等字段）
+                  const modelsPath = resolve(process.cwd(), "config", "models.json");
+                  const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & { profiles?: Record<string, unknown> };
+                  if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
+                  cfg.profiles[v.key.trim().toLowerCase()] = modelRouter.getProfileRaw(v.key);
+                  writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+                  break;
+                }
+                case "temperature": {
+                  const t = Number(value);
+                  if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
+                  modelRouter.setTemperature(t);
+                  break;
+                }
+                case "maxTokens": {
+                  const n = Number(value);
+                  if (Number.isNaN(n) || n < 100) return { ok: false, error: "max-tokens 需 ≥ 100" };
+                  modelRouter.setMaxTokens(n);
+                  break;
+                }
+                case "iterations": {
+                  const v = value as { agentId?: string; value?: unknown };
+                  const n = Number(v.value);
+                  if (!v.agentId || !agents[v.agentId] || Number.isNaN(n) || n < 10 || n > 1000) {
+                    return { ok: false, error: "迭代上限需 10-1000（需 agentId）" };
+                  }
+                  agents[v.agentId]!.setMaxIterations(n);
+                  break;
+                }
+                case "thinking":
+                  showThinking = value === true;
+                  break;
+                case "skillEvo":
+                  if (hookManager.has("onTaskComplete:evaluateSkillCreation")) {
+                    hookManager.off("onTaskComplete:evaluateSkillCreation");
+                  } else {
+                    hookManager.on(
+                      "onTaskComplete",
+                      createEvaluateSkillCreation({ sessionStore, modelRouter }),
+                      { id: "onTaskComplete:evaluateSkillCreation", priority: 10 },
+                    );
+                  }
+                  break;
+                case "reset":
+                  modelRouter.setDefaultModel("");
+                  modelRouter.setTemperature(null);
+                  modelRouter.setMaxTokens(null);
+                  break;
+                default:
+                  return { ok: false, error: `未知配置项: ${field}` };
+              }
+              persistRuntimeConfig();
+              return { ok: true };
+            } catch (err) {
+              return { ok: false, error: (err as Error).message };
+            }
+          },
         },
         port,
       );
@@ -374,7 +476,6 @@ program
     }
 
     let currentMode = options.mode as PermissionMode;
-    let showThinking = !!options.showThinking;
     for (const a of Object.values(agents)) {
       a.setMode(currentMode);
     }
@@ -435,15 +536,7 @@ program
       skillCount,
       workingDir,
       runtimeConfigPath,
-      persistRuntimeConfig: () => {
-        try {
-          const iterations: Record<string, number> = {};
-          for (const [id, a] of Object.entries(agents)) iterations[id] = a.getConfig().maxIterations;
-          writeFileSync(runtimeConfigPath, JSON.stringify({ ...modelRouter.getOverrides(), iterations }, null, 2));
-        } catch {
-          /* 持久化失败静默 */
-        }
-      },
+      persistRuntimeConfig,
       currentAgent: () => agents[routeToExpert("")]!,
       getContextBreakdown: (query: string) => {
         const agent = agents[routeToExpert("")]!;
@@ -495,6 +588,11 @@ program
       if (matched) {
         const spaceIdx = trimmed.indexOf(" ");
         const arg = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
+        // 命令级帮助：--help / -h / help 后缀，或必选参数命令无参数时
+        if (arg === "--help" || arg === "-h" || arg === "help" || (!arg && hasRequiredArgs(matched))) {
+          renderCommandHelp(matched, commandCtx);
+          continue;
+        }
         const action = await matched.handler(commandCtx, arg, trimmed);
         if (action === "exit") break;
         continue;

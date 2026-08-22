@@ -1,13 +1,57 @@
 /**
- * 插件命令组 — plugins
+ * 插件命令组 — plugins / install
  */
 
 import chalk from "chalk";
+import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { pluginManager } from "../core/plugin-manager.js";
+import { packageInstaller } from "../core/package-installer.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
 
 export const pluginsCommands: CliCommand[] = [
+  {
+    name: "install",
+    usage: "install <路径|目录> [-f]",
+    description: "安装 .aw 包或裸格式（.md 技能 / .json MCP / 插件目录）",
+    detail: ".aw 按 manifest 路由；裸格式自动识别：.md→技能，.json→MCP（文件名作服务器名），目录→插件；-f 覆盖",
+    handler: async (ctx, arg) => {
+      const parts = arg.trim().split(/\s+/).filter(Boolean);
+      const force = parts.includes("-f") || parts.includes("--force");
+      const pkgPath = parts.find((p) => p !== "-f" && p !== "--force");
+      if (!pkgPath) {
+        ctx.writeLine(chalk.gray("用法: /install <路径> [-f]  例: /install ./git-tools-1.3.aw | ./SKILL.md | ./my-mcp.json | ./plugin-dir"));
+        ctx.printStatus();
+        return "continue";
+      }
+      const abs = existsSync(pkgPath) ? pkgPath : resolvePath(ctx.workingDir, pkgPath);
+      if (!existsSync(abs)) {
+        ctx.writeLine(chalk.red(`✗ 路径不存在: ${abs}`));
+        ctx.printStatus();
+        return "continue";
+      }
+
+      ctx.writeLine(chalk.cyan(`\n📦 安装: ${abs}`));
+      const result = packageInstaller.installAny(abs, { force });
+      if (result.success) {
+        ctx.writeLine(chalk.green(`✓ 安装成功 [${result.type}] ${result.name} v${result.version}`));
+        if (result.type === "plugin") {
+          ctx.writeLine(chalk.dim(`  目录: ${result.targetDir}`));
+          ctx.writeLine(chalk.dim("  重启或下次启动时自动加载（plugin-manager 扫描 config/plugins/）"));
+        } else if (result.type === "mcp") {
+          ctx.writeLine(chalk.dim(`  已合并到 ${result.targetDir}（立即生效，/mcps 查看）`));
+        } else {
+          ctx.writeLine(chalk.dim(`  目录: ${result.targetDir}`));
+          ctx.writeLine(chalk.dim("  技能已就绪，输入 /技能名 激活"));
+        }
+      } else {
+        ctx.writeLine(chalk.red(`✗ 安装失败: ${result.error}`));
+      }
+      ctx.printStatus();
+      return "continue";
+    },
+  },
   {
     name: "plugins",
     usage: "plugins",

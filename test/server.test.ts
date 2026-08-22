@@ -6,6 +6,7 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
+import { writeFileSync, readFileSync } from "node:fs";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
 import { jobRunner } from "../src/core/job-runner.js";
@@ -528,6 +529,24 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(store.getMessages(sess.id)).toHaveLength(0);
   });
 
+  it("GET /sessions 返回真实轮数（用户消息条数）", async () => {
+    const sess = store.createSession("default");
+    store.appendMessage(sess.id, { role: "user", content: "第一轮" });
+    store.appendMessage(sess.id, { role: "assistant", content: "回复1" });
+    store.appendMessage(sess.id, { role: "user", content: "第二轮" });
+    store.appendMessage(sess.id, { role: "assistant", content: "回复2" });
+
+    const resp = await fetch(`${base2}${API}/sessions`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    const found = (data.sessions as Array<{ id: string; turnCount?: number; messageCount?: number }>).find(
+      (s) => s.id === sess.id,
+    );
+    expect(found).toBeDefined();
+    expect(found!.turnCount).toBe(2);
+    expect(found!.messageCount).toBe(4);
+  });
+
   it("删除不存在的会话返回 404", async () => {
     const resp = await fetch(`${base2}${API}/sessions/nonexistent`, { method: "DELETE" });
     expect(resp.status).toBe(404);
@@ -821,5 +840,191 @@ describe("HTTP Server — 后台任务与定时调度", () => {
       body: JSON.stringify({ cron: "not-cron", prompt: "x" }),
     });
     expect(resp.status).toBe(400);
+  });
+
+  it("POST /schedule 支持自然语言（无 cron 字段）", async () => {
+    const add = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "每天晚上9点写日记" }),
+    });
+    expect(add.status).toBe(200);
+    const list = await (await fetch(`${base4}${API}/schedule`)).json();
+    const found = (list.jobs as Array<{ cron: string; prompt: string }>).find((j) => j.prompt === "写日记");
+    expect(found).toBeDefined();
+    expect(found!.cron).toBe("0 21 * * *");
+  });
+
+  it("POST /schedule 自然语言无法解析返回 400", async () => {
+    const resp = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "随便写点东西" }),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("GET /packages/export 校验 type；不存在的资产 404", async () => {
+    const missing = await fetch(`${base4}${API}/packages/export?type=skill&name=no-such-skill`);
+    expect(missing.status).toBe(404);
+    const badType = await fetch(`${base4}${API}/packages/export?type=xxx&name=a`);
+    expect(badType.status).toBe(400);
+    // raw 模式：插件不支持（需 CLI），skill/mcp 返回对应类型
+    const rawPlugin = await fetch(`${base4}${API}/packages/export?type=plugin&name=x&raw=1`);
+    expect(rawPlugin.status).toBe(400);
+  });
+
+  it("POST /packages/peek 支持裸 SKILL.md（.md）与 MCP 配置（.json）", async () => {
+    const md = await fetch(`${base4}${API}/packages/peek`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data: Buffer.from("---\nname: peek-skill\nexpert: coding\n---\n# 技能").toString("base64"),
+        filename: "peek-skill.md",
+      }),
+    });
+    expect(md.status).toBe(200);
+    const mdData = (await md.json()) as { type?: string; name?: string };
+    expect(mdData.type).toBe("skill");
+    expect(mdData.name).toBe("peek-skill");
+
+    const j = await fetch(`${base4}${API}/packages/peek`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        data: Buffer.from(JSON.stringify({ transport: "http", url: "x" })).toString("base64"),
+        filename: "peek-server.json",
+      }),
+    });
+    expect(j.status).toBe(200);
+    const jData = (await j.json()) as { type?: string; name?: string };
+    expect(jData.type).toBe("mcp");
+    expect(jData.name).toBe("peek-server");
+  });
+
+  it("POST /packages/import 缺 data 返回 400；坏 zip 安装失败", async () => {
+    const noData = await fetch(`${base4}${API}/packages/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(noData.status).toBe(400);
+    // 非法 base64/zip 内容 → 安装失败（400）
+    const bad = await fetch(`${base4}${API}/packages/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: Buffer.from("not a zip").toString("base64") }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
+  it("GET /packages/list 返回可导出与已安装资产", async () => {
+    const resp = await fetch(`${base4}${API}/packages/list`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { exportable: { skills: string[]; mcp: string[]; plugins: string[] } };
+    expect(Array.isArray(data.exportable.skills)).toBe(true);
+    expect(Array.isArray(data.exportable.mcp)).toBe(true);
+    expect(Array.isArray(data.exportable.plugins)).toBe(true);
+  });
+
+  it("GET /api/v1/config 返回配置状态；POST 设置并持久化", async () => {
+    // mock deps 未提供 getConfigState → 503
+    const missing = await fetch(`${base4}${API}/config`);
+    expect(missing.status).toBe(503);
+  });
+
+  it("POST /config 校验字段与值", async () => {
+    // mock 未提供 setConfigField → 503
+    const resp = await fetch(`${base4}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "temperature", value: 0.3 }),
+    });
+    expect(resp.status).toBe(503);
+  });
+
+  it("GET /config 与 POST /config 真实实现（注入回调）", async () => {
+    let state = { model: "m1", availableModels: [{ key: "m1", model: "m1", provider: "p" }], runtimeConfig: {}, iterations: { default: 60 }, thinking: false, skillEvo: false, appVersion: "0.6.2" };
+    const deps = mockDeps();
+    deps.getConfigState = () => state;
+    deps.setConfigField = (field, value) => {
+      if (field === "temperature") {
+        const t = Number(value);
+        if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
+        state = { ...state, runtimeConfig: { temperature: t } };
+        return { ok: true };
+      }
+      return { ok: false, error: "未知配置项" };
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const base5 = `http://127.0.0.1:${port}`;
+
+    const get = await fetch(`${base5}${API}/config`);
+    expect(get.status).toBe(200);
+    const got = (await get.json()) as { model: string };
+    expect(got.model).toBe("m1");
+
+    const post = await fetch(`${base5}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "temperature", value: 0.5 }),
+    });
+    expect(post.status).toBe(200);
+    const after = (await post.json()) as { state: { runtimeConfig: { temperature: number } } };
+    expect(after.state.runtimeConfig.temperature).toBe(0.5);
+
+    const bad = await fetch(`${base5}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "temperature", value: 9 }),
+    });
+    expect(bad.status).toBe(400);
+    local.close();
+  });
+
+  it("POST /config addModel：添加模型 profile 并持久化到 config/models.json", async () => {
+    const modelsPath = resolve(testDir, "models.json");
+    writeFileSync(
+      modelsPath,
+      JSON.stringify({
+        default: { provider: "deepseek", model: "m1", baseURL: "https://api.deepseek.com", apiKey: "${K}", temperature: 0.5, maxTokens: 4096, adapter: "openai-compatible" },
+        profiles: { coding: { temperature: 0.2 } },
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.getConfigState = () => ({});
+    deps.setConfigField = (field, value) => {
+      if (field === "addModel") {
+        const v = value as { key?: string; model?: string; baseURL?: string; provider?: string; apiKey?: string };
+        if (!v?.key || !v.model || !v.baseURL) return { ok: false, error: "缺字段" };
+        // 模拟 addProfile + 写回（真实 index.ts 逻辑）
+        const cfg = JSON.parse(readFileSync(modelsPath, "utf-8")) as { profiles: Record<string, unknown> };
+        cfg.profiles[v.key] = { model: v.model, baseURL: v.baseURL, provider: v.provider, apiKey: v.apiKey };
+        writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+        return { ok: true };
+      }
+      return { ok: false, error: "未知" };
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const base6 = `http://127.0.0.1:${port}`;
+
+    const ok = await fetch(`${base6}${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "addModel", value: { key: "my-gpt", model: "gpt-4o-mini", baseURL: "https://api.example.com/v1", provider: "openai", apiKey: "${MY_KEY}" } }),
+    });
+    expect(ok.status).toBe(200);
+
+    const cfg = JSON.parse(readFileSync(modelsPath, "utf-8")) as { profiles: Record<string, { model?: string; baseURL?: string }> };
+    expect(cfg.profiles["my-gpt"]).toMatchObject({ model: "gpt-4o-mini", baseURL: "https://api.example.com/v1" });
+    // 原字段保留
+    expect(cfg.profiles["coding"]).toBeDefined();
+    local.close();
   });
 });

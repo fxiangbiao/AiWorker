@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.5.0-blue)
+![version](https://img.shields.io/badge/version-0.6.4-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -65,10 +65,16 @@
 
 **后台任务与定时调度**
 - **后台任务**（`/bg`）：长任务后台执行不阻塞交互，并发上限 2 自动排队；完成写独立会话 + **WebSocket 实时推送**（Web 调度 Tab 即时刷新）；后台任务 fail-closed（高危自动拒）
-- **定时调度**：`config/schedule.json` 或 `/schedule` 定义 cron 任务（5 字段标准 cron），到点自动执行；`/api/v1/schedule` 与 `/api/v1/jobs` REST 端点
+- **定时调度**：`config/schedule.json` 或 `/schedule` 定义 cron 任务（5 字段标准 cron），到点自动执行；**支持自然语言添加**（如"每天早上8点生成早报"→ 规则解析 + LLM 兜底）；`/api/v1/schedule` 与 `/api/v1/jobs` REST 端点
 
 **首次运行引导**
 - 首次启动（TUI + 未配置 API Key）自动引导：输入 Key（写 `.env` 立即生效）→ 选权限模式 → 确认目录；`/setup` 随时重配；`.env` 加载零依赖、不覆盖已有环境变量
+
+**资产包分发（.aw + 裸格式）**
+- 技能/MCP/插件统一打包为 `.aw`（zip + manifest.json，`scripts/pack-aw.mjs` 打包）
+- `/pkg export` 导出、`/install` 安装（按 manifest.type 路由：plugin→config/plugins/，skill→skills/，mcp→config/mcp.json）
+- **裸格式**：`/install` 与 Web 支持直接导入 `SKILL.md`、MCP 配置 `.json`、插件目录；`/pkg export --raw` 输出裸格式
+- 安全：包名/路径白名单校验（防目录穿越）、入口探测失败回滚、`minAppVersion` 校验；Web 导入前预览 manifest 并警告插件/MCP 执行风险
 
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
@@ -163,7 +169,9 @@ npm run dev -- [选项]
 | `/debate <话题>` | 双专家辩论 |
 | `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
 | `/jobs [cancel <id>]` | 查看/取消后台任务 |
-| `/schedule` | 定时任务管理：`add "<cron>" "<任务>" [agentId]` / `remove <id>`（cron 5 字段） |
+| `/schedule` | 定时任务管理：`add "<cron>" "<任务>" [agentId]` / `add "<自然语言>"` / `remove <id>`（cron 5 字段） |
+| `/install <路径> [-f]` | 安装 .aw 包或裸格式（.md 技能 / .json MCP / 插件目录，自动识别） |
+| `/pkg export <类型> <名称> [--raw]` | 打包导出 .aw；`--raw` 输出裸格式（技能 .md / MCP .json / 插件目录）；`/pkg list` 查看可导出资产 |
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |
@@ -171,11 +179,12 @@ npm run dev -- [选项]
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/trace [序号]` | 会话轨迹时间线（事件级复盘，--json 输出） |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
-| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/**iterations**/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
+| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/**iterations**/thinking/skill-evo/**add-model**/reset，持久化到 `data/runtime-config.json` 与 `config/models.json`） |
 | `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
+| `/export [序号]` | 导出会话为 Markdown 文件（默认当前会话，写入工作目录） |
 | `/copy` | 复制最后回答原始 Markdown |
-| `/help` / `/exit` | 帮助 / 退出 |
+| `/help [命令]` / `/exit` | 帮助（`/help <命令>` 或 `/<命令> --help` 查看详细用法）/ 退出 |
 
 快捷键：`Ctrl+C` 中断当前运行，`Tab` 补全（`/命令` + 技能名），方向键浏览历史与滚动回看；输入框**支持多行**——长内容自动换行不截断，`Shift+Enter`（或 Alt/Ctrl+Enter）插入换行、`Enter` 提交，多行编辑时 `↑`/`↓` 在行间移动光标。
 
