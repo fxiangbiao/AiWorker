@@ -41,7 +41,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 ### 核心引擎 `src/core/`
 
-- `agent-loop.ts` — `runAgentLoop`（同步）/ `runAgentLoopStream`（流式 + AbortSignal）。空响应 3 次断路器；**工具调用统一超时**（`withTimeout`，默认 60s，`deps.toolTimeoutMs` 可注入）；**防循环提醒**（连续 ≥3 次相同 (tool, args) 注入 system 提醒，streak 只提醒一次）；token 压缩阈值 75%；循环边界发 `step/start`/`step/end`（**`endStep()` 必须先于 `iterations++`**，编号才一致）；`executeTool` 包装层发 `tool/call`/`tool/result`；每轮 `assistant(tool_calls)` 经 appendMessage 持久化
+- `agent-loop.ts` — `runAgentLoop`（同步）/ `runAgentLoopStream`（流式 + AbortSignal）。空响应 3 次断路器；**工具调用统一超时**（`withTimeout`，默认 60s，`deps.toolTimeoutMs` 可注入）；**迭代预算管理**：剩余 ≤5 轮注入一次收敛提示（`BUDGET_WARN_AT`）、连续相同 (tool,args) ≥3 注入提醒 / **≥6 强制终止**（`REPEAT_FORCE_STOP`，`repeatStreak` 共用计数）、连续 4 轮全部工具失败提前终止（`TOOL_FAIL_STREAK_MAX`）；**撞顶返回最后进展 + 建议**（不再裸返回"达到迭代上限"）；token 压缩阈值 75%；循环边界发 `step/start`/`step/end`（**`endStep()` 必须先于 `iterations++`**，编号才一致）；`executeTool` 包装层发 `tool/call`/`tool/result`；每轮 `assistant(tool_calls)` 经 appendMessage 持久化
 - `model-router.ts` — 多 profile（`config/models.json`，支持 `${ENV}`）。**思考模式**：`thinking: true` 时 temperature 失效，经 `extra_body` 传递；流式 usage 只在循环外一次性 `+=`；`lastUsage` 供 assistant 事件携带 token
 - `context-manager.ts` — `assembleContext()` 组装 + 压缩 + `getContextBreakdown()` 分层统计；`freezeSnapshot()` 捕获记忆快照保证前缀缓存；历史源用 `replayEvents`（含 tool 结果）；**工具结果剪枝**：组装输出前截断 >20K 字符的 tool 消息（完整内容仍在事件日志，replay-safe）
 - `team-coordinator.ts` — DAG 编排：Kahn 环路检测 + 死锁检测；4 模板；非关键步骤失败跳过，关键失败中止；导出 `pickDebateAgents`（CLI 与 HTTP 共用）
@@ -50,6 +50,10 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `project-profiler.ts` — 启动扫描工作目录注入 system prompt；`type: "unknown"` = 未识别项目类型（展示层显示"未识别"）
 - `tool-registry.ts` — 工具注册 + 可用性检查；**作用域视图**：`getScope(scopeId)` 返回 `ToolScopeView`（scope 注册 + 全局回退，同名遮蔽全局；agent-loop 传 `toolScope: agentId`，模型可见性与执行解析共用同一 view）；agent 可见性白名单（`config.tools` 非空时仅保留白名单；`mcp_` 前缀与插件注册工具豁免）
 - `plugin-manager.ts` — 轻量插件契约（详见 README「插件开发」）：`config/plugins/<name>/` 默认导出 `setup(ctx)`；fail-soft + 幂等；**同名冲突警告**（记录到 `PluginInfo.warnings`）；插件工具默认全局可见，`{scope}` 注册可限定专家
+- `job-runner.ts` — **后台任务**：`submit(agentId, prompt)` 立即返回 jobId；状态机 queued→running→done/failed；**并发上限 2**（FIFO 排队）；后台不注册 ask/confirm 通道（fail-closed 自动拒高危）、不写 TUI；结果写独立会话 + 审计（`job:done|failed`）+ `eventBus.broadcast({type:"job/done"})`；`cancel` 仅排队中；`clear()` 测试/重置用；`init(deps)` 由 index.ts 在 agents 创建后调用
+- `scheduler.ts` — **定时调度**：`config/schedule.json`（BOM 容错）；**cron-parser v5 = 6 字段（秒 分 时 日 月 周），5 字段标准 cron 自动补秒前缀**（`normalizeCron`）；`nextFireAt` 无效返回 null；到点 `submit` + 重新调度；`addJob`/`removeJob` 写回配置；`start`/`stop`；超长延时（>24.8 天）分段 setTimeout
+- `env-loader.ts` — **极简 .env 加载**（零依赖）：`KEY=VALUE` / `#` 注释 / 可选引号 / BOM；**不覆盖已有 process.env**；index.ts 入口最先调用
+- `onboarding.ts` — **首次运行引导**：`shouldOnboard(dataDir)`（无标记触发）；`runOnboarding(deps)` 三步（API Key 写 .env + 权限模式写 permissions.json + 目录确认）；完成/跳过均写 `data/onboarding.json`；`/setup` 重进（`CommandContext.ask` 提问通道）
 - `llm/` — Provider Seam：`llm-adapter.ts`（LlmConnection/LlmAdapter 契约）、`llm-error.ts`（稳定错误码 + classifyError/isRetryable）、`adapter-registry.ts`（未知 id 降级 openai-compatible）、`openai-compatible.ts`（唯一接触 openai SDK 的模块；**流式已产出 chunk 后失败不重试**防重复）
 
 ### 智能体与路由 `src/agents/`
@@ -83,6 +87,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `hook-manager.ts` — 6 事件：onMessage / onToolCallPre / onToolCallPost / onTaskComplete / onError / onTelemetryRecord；`config/hooks.json` 注册 14 handlers；**trigger 逐 hook fail-soft**：单个 hook 抛错记审计（`action: hook:<event>`, `result: error`）视为放行，不中断任务；权限类 hook 用显式 `{ proceed: false }` 拦截
 - **`approval-service.ts` 审批服务（权限决策单点）**：`checkCommandBlock` / `checkPermission` / `checkConfirmation`（plan 全确认、auto 高危确认）；**无确认通道默认拒绝（fail-closed）**；三个权限 hook（`dangerousCommandBlock`/`permissionCheck`/`confirmHighRisk`）均为薄委托，`index.ts` 构造注入（`confirm: requestConfirm`），测试可注入 mock
 - 权限三模式：ask（只读工具，写/高危被 permissionCheck 拦截产生红色告警）/ plan（每步确认）/ auto（自动，高危仍确认）；`danger-detector.ts` 正则拦截高危操作
+- **`sandbox.ts` 策略化命令沙箱**：`config/sandbox.json`（enabled/allowDirs/denyCommands/stripSecretEnv，缺失回退默认）；`checkCommand`（cwd 越界 fail-closed，allowDirs 空时=workingDir）/ `checkDeniedCommand`（子串匹配）/ `sanitizeEnv`（剥 KEY/TOKEN/SECRET/PASSWORD）；terminal_exec 全检查（含 cwd），terminal_session 仅 deny+env（会话 cwd 有状态无法约束）；**强制层先于权限层**
 - `config/permissions.json` 是配置源（default_mode / modes / allowed_dirs / denied_patterns），CLI `--mode` 显式传入覆盖 default_mode；加载时 strip UTF-8 BOM
 - 确认/提问通道：`confirm-channel.ts`（高危确认）+ `ask-channel.ts`（ask_user）均为 provider 分发——CLI 走 stdin，HTTP 走 SSE（`confirm_request` / `ask_user`）挂起 + POST `/api/v1/confirm` / `/api/v1/ask`（30s 超时自动拒绝）；server 端 `runWithChannels(write, fn)` 统一注册两个 provider
 - 拦截失败时 server 发 `tool_blocked` SSE 事件，前端显示红色告警横幅
@@ -99,22 +104,25 @@ npm run web:build      # Web UI 构建 → web/dist/
 
 - `server.ts` — **API 统一 `/api/v1` 前缀**（`API_PREFIX` + `apiUrl()`）；静态资源托管仅排除 `/api`，新端点用 `apiUrl("/xxx")` 注册即生效；托管 `web/dist/`（路径穿越防护 + favicon 204 + Cache-Control）
 - 端点：GET `/api/v1/agents` `/status`(含 version) `/tools` `/sessions`(+/:id, rename, export, DELETE) `/context` `/logs` `/skills` `/diffs` `/trace/:id` `/stats` `/telemetry/:id` `/mcp` `/plugins`；POST `/api/v1/chat` `/plan` `/debate` `/confirm` `/ask`（SSE 流式）
+- **WebSocket 实时总线**：`event-bus.ts` 单例 EventBus（subscribe/broadcast）；`server.on("upgrade")` 处理 `/api/v1/ws`（`WebSocketServer({noServer:true})`，非 /ws 路径 destroy）；30s 心跳清理死连接；chat/plan/debate 的 `write` 闭包 **SSE + eventBus 双写**；会话创建/重命名/删除/新消息广播 `session/update`；前端 `web/src/lib/stores/ws.svelte.ts` 消费（指数退避重连），仅处理同步事件（`session/update` + 非流式中 `done`），避免与 SSE 双通道重复渲染
 - `/plan` SSE 事件序列：plan → step_start → step_end → done；`/debate`：debate_start → done；均经 `deps.coordinator`（ServerDeps 依赖注入）
 - `/chat` 接受 `sessionId`：Web UI 用 chat id 作为 sessionId 持久化
-- `web/` — Svelte 5 + Vite 6；API 常量在 `chat.svelte.ts` 导出 `API = "/api/v1"`；vite proxy `/api → :3000`
+- `web/` — Svelte 5 + Vite 6；API 常量在 `chat.svelte.ts` 导出 `API = "/api/v1"`；vite proxy `/api → :3000`（需 `ws: true` 转发 WS）
 - `ChatPanel.handleSSE()` 直接 mutate `store.messages`；`DOMPurify` 消毒 `marked.parse()` 输出防 XSS；`store.inputMode` 控制 chat/plan/debate
-- 组件：`SystemPanel.svelte`（context/logs/skills/mcp/plugins/trace 六 Tab）、`TracePanel.svelte`（两栏）、`PlanStepsBlock.svelte`（步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`AskCard.svelte`（提问卡片）、`FileDiffPanel.svelte`（diff 分栏）
+- 组件：`SystemPanel.svelte`（context/logs/skills/mcp/plugins/schedule/trace 七 Tab）、`TracePanel.svelte`（两栏）、`PlanStepsBlock.svelte`（步骤状态机）、`ConfirmCard.svelte`（确认卡片）、`AskCard.svelte`（提问卡片）、`FileDiffPanel.svelte`（diff 分栏）
 - `/chat` 透传 `task.mode`；`permissionCheck` 读请求级 `ctx.data.permissions`；`captureDiff` 写磁盘快照 + 审计，`/diffs` 读取展示
 
 ## 测试
 
 - `test/helpers.ts`：`makeTestDir(name)` 创建独立 `data-test/<name>/`（防并行 worker 冲突）、`setupEnv`（注册内置工具 + 审计）、`clearTools`
-- `server.test.ts`：HTTP 端点全覆盖（mock coordinator/agent + listen(0) 随机端口 + fetch，避免真实 LLM）
+- **测试隔离**：读真实 `config/*.json` 的测试一律注入 fixture（`test/fixtures/models.json`，如 `new ModelRouter(FIXTURE_PATH)`），改配置不碎测试；`terminal-session.test.ts` 用 `describe.skipIf(process.platform !== "win32")`（真实 spawn cmd，非 Windows 跳过，CI Linux runner 兼容）
+- `server.test.ts`：HTTP 端点全覆盖（mock coordinator/agent + listen(0) 随机端口 + fetch，避免真实 LLM）；**WebSocket 测试**用 `ws` 客户端连 `/api/v1/ws`（注意 `import { WebSocket as WsClient } from "ws"` 值导入，Node 22 全局 WebSocket 无 `.on` 方法）
 - 核心：`core.test.ts` / `agent-loop.test.ts`（超时/防循环/白名单过滤/toolScope，mock modelRouter + 真实 SessionStore/ContextManager）/ `tool-registry.test.ts`（作用域遮蔽/回退/过滤）/ `trace.test.ts` / `session-events.test.ts` / `context-manager` 相关
 - 工具与插件：`tools.test.ts` / `spill.test.ts` / `ask-channel.test.ts` / `terminal-session.test.ts`（真实 spawn cmd）/ `plugin-manager.test.ts`（临时目录插件加载：setup/工具/hook/config/scope/fail-soft/幂等/冲突警告）
-- 安全与 Hook：`approval-service.test.ts`（决策矩阵 + fail-closed）/ `hooks.test.ts`（生命周期 + fail-soft）
+- 安全与 Hook：`approval-service.test.ts`（决策矩阵 + fail-closed）/ `hooks.test.ts`（生命周期 + fail-soft）/ `sandbox.test.ts`（策略加载/BOM/cwd 越界/denyCommands/sanitizeEnv/接入 terminal_exec）
+- 调度与引导：`job-runner.test.ts`（状态机/并发排队/失败/取消/WS 广播）/ `scheduler.test.ts`（nextFireAt/加载/增删持久化/fake timers 触发）/ `env-loader.test.ts`（解析/注释/引号/不覆盖）/ `onboarding.test.ts`（触发/写文件/跳过/非法模式回退）
 - 其余：`memory.test.ts` / `mcp.test.ts` / `team.test.ts` / `llm-adapter.test.ts` / `skill-evolution.test.ts` / `cli-commands.test.ts` / `screen.test.ts` / `tui.test.ts` / `streaming-terminal.test.ts`
-- vitest 配置在 `vitest.config.ts`（include `test/**/*.test.ts`）
+- vitest 配置在 `vitest.config.ts`（include `test/**/*.test.ts`）；CI 在 `.github/workflows/ci.yml`（windows+ubuntu 双平台，`npm ci` + lint + build + test + web:build）
 
 ## CLI 交互命令
 
@@ -122,6 +130,10 @@ npm run web:build      # Web UI 构建 → web/dist/
 /mode <ask|plan|auto>  切换权限模式
 /plan <任务>             多专家 DAG 协作
 /debate <话题>           双专家辩论
+/bg <任务>               提交后台任务（不阻塞交互）
+/jobs [cancel <id>]     查看/取消后台任务
+/schedule               定时任务管理（add/remove/list，cron 5 字段）
+/setup                  重新运行首次引导（API Key/权限模式）
 /skill <名称>            手动激活技能
 /skills                  查看全部技能（分组+描述）
 /new                     新会话
@@ -130,7 +142,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 /plugins                 查看插件（config/plugins/ 状态与注册工具）
 /trace [序号]            会话轨迹时间线（事件级复盘，--json 输出）
 /status                  运行状态（版本/模式/模型/专家/token）
-/config                  模型/温度/max-tokens/thinking/skill-evo（持久化 data/runtime-config.json）
+/config                  模型/温度/max-tokens/iterations/thinking/skill-evo（持久化 data/runtime-config.json）
 /sessions                浏览会话
 /switch <序号>           切换
 /copy                    复制最后回答 Markdown

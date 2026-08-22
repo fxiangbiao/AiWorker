@@ -6,7 +6,10 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
+import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
+import { jobRunner } from "../src/core/job-runner.js";
+import { scheduler } from "../src/core/scheduler.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -604,5 +607,219 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(Array.isArray(data.servers)).toBe(true);
+  });
+});
+
+describe("HTTP Server — WebSocket 实时总线", () => {
+  let server3: Server | undefined;
+  let base3: string;
+  let wsPort: number;
+  let store: SessionStore;
+
+  beforeAll(async () => {
+    setupEnv(testDir);
+    store = new SessionStore(resolve(testDir, "ws-sessions.db"));
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store,
+    };
+    server3 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server3!.once("listening", () => resolve()));
+    wsPort = (server3!.address() as AddressInfo).port;
+    base3 = `http://127.0.0.1:${wsPort}`;
+  });
+
+  afterAll(() => {
+    if (server3) {
+      server3.close();
+      server3 = undefined;
+    }
+    if (store) store.close();
+    teardownEnv();
+  });
+
+  function connectWs(): Promise<WsClient> {
+    return new Promise((resolve, reject) => {
+      const ws = new WsClient(`ws://127.0.0.1:${wsPort}${API}/ws`);
+      ws.on("open", () => resolve(ws));
+      ws.on("error", reject);
+    });
+  }
+
+  function waitFor<T extends { type: string }>(
+    ws: WsClient,
+    pred: (d: T) => boolean,
+    timeoutMs = 3000,
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("WS event timeout")), timeoutMs);
+      const onMsg = (raw: RawData) => {
+        const data = JSON.parse(String(raw)) as T;
+        if (pred(data)) {
+          clearTimeout(timer);
+          ws.off("message", onMsg);
+          resolve(data);
+        }
+      };
+      ws.on("message", onMsg);
+    });
+  }
+
+  function postChat(message: string): Promise<Response> {
+    return fetch(`${base3}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, mode: "auto" }),
+    });
+  }
+
+  it("连接 /api/v1/ws 成功并收到 chat 事件广播", async () => {
+    const ws = await connectWs();
+    const doneP = waitFor(ws, (d) => d.type === "done");
+    const resp = await postChat("hi");
+    expect(resp.status).toBe(200);
+    const done = await doneP;
+    expect(done.type).toBe("done");
+    ws.close();
+  });
+
+  it("多客户端均收到广播（含 tool_result 事件）", async () => {
+    const wsA = await connectWs();
+    const wsB = await connectWs();
+    const seenA = waitFor(wsA, (d) => d.type === "tool_result");
+    const seenB = waitFor(wsB, (d) => d.type === "tool_result");
+    const resp = await postChat("执行任务");
+    expect(resp.status).toBe(200);
+    await seenA;
+    await seenB;
+    wsA.close();
+    wsB.close();
+  });
+
+  it("会话重命名经 WS 广播 session/update", async () => {
+    const sess = store.createSession("default");
+    const ws = await connectWs();
+    const updP = waitFor(ws, (d) => d.type === "session/update" && d.kind === "rename" && d.sessionId === sess.id);
+    const resp = await fetch(`${base3}${API}/sessions/${sess.id}/rename`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "新标题" }),
+    });
+    expect(resp.status).toBe(200);
+    const upd = await updP;
+    expect(upd.title).toBe("新标题");
+    ws.close();
+  });
+
+  it("非 /ws 路径 upgrade 被拒绝", async () => {
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const ws = new WsClient(`ws://127.0.0.1:${wsPort}${API}/chat`);
+        ws.on("open", () => {
+          ws.close();
+          reject(new Error("should not open"));
+        });
+        ws.on("error", () => resolve());
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("HTTP Server — 后台任务与定时调度", () => {
+  let server4: Server | undefined;
+  let base4: string;
+  let store4: SessionStore;
+
+  beforeAll(async () => {
+    setupEnv(testDir);
+    store4 = new SessionStore(resolve(testDir, "jobs-server.db"));
+    jobRunner.init({
+      createAgent: () => mockAgent() as never,
+      workingDir: testDir,
+      sessionStore: store4,
+    });
+    scheduler.init({ submit: () => "" }, resolve(testDir, "schedule-server.json"));
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store4,
+    };
+    server4 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server4!.once("listening", () => resolve()));
+    const port = (server4!.address() as AddressInfo).port;
+    base4 = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(() => {
+    if (server4) {
+      server4.close();
+      server4 = undefined;
+    }
+    if (store4) store4.close();
+    teardownEnv();
+  });
+
+  it("POST /jobs 提交返回 id，GET /jobs 列表可见", async () => {
+    const resp = await fetch(`${base4}${API}/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "default", prompt: "后台任务" }),
+    });
+    expect(resp.status).toBe(200);
+    const { id } = (await resp.json()) as { id: string };
+    expect(id).toMatch(/^job-/);
+
+    const list = await (await fetch(`${base4}${API}/jobs`)).json();
+    expect((list.jobs as Array<{ id: string }>).some((j) => j.id === id)).toBe(true);
+  });
+
+  it("POST /jobs 缺 prompt 返回 400", async () => {
+    const resp = await fetch(`${base4}${API}/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("GET /schedule 空列表；POST 添加；DELETE 移除", async () => {
+    const empty = await (await fetch(`${base4}${API}/schedule`)).json();
+    expect(empty.jobs).toEqual([]);
+
+    const add = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cron: "0 8 * * *", prompt: "早报", agentId: "default" }),
+    });
+    expect(add.status).toBe(200);
+
+    const list = await (await fetch(`${base4}${API}/schedule`)).json();
+    expect(list.jobs).toHaveLength(1);
+    const id = (list.jobs as Array<{ id: string }>)[0]!.id;
+
+    const del = await fetch(`${base4}${API}/schedule/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    const after = await (await fetch(`${base4}${API}/schedule`)).json();
+    expect(after.jobs).toHaveLength(0);
+  });
+
+  it("POST /schedule 非法 cron 返回 400", async () => {
+    const resp = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cron: "not-cron", prompt: "x" }),
+    });
+    expect(resp.status).toBe(400);
   });
 });

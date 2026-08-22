@@ -12,6 +12,10 @@ import { stdout } from "node:process";
 
 import { ModelRouter } from "./core/model-router.js";
 import { ContextManager } from "./core/context-manager.js";
+import { loadEnvFile } from "./core/env-loader.js";
+import { shouldOnboard, runOnboarding } from "./core/onboarding.js";
+import { jobRunner } from "./core/job-runner.js";
+import { scheduler } from "./core/scheduler.js";
 import { ProjectProfiler } from "./core/project-profiler.js";
 import { SessionStore } from "./memory/session-store.js";
 import { TelemetryCoordinator } from "./memory/telemetry.js";
@@ -57,6 +61,9 @@ program
   .option("--server", "启动 HTTP API 服务")
   .option("--port <port>", "HTTP Server 端口", "3000")
   .action(async (options) => {
+    // 最先加载 .env（供 DEEPSEEK_API_KEY 等使用；不覆盖已有环境变量）
+    loadEnvFile();
+
     const workingDir = resolve(options.dir);
     const dataDir = resolve(options.dataDir);
 
@@ -105,9 +112,39 @@ program
     stdout.write(chalk.gray(`数据目录: ${dataDir}\n`));
     stdout.write(chalk.gray(`权限模式: ${options.mode ?? "auto（config/permissions.json 或默认）"}\n\n`));
 
+    // ─── 首次运行引导（TUI 模式 + 未配置 key + 未完成过）───
+    if (!isServer && tui.isActive() && !process.env.DEEPSEEK_API_KEY && shouldOnboard(dataDir)) {
+      await runOnboarding({
+        ask: (q) => (tui.isActive() ? tui.ask(q, [], 60000, false) : Promise.resolve(null)),
+        dataDir,
+        workingDir,
+        writeEnv: (key, value) => {
+          // 立即生效 + 写 .env（不覆盖同 key 旧行）
+          process.env[key] = value;
+          const envPath = resolve(process.cwd(), ".env");
+          const existing = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
+          const lines = existing.split(/\r?\n/).filter((l) => !l.trim().startsWith(`${key}=`));
+          lines.push(`${key}=${value}`);
+          writeFileSync(envPath, lines.join("\n") + "\n");
+        },
+        writeDefaultMode: (mode) => {
+          const permPath = resolve(process.cwd(), "config", "permissions.json");
+          let cfg: Record<string, unknown> = {};
+          try {
+            cfg = JSON.parse(readFileSync(permPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown>;
+          } catch {
+            /* 文件缺失/损坏则重建 */
+          }
+          cfg.default_mode = mode;
+          writeFileSync(permPath, JSON.stringify(cfg, null, 2) + "\n");
+        },
+        log: (line) => stdout.write(chalk.gray(`${line}\n`)),
+      });
+    }
+
     if (!process.env.DEEPSEEK_API_KEY) {
       stdout.write(chalk.yellow("⚠️  未检测到 DEEPSEEK_API_KEY 环境变量\n"));
-      stdout.write(chalk.gray("   请设置后重启。\n\n"));
+      stdout.write(chalk.gray("   请设置后重启，或使用 /setup 配置。\n\n"));
     }
 
     // ─── 初始化核心组件 ───
@@ -117,11 +154,23 @@ program
     const skillCount = skillRegistry.loadFromDir(skillsDir);
 
     const modelRouter = new ModelRouter();
-    // 恢复运行时覆盖（/config 持久化）
+    // 恢复运行时覆盖（/config 持久化；iterations 字段在 agents 创建后应用）
     const runtimeConfigPath = resolve(dataDir, "runtime-config.json");
+    let savedIterations: Record<string, number> = {};
     if (existsSync(runtimeConfigPath)) {
       try {
-        modelRouter.applyOverrides(JSON.parse(readFileSync(runtimeConfigPath, "utf-8")) as Record<string, unknown>);
+        const parsed = JSON.parse(readFileSync(runtimeConfigPath, "utf-8")) as Record<string, unknown> & {
+          iterations?: Record<string, unknown>;
+        };
+        const { iterations, ...modelOverrides } = parsed;
+        modelRouter.applyOverrides(modelOverrides as Parameters<typeof modelRouter.applyOverrides>[0]);
+        if (iterations && typeof iterations === "object") {
+          savedIterations = Object.fromEntries(
+            Object.entries(iterations)
+              .map(([id, n]): [string, number] => [id, Number(n)])
+              .filter(([, n]) => Number.isFinite(n) && n >= 10 && n <= 1000),
+          ) as Record<string, number>;
+        }
       } catch {
         /* 损坏则忽略 */
       }
@@ -215,6 +264,24 @@ program
       financial: new FinancialAgent(deps),
       "game-dev": new GameDevAgent(deps),
     };
+
+    // 应用持久化的每专家迭代上限（/config iterations）
+    for (const [id, n] of Object.entries(savedIterations)) {
+      agents[id]?.setMaxIterations(n);
+    }
+
+    // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───
+    jobRunner.init({
+      createAgent: (agentId) => agents[agentId] ?? agents["default"],
+      workingDir,
+      sessionStore,
+      mode: defaultMode,
+    });
+    scheduler.init(
+      { submit: (agentId, prompt) => jobRunner.submit(agentId, prompt) },
+      resolve(process.cwd(), "config", "schedule.json"),
+    );
+    scheduler.start();
 
     const coordinator = new TeamCoordinator(agents, modelRouter);
 
@@ -370,11 +437,14 @@ program
       runtimeConfigPath,
       persistRuntimeConfig: () => {
         try {
-          writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
+          const iterations: Record<string, number> = {};
+          for (const [id, a] of Object.entries(agents)) iterations[id] = a.getConfig().maxIterations;
+          writeFileSync(runtimeConfigPath, JSON.stringify({ ...modelRouter.getOverrides(), iterations }, null, 2));
         } catch {
           /* 持久化失败静默 */
         }
       },
+      currentAgent: () => agents[routeToExpert("")]!,
       getContextBreakdown: (query: string) => {
         const agent = agents[routeToExpert("")]!;
         return contextManager.getContextBreakdown(agent.getConfig().systemPrompt, currentSessionId ?? "", query);
@@ -382,6 +452,8 @@ program
       listCommands: () => cliCommands,
       write: (text) => stdout.write(text),
       writeLine: (line) => renderer.writeLine(line),
+      ask: (q) => (tui.isActive() ? tui.ask(q, [], 60000, false) : Promise.resolve(null)),
+      dataDir,
       printStatus: () =>
         renderer.printStatus({
           mode: currentMode,

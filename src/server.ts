@@ -8,6 +8,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { WebSocketServer, type WebSocket } from "ws";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
@@ -16,6 +17,9 @@ import { getAppVersion } from "./core/version.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
+import { eventBus } from "./server/event-bus.js";
+import { jobRunner } from "./core/job-runner.js";
+import { scheduler } from "./core/scheduler.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -248,9 +252,7 @@ export function startServer(deps: ServerDeps, port: number) {
   const startTime = Date.now();
 
   const server = createServer(async (req, res) => {
-    const url = req.url ?? "/";
-
-    if (req.method === "OPTIONS") {
+    const url = req.url ?? "/";    if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -383,6 +385,7 @@ export function startServer(deps: ServerDeps, port: number) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       const ok = deps.sessionStore.deleteSession(sessionId);
+      if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
@@ -401,6 +404,7 @@ export function startServer(deps: ServerDeps, port: number) {
       }
       if (!parsedTitle) { sendJSON(res, 400, { error: "Missing 'title' field" }); return; }
       const ok = deps.sessionStore.renameSession(sessionId, parsedTitle);
+      if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "rename", title: parsedTitle });
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
@@ -467,6 +471,85 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    // ─── 后台任务 ───
+    if (url === apiUrl("/jobs") && req.method === "GET") {
+      sendJSON(res, 200, { jobs: jobRunner.isInitialized() ? jobRunner.list() : [] });
+      return;
+    }
+    if (url === apiUrl("/jobs") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let req2: { agentId?: string; prompt?: string };
+      try {
+        req2 = JSON.parse(body) as { agentId?: string; prompt?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!req2.prompt || typeof req2.prompt !== "string") {
+        sendJSON(res, 400, { error: "Missing 'prompt' field" });
+        return;
+      }
+      if (!jobRunner.isInitialized()) {
+        sendJSON(res, 503, { error: "Job runner not initialized" });
+        return;
+      }
+      const id = jobRunner.submit(req2.agentId ?? "default", req2.prompt);
+      sendJSON(res, 200, { id });
+      return;
+    }
+    if (url.startsWith(apiUrl("/jobs/")) && req.method === "DELETE") {
+      const jobId = url.slice(apiUrl("/jobs/").length);
+      const ok = jobRunner.cancel(jobId);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "无法取消（仅排队中任务可取消）" });
+      return;
+    }
+
+    // ─── 定时调度 ───
+    if (url === apiUrl("/schedule") && req.method === "GET") {
+      sendJSON(res, 200, { jobs: scheduler.getJobs() });
+      return;
+    }
+    if (url === apiUrl("/schedule") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let sched: { cron?: string; prompt?: string; agentId?: string };
+      try {
+        sched = JSON.parse(body) as { cron?: string; prompt?: string; agentId?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!sched.cron || !sched.prompt || typeof sched.cron !== "string" || typeof sched.prompt !== "string") {
+        sendJSON(res, 400, { error: "Missing 'cron' or 'prompt' field" });
+        return;
+      }
+      const ok = scheduler.addJob({
+        id: `sched-${Date.now().toString(36)}`,
+        cron: sched.cron,
+        prompt: sched.prompt,
+        agentId: sched.agentId ?? "default",
+      });
+      sendJSON(res, ok ? 200 : 400, ok ? { ok: true } : { error: "无效的 cron 表达式" });
+      return;
+    }
+    if (url.startsWith(apiUrl("/schedule/")) && req.method === "DELETE") {
+      const schedId = url.slice(apiUrl("/schedule/").length);
+      const ok = scheduler.removeJob(schedId);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "未找到该定时任务" });
+      return;
+    }
+
     if (url === apiUrl("/plan") && req.method === "POST") {
       let body: string;
       try {
@@ -499,6 +582,7 @@ export function startServer(deps: ServerDeps, port: number) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(data)}\n\n`);
         }
+        eventBus.broadcast(data);
       };
 
       try {
@@ -588,6 +672,7 @@ export function startServer(deps: ServerDeps, port: number) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(data)}\n\n`);
         }
+        eventBus.broadcast(data);
       };
 
       try {
@@ -725,6 +810,7 @@ export function startServer(deps: ServerDeps, port: number) {
       let sessionId = chatReq.sessionId;
       if (!sessionId && deps.sessionStore) {
         sessionId = deps.sessionStore.createSession(agentId).id;
+        eventBus.broadcast({ type: "session/update", sessionId, kind: "create" });
       }
 
       const abort = new AbortController();
@@ -737,12 +823,14 @@ export function startServer(deps: ServerDeps, port: number) {
         if (!res.writableEnded) {
           res.write(`data: ${JSON.stringify(data)}\n\n`);
         }
+        eventBus.broadcast(data);
       };
 
       try {
         if (deps.sessionStore && sessionId) {
           deps.sessionStore.ensureSession(sessionId, agentId);
           deps.sessionStore.appendMessage(sessionId, { role: "user", content: chatReq.message });
+          eventBus.broadcast({ type: "session/update", sessionId, kind: "message" });
         }
 
         // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
@@ -793,9 +881,53 @@ export function startServer(deps: ServerDeps, port: number) {
     sendJSON(res, 404, { error: "Not found" });
   });
 
+  // ===== WebSocket 全局实时总线（/api/v1/ws）=====
+  // SSE 是单次任务（chat/plan/debate）的请求-响应事件流；WS 是全局下行通道，
+  // 服务端主动推送（会话元数据变更 / 任务事件广播），支持多端同步。
+  const wss = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    if (req.url === apiUrl("/ws")) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
+  interface AliveSocket extends WebSocket {
+    isAlive?: boolean;
+  }
+
+  wss.on("connection", (raw) => {
+    const ws = raw as AliveSocket;
+    ws.isAlive = true;
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+    const unsubscribe = eventBus.subscribe((data) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(data));
+    });
+    ws.on("close", unsubscribe);
+    ws.on("error", () => {});
+  });
+
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      const ws = client as AliveSocket;
+      if (ws.isAlive === false) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      ws.ping();
+    }
+  }, 30000);
+  server.on("close", () => clearInterval(heartbeat));
+
   server.listen(port, () => {
     stdout.write(chalk.green(`\n✓ HTTP Server 已启动: http://localhost:${port}\n`));
-    stdout.write(chalk.gray(`  端点: POST ${API_PREFIX}/chat | ${API_PREFIX}/plan | ${API_PREFIX}/debate | GET ${API_PREFIX}/status | ${API_PREFIX}/tools | ${API_PREFIX}/agents\n`));
+    stdout.write(chalk.gray(`  端点: POST ${API_PREFIX}/chat | ${API_PREFIX}/plan | ${API_PREFIX}/debate | GET ${API_PREFIX}/status | ${API_PREFIX}/tools | ${API_PREFIX}/agents | WS ${API_PREFIX}/ws\n`));
   });
 
   return server;

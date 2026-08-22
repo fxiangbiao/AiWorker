@@ -19,6 +19,7 @@
     API,
   } from "./lib/stores/chat.svelte";
   import { serverOnline, currentModel, totalTokens, workingDir } from "./lib/stores/status";
+  import { initWs } from "./lib/stores/ws.svelte";
   import { fmtN } from "./lib/utils/format";
 
   let agents: { id: string; name: string }[] = $state([]);
@@ -100,6 +101,7 @@
       store.messages.push(...loaded);
     }
     pollStatus();
+    initWs();
     // 服务器会话合并（排序最新在前）后，若出现了新的最新会话（如 TUI 中产生的新对话），切到最新
     syncServerSessions().then((hadNew) => {
       if (hadNew) {

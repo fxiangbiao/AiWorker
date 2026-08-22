@@ -35,7 +35,7 @@ systemPrompt: |
   - 数值表：Excel/CSV 格式
 
 modelPreference: creative
-maxIterations: 70
+maxIterations: 140
 sandbox: false
 
 tools:

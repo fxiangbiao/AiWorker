@@ -9,6 +9,7 @@ import { exec, type ExecOptions } from "node:child_process";
 import type { ToolDefinition, ToolHandler } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { DangerDetector } from "../security/danger-detector.js";
+import { loadSandboxPolicy, checkCommand, checkDeniedCommand, sanitizeEnv } from "../security/sandbox.js";
 import { spillOrTruncate } from "./spill.js";
 import { requestAsk } from "./ask-channel.js";
 import { terminalSessionPool } from "./terminal-session.js";
@@ -171,6 +172,18 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const cwd = (args.cwd as string) ?? ctx.workingDir;
   const timeout = (args.timeout as number) ?? 30000;
 
+  // 沙箱强制层（先于权限层，任何模式都拦截）：cwd 越界 fail-closed + 配置化黑名单
+  const sandbox = loadSandboxPolicy();
+  const sandboxCheck = checkCommand(command, cwd, ctx.workingDir, sandbox);
+  if (!sandboxCheck.allowed) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `⛔ ${sandboxCheck.reason}\n命令: ${command}`,
+    };
+  }
+
   // 危险操作检测：ask 模式直接拦截；plan/auto 由 hook（confirmHighRisk）确认放行
   if (ctx.permissions === "ask") {
     const dangerCheck = detector.check(command);
@@ -189,6 +202,7 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     timeout,
     maxBuffer: 1024 * 1024 * 10, // 10MB
     encoding: "buffer",
+    env: sandbox.stripSecretEnv ? sanitizeEnv(process.env) : process.env,
   };
 
   // Windows cmd 输出默认 GBK，前缀 chcp 65001 强制 UTF-8 避免中文乱码
@@ -450,6 +464,15 @@ const terminalSessionHandler: ToolHandler = async (args, ctx) => {
       return { tool_call_id: "", success: true, content: "持久终端会话已关闭" };
     }
     if (action === "exec") {
+      const denyCheck = checkDeniedCommand(command, loadSandboxPolicy());
+      if (!denyCheck.allowed) {
+        return {
+          tool_call_id: "",
+          success: false,
+          content: "",
+          error: `⛔ ${denyCheck.reason}\n命令: ${command}`,
+        };
+      }
       const session = terminalSessionPool.get(ctx.sessionId);
       if (!session) {
         terminalSessionPool.start(ctx.sessionId);

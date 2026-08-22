@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.5.0 (2026-08-22)
+
+### 后台任务 + 定时调度
+- **JobRunner**：`/bg <任务>` 后台执行不阻塞交互；状态机 queued→running→done/failed；并发上限 2（超出排队）；结果写独立会话 + 审计 + **WS `job/done` 实时推送**；后台任务不注册确认通道（fail-closed 自动拒高危）
+- **Scheduler**：`config/schedule.json` 定义 cron 任务（cron-parser，5 字段标准 cron），到点自动提交 JobRunner；无效 cron 跳过记审计；支持 `/schedule` 命令与 HTTP 端点
+- CLI：`/bg` / `/jobs`（含 cancel）/ `/schedule`（list/add/remove）
+- HTTP：`GET/POST /api/v1/jobs`、`DELETE /api/v1/jobs/:id`、`GET/POST /api/v1/schedule`、`DELETE /api/v1/schedule/:id`
+- Web SystemPanel 新增**调度 Tab**：定时任务增删 + 后台任务状态（WS 驱动实时刷新）
+
+### 首次运行引导
+- **`.env` 加载**（`env-loader`，零依赖）：KEY=VALUE 注入 process.env（不覆盖已有变量、BOM 容错）
+- **三步引导**：TUI 模式 + 无 DEEPSEEK_API_KEY + 未完成过时触发——输入 API Key（写 `.env` 立即生效）→ 选权限模式（写 `permissions.json`）→ 确认目录；`/setup` 随时重进；`--server` 模式跳过
+
+## 0.4.0 (2026-08-22)
+
+### 迭代预算管理
+- **默认上限扩容**：default 30→60 / coding 50→100 / product-ops 40→80 / financial 60→120 / data-analysis 60→120 / game-dev 70→140 / research 80→160（`config/agents/*.yaml` + default TS）
+- **运行时可调**：`/config iterations <10-1000>` 设置当前专家上限，持久化 `data/runtime-config.json`（`iterations` 字段，启动自动恢复；向后兼容旧文件）
+- **预算感知收尾**：剩余迭代 ≤5 轮注入一次收敛提示；撞顶不再裸返回"达到迭代上限"，改为返回最后进展 + 建议（继续追问或 /plan 拆分）
+- **空转强制终止**：连续相同 (tool, args) ≥6 次强制终止（提醒阈值 3 之上），报告进展
+- **工具全失败终止**：连续 4 轮全部工具调用失败提前终止
+
+## 0.3.0 (2026-08-15)
+
+### 执行沙箱（对比报告 #3）
+- **策略化命令沙箱**：`config/sandbox.json` + `src/security/sandbox.ts`
+  - cwd 越界约束（fail-closed）：`terminal_exec` 工作目录必须位于 workingDir/allowDirs 内
+  - `denyCommands` 配置化命令黑名单（叠加 danger-detector 正则层）
+  - `stripSecretEnv`：执行时剥离含 KEY/TOKEN/SECRET/PASSWORD 的环境变量
+- 接入 `terminal_exec` 与 `terminal_session`（spawn env 清理 + exec 前策略检查）
+- 说明：不做 OS 级进程沙箱（bwrap/restricted-token）——Node 无原生 API、信任模型为本人执行
+
+### WebSocket 实时总线（对比报告 #8）
+- `EventBus` 事件总线 + `GET /api/v1/ws`（ws 包，心跳 30s 清理死连接）
+- chat/plan/debate 事件 SSE 与 WS 双写广播；会话创建/重命名/删除/新消息广播 `session/update`
+- Web UI WS 连接 + 指数退避重连：会话列表/消息多标签页实时同步（SSE 仍为单次任务主通道，双通道不重复渲染）
+- vite dev proxy 支持 WS 转发
+
+### CI / 测试
+- **GitHub Actions**：`.github/workflows/ci.yml`（windows + ubuntu 双平台：lint + build + vitest + web:build）
+- npm scripts 跨平台化（cross-env 替代 Windows `set` 语法）
+- 测试与真实配置解耦：`test/fixtures/models.json`（ModelRouter 注入 fixture，改配置不再碎测试）
+- terminal-session 测试平台守卫（非 Windows 跳过）
+- 新增沙箱 9 例 + WebSocket 4 例，共 **345 测试**
+
+### 其他
+- `config/models.json`：default profile 移除冗余 temperature/maxTokens；lite 本地模型更新（Qwen3.8-27B-UD-IQ2_XXS, 4096）
+
 ## 0.2.0 (2026-08-15)
 
 ### 插件系统与工具作用域（Sprint 27）

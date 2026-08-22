@@ -3,14 +3,56 @@
  */
 
 import chalk from "chalk";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { hookManager } from "../hooks/hook-manager.js";
 import { createEvaluateSkillCreation } from "../hooks/handlers.js";
 import { getAppVersion } from "../core/version.js";
+import { runOnboarding } from "../core/onboarding.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
 import type { PermissionMode } from "../types.js";
 
 export const configCommands: CliCommand[] = [
+  {
+    name: "setup",
+    aliases: ["onboard"],
+    usage: "setup",
+    description: "重新运行首次引导（API Key / 权限模式）",
+    detail: "写 .env 与 config/permissions.json；TUI 交互输入",
+    handler: async (ctx) => {
+      const result = await runOnboarding({
+        ask: ctx.ask,
+        dataDir: ctx.dataDir,
+        workingDir: ctx.workingDir,
+        writeEnv: (key, value) => {
+          process.env[key] = value;
+          const envPath = resolve(process.cwd(), ".env");
+          const existing = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
+          const lines = existing.split(/\r?\n/).filter((l) => !l.trim().startsWith(`${key}=`));
+          lines.push(`${key}=${value}`);
+          writeFileSync(envPath, lines.join("\n") + "\n");
+          ctx.writeLine(chalk.green(`✓ ${key} 已写入 .env 并立即生效`));
+        },
+        writeDefaultMode: (mode) => {
+          const permPath = resolve(process.cwd(), "config", "permissions.json");
+          let cfg: Record<string, unknown> = {};
+          try {
+            cfg = JSON.parse(readFileSync(permPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown>;
+          } catch {
+            /* 文件缺失/损坏则重建 */
+          }
+          cfg.default_mode = mode;
+          writeFileSync(permPath, JSON.stringify(cfg, null, 2) + "\n");
+          ctx.writeLine(chalk.green(`✓ 默认权限模式 → ${mode}（已写入 config/permissions.json）`));
+        },
+        log: (line) => ctx.writeLine(line),
+      });
+      ctx.writeLine(result === "completed" ? chalk.green("✓ 引导完成") : chalk.gray("已跳过"));
+      ctx.printStatus();
+      return "continue";
+    },
+  },
   {
     name: "mode",
     usage: "mode <ask/plan/auto>",
@@ -68,7 +110,7 @@ export const configCommands: CliCommand[] = [
     name: "config",
     usage: "config",
     description: "查看/配置模型与系统参数",
-    detail: "持久化到 data/runtime-config.json",
+    detail: "持久化到 data/runtime-config.json（model/temperature/max-tokens/iterations/thinking/skill-evo）",
     handler: async (ctx, _arg, line) => {
       const parts = line.split(/\s+/).slice(1);
       const sub = parts[0] ?? "";
@@ -127,6 +169,20 @@ export const configCommands: CliCommand[] = [
           hookManager.on("onTaskComplete", handler, { id, priority: 10 });
           ctx.writeLine(chalk.green("✓ 技能自动沉淀: 开启"));
         }
+      } else if (sub === "iterations" || sub === "iter") {
+        const agent = ctx.currentAgent();
+        if (!arg) {
+          ctx.writeLine(chalk.gray(`用法: /config iterations <10-1000>  当前专家 ${agent.getName()} 上限: ${agent.getMaxIterations()}`));
+        } else {
+          const n = parseInt(arg, 10);
+          if (isNaN(n) || n < 10 || n > 1000) {
+            ctx.writeLine(chalk.red("✗ 迭代上限需在 10-1000 之间"));
+          } else {
+            agent.setMaxIterations(n);
+            persist();
+            ctx.writeLine(chalk.green(`✓ ${agent.getName()} 迭代上限 → ${n}（已持久化，重启后仍生效）`));
+          }
+        }
       } else if (sub === "thinking" || sub === "thought") {
         ctx.toggleThinking();
         ctx.writeLine(chalk.green(`✓ 思考展示: ${ctx.showThinking() ? "展开" : "折叠"}`));
@@ -157,7 +213,7 @@ export const configCommands: CliCommand[] = [
         ctx.write(chalk.gray(`  技能沉淀: ${hookManager.has("onTaskComplete:evaluateSkillCreation") ? "开启" : "关闭"} (用 /config skill-evo 切换)\n\n`));
         ctx.write(
           chalk.dim(
-            `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config thinking | /config skill-evo | /config reset\n`,
+            `  可配置: /config model <名> | /config temperature <0-2> | /config max-tokens <n> | /config iterations <10-1000> | /config thinking | /config skill-evo | /config reset\n`,
           ),
         );
       }

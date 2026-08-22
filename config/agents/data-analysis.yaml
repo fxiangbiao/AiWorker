@@ -1,4 +1,4 @@
-﻿# Data Analysis Agent 配置文件
+# Data Analysis Agent 配置文件
 id: data-analysis
 name: data-analysis
 displayName: 数据分析师
@@ -32,7 +32,7 @@ systemPrompt: |
   - 结论与建议
 
 modelPreference: coding
-maxIterations: 60
+maxIterations: 120
 sandbox: false
 
 tools:

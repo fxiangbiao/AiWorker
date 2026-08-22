@@ -3,12 +3,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SessionStore } from "../src/memory/session-store.js";
 import { ContextManager } from "../src/core/context-manager.js";
 import { makeTestDir, setupEnv } from "./helpers.js";
 
 const testDir = makeTestDir("team");
+const FIXTURE_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "./fixtures/models.json");
 
 describe("14. Team Coordinator", () => {
   let counter = 0;
@@ -18,7 +20,7 @@ describe("14. Team Coordinator", () => {
     const { DefaultAgent } = await import("../src/agents/default-agent.js");
     const { ModelRouter } = await import("../src/core/model-router.js");
 
-    const modelRouter = new ModelRouter();
+    const modelRouter = new ModelRouter(FIXTURE_PATH);
     if (failLLM) {
       modelRouter.completeWithProfile = async () => {
         throw new Error("模拟");

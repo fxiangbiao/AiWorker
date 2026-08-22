@@ -5,6 +5,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { sanitizeEnv } from "../security/sandbox.js";
 
 export interface TerminalExecResult {
   ok: boolean;
@@ -29,6 +30,7 @@ class TerminalSession {
     const child = spawn(isWin ? "cmd.exe" : "/bin/sh", isWin ? ["/Q"] : [], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
+      env: sanitizeEnv(process.env),
     });
     this.child = child;
     // Windows 下强制 UTF-8 防中文乱码（与 terminal_exec 一致）

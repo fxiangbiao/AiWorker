@@ -46,6 +46,14 @@ export abstract class BaseAgent {
     return this.config;
   }
 
+  setMaxIterations(n: number): void {
+    this.config.maxIterations = n;
+  }
+
+  getMaxIterations(): number {
+    return this.config.maxIterations;
+  }
+
   setMode(mode: PermissionMode): void {
     this.config.permissions.defaultMode = mode;
   }

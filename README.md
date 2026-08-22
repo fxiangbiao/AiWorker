@@ -3,11 +3,12 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.5.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
 ![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
+![ci](https://github.com/fxiangbiao/AiWorker/actions/workflows/ci.yml/badge.svg)
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP 协议、技能库自动匹配、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种交互界面。
 
@@ -30,6 +31,7 @@
 
 **Agent 核心**
 - 流式逐 token 输出 + AbortSignal 中断 + 空响应断路器 + **防循环提醒**（连续相同工具调用自动注入提示）+ token 压缩（75% 阈值，保留最近 3-8 轮）
+- **迭代预算管理**：每专家可配上限（`config/agents/*.yaml` 或 `/config iterations` 运行时调整）；剩余 ≤5 轮自动注入收敛提示；重复调用/工具全失败自动终止防 token 浪费；撞顶返回进展摘要
 - 多 profile 模型路由：coding / reasoning / writing / creative / lite + DeepSeek 思考模式（`extra_body`）
 - 7 个专家智能体：通用 / 研究 / 编码 / 数据分析 / 理财 / 游戏 / 产品运营，关键词正则 → LLM 语义两阶段路由
 - Team 协调器：`/plan` DAG 编排（4 种模板 + Kahn 环路检测）、`/debate` 双专家互审
@@ -44,6 +46,7 @@
 **安全与合规**
 - Ask / Plan / Auto 三权限模式 + 危险操作正则拦截 + 路径遍历防护（写入锁死在工作目录内）
 - **审批服务（ApprovalService）**：权限决策单点（模式矩阵 + fail-closed，无确认通道默认拒绝），hooks 内权限 handler 均为薄委托
+- **策略化命令沙箱**（`config/sandbox.json`）：terminal_exec 工作目录越界拦截（fail-closed）+ 配置化命令黑名单 + 执行时剥离敏感环境变量（KEY/TOKEN/SECRET）
 - **工具调用统一超时护栏**（默认 60s），任何工具不会无限挂起
 - Hooks 5 生命周期点 + 14 个 Handler：敏感数据过滤 / 高危确认 / 权限检查 / Diff 快照 / 审计日志 / 重试退避 / 模型降级
 
@@ -60,10 +63,18 @@
 - **轨迹时间线**（`/trace`）：事件级复盘——turn/step 边界、工具调用耗时/成败、token 消耗、错误高亮；支持完整内容查看
 - **遥测导出**：会话事件 → 脱敏瀑布 → JSONL 本地后端（零依赖），预留 OTel 接口；会话统计徽标
 
+**后台任务与定时调度**
+- **后台任务**（`/bg`）：长任务后台执行不阻塞交互，并发上限 2 自动排队；完成写独立会话 + **WebSocket 实时推送**（Web 调度 Tab 即时刷新）；后台任务 fail-closed（高危自动拒）
+- **定时调度**：`config/schedule.json` 或 `/schedule` 定义 cron 任务（5 字段标准 cron），到点自动执行；`/api/v1/schedule` 与 `/api/v1/jobs` REST 端点
+
+**首次运行引导**
+- 首次启动（TUI + 未配置 API Key）自动引导：输入 Key（写 `.env` 立即生效）→ 选权限模式 → 确认目录；`/setup` 随时重配；`.env` 加载零依赖、不覆盖已有环境变量
+
 **交互界面**
 - **TUI 终端**：自研帧缓冲渲染引擎（差分渲染 + 组件化 + raw-mode 键解析），Markdown 流式渲染 + 语法高亮 + 表格对齐 + OSC 8 超链接，常驻状态栏；命令系统注册表化（`/help` 与 Tab 补全自动生成）
-- **Web UI**：Svelte 5 + Vite，SSE 流式，DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
-- **HTTP Server**：`--server` 模式提供 REST API，可独立承载 Web UI；对话与会话持久化到 SQLite
+- **Web UI**：Svelte 5 + Vite，SSE 流式 + **WebSocket 实时总线**（会话列表/消息多标签页实时同步、断线自动重连），DOMPurify XSS 防护，支持 `/plan` `/debate` 协作、轨迹两栏面板（左列表 + 右详情）、模型提问卡片（ask_user）、系统管理弹窗与 favicon
+- **HTTP Server**：`--server` 模式提供 REST API + `GET /api/v1/ws` WebSocket，可独立承载 Web UI；对话与会话持久化到 SQLite
+- **CI**：GitHub Actions 双平台（Windows/Ubuntu）自动跑 lint + 构建 + 345 项测试
 
 ---
 
@@ -150,6 +161,9 @@ npm run dev -- [选项]
 | `/mode <ask\|plan\|auto>` | 切换权限模式 |
 | `/plan <任务>` | 多专家 DAG 协作 |
 | `/debate <话题>` | 双专家辩论 |
+| `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
+| `/jobs [cancel <id>]` | 查看/取消后台任务 |
+| `/schedule` | 定时任务管理：`add "<cron>" "<任务>" [agentId]` / `remove <id>`（cron 5 字段） |
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |
@@ -157,7 +171,7 @@ npm run dev -- [选项]
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/trace [序号]` | 会话轨迹时间线（事件级复盘，--json 输出） |
 | `/status` | 运行状态（模式/模型/token/成本/技能数/排队数） |
-| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
+| `/config` | 查看/配置模型与系统参数（model/temperature/max-tokens/**iterations**/thinking/skill-evo/reset，持久化到 `data/runtime-config.json`） |
 | `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |

@@ -35,6 +35,12 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
   const writes: string[] = [];
   const writeLines: string[] = [];
   const prefillQueue: string[] = [];
+  const mockAgent = {
+    getId: () => "default",
+    getName: () => "测试专家",
+    getMaxIterations: () => 100,
+    setMaxIterations: vi.fn(),
+  };
   const ctx: CommandContext = {
     mode: () => "auto",
     setMode: () => {},
@@ -45,6 +51,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     prefillQueue,
     lastAnswer: { value: "answer" },
     agents: {},
+    currentAgent: () => mockAgent as unknown as CommandContext["agents"][string],
     coordinator: {} as TeamCoordinator,
     modelRouter: modelRouterMock(),
     sessionStore: store,
@@ -69,6 +76,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     write: (t) => writes.push(t),
     writeLine: (l) => writeLines.push(l),
     printStatus: () => {},
+    ask: () => Promise.resolve(null),
+    dataDir: dir,
     ...overrides,
   };
   return { ctx, writes, writeLines, prefillQueue, store };
@@ -233,6 +242,37 @@ describe("配置命令", () => {
     expect(writeLines.some((l) => l.includes("/config model <名称>"))).toBe(true);
     expect(printStatus).toHaveBeenCalled();
   });
+
+  it("config iterations 设置当前专家上限并持久化", async () => {
+    const persist = vi.fn();
+    const printStatus = vi.fn();
+    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist, printStatus });
+    await find("config").handler(ctx, "", "/config iterations 150");
+    const agent = (ctx as CommandContext).currentAgent() as {
+      setMaxIterations: ReturnType<typeof vi.fn>;
+      getMaxIterations: () => number;
+    };
+    expect(agent.setMaxIterations).toHaveBeenCalledWith(150);
+    expect(persist).toHaveBeenCalled();
+    expect(printStatus).toHaveBeenCalled();
+    expect(writeLines.some((l) => l.includes("迭代上限 → 150"))).toBe(true);
+  });
+
+  it("config iterations 越界值被拒绝", async () => {
+    const persist = vi.fn();
+    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist });
+    await find("config").handler(ctx, "", "/config iterations 5");
+    expect(writeLines.some((l) => l.includes("10-1000"))).toBe(true);
+    await find("config").handler(ctx, "", "/config iterations 5000");
+    expect(writeLines.some((l) => l.includes("10-1000"))).toBe(true);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("config iterations 无参数显示当前专家上限", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("config").handler(ctx, "", "/config iterations");
+    expect(writeLines.some((l) => l.includes("当前专家 测试专家 上限: 100"))).toBe(true);
+  });
 });
 
 describe("trace 会话切换", () => {
@@ -268,5 +308,69 @@ describe("plugins 命令", () => {
     const { ctx, writeLines } = makeCtx();
     await find("plugins").handler(ctx, "", "/plugins");
     expect(writeLines.join("\n")).toContain("未加载任何插件");
+  });
+});
+
+describe("bg / jobs / schedule 命令", () => {
+  it("/bg 提交后台任务并返回任务 ID", async () => {
+    const dir = makeTestDir("cli-jobs");
+    const { jobRunner } = await import("../src/core/job-runner.js");
+    const { SessionStore } = await import("../src/memory/session-store.js");
+    const store = new SessionStore(resolve(dir, "jobs.db"));
+    jobRunner.init({
+      createAgent: () =>
+        ({
+          runStream: async () => ({ success: true, text: "ok", truncated: false }),
+        }) as never,
+      workingDir: dir,
+      sessionStore: store,
+    });
+    const { ctx, writeLines } = makeCtx();
+    await find("bg").handler(ctx, "整理报告", "/bg 整理报告");
+    expect(writeLines.some((l) => l.includes("后台任务已提交") && l.includes("job-"))).toBe(true);
+    store.close();
+  });
+
+  it("/jobs 空列表提示；/bg 后可列出", async () => {
+    const dir = makeTestDir("cli-jobs2");
+    const { jobRunner } = await import("../src/core/job-runner.js");
+    const { SessionStore } = await import("../src/memory/session-store.js");
+    const store = new SessionStore(resolve(dir, "jobs.db"));
+    jobRunner.init({
+      createAgent: () =>
+        ({
+          runStream: async () => ({ success: true, text: "ok", truncated: false }),
+        }) as never,
+      workingDir: dir,
+      sessionStore: store,
+    });
+    const { ctx, writeLines } = makeCtx();
+    jobRunner.clear();
+    await find("jobs").handler(ctx, "", "/jobs");
+    expect(writeLines.some((l) => l.includes("暂无后台任务"))).toBe(true);
+
+    jobRunner.submit("default", "任务X");
+    writeLines.length = 0;
+    await find("jobs").handler(ctx, "", "/jobs");
+    expect(writeLines.some((l) => l.includes("job-"))).toBe(true);
+    store.close();
+  });
+
+  it("/schedule add 合法添加 / 非法 cron 拒绝 / remove", async () => {
+    const dir = makeTestDir("cli-schedule");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx();
+
+    await find("schedule").handler(ctx, "", '/schedule add "0 8 * * *" "每日早报"');
+    expect(writeLines.some((l) => l.includes("定时任务已添加"))).toBe(true);
+
+    await find("schedule").handler(ctx, "", '/schedule add "junk" "坏任务"');
+    expect(writeLines.some((l) => l.includes("cron 表达式无效"))).toBe(true);
+
+    const jobs = scheduler.getJobs();
+    expect(jobs).toHaveLength(1);
+    await find("schedule").handler(ctx, "", `/schedule remove ${jobs[0]!.id}`);
+    expect(scheduler.getJobs()).toHaveLength(0);
   });
 });
