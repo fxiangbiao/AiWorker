@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.6.1-blue)
+![version](https://img.shields.io/badge/version-0.6.2-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -183,7 +183,7 @@ npm run dev -- [选项]
 | `/mcps` | 查看已加载的 MCP 服务器（连接状态 + 工具列表） |
 | `/sessions` / `/switch <序号>` | 浏览 / 切换历史会话 |
 | `/copy` | 复制最后回答原始 Markdown |
-| `/help` / `/exit` | 帮助 / 退出 |
+| `/help [命令]` / `/exit` | 帮助（`/help <命令>` 或 `/<命令> --help` 查看详细用法）/ 退出 |
 
 快捷键：`Ctrl+C` 中断当前运行，`Tab` 补全（`/命令` + 技能名），方向键浏览历史与滚动回看；输入框**支持多行**——长内容自动换行不截断，`Shift+Enter`（或 Alt/Ctrl+Enter）插入换行、`Enter` 提交，多行编辑时 `↑`/`↓` 在行间移动光标。
 

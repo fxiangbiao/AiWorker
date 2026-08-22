@@ -118,18 +118,36 @@ describe("命令注册表", () => {
     expect(joined).toContain("/exit");
   });
 
-  it("help 表格对齐：所有行 | 分隔符数量一致，单元格内半角 | 被转义", async () => {
+  it("help 表格精简：命令列含全部命令，usage 参数不显示在表格", async () => {
     const { ctx, writeLines } = makeCtx();
     await find("help").handler(ctx, "", "/help");
-    const tableLines = writeLines.filter((l) => l.includes("│"));
-    expect(tableLines.length).toBeGreaterThan(3);
-    const sepCounts = new Set(tableLines.map((l) => (l.match(/│/g) ?? []).length));
-    expect(sepCounts.size).toBe(1);
-    // usage 中的半角 | 已替换为 /（不再破坏表格列结构）
     const joined = writeLines.join("\n");
-    expect(joined).not.toContain("<ask|plan|auto>");
-    expect(joined).toContain("<ask/plan/auto>");
-    expect(joined).not.toContain("[model|temperature");
+    expect(joined).toContain("/trace");
+    expect(joined).toContain("/skill");
+    expect(joined).toContain("/plan");
+    expect(joined).toContain("/exit");
+    // 精简后：usage 长参数不再出现在表格（下沉到 --help）
+    expect(joined).not.toContain("<ask/plan/auto>");
+    expect(joined).not.toContain("<skill|mcp|plugin>");
+  });
+
+  it("/help <命令> 显示命令级详细帮助（usage/功能/说明）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("help").handler(ctx, "install", "/help install");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("/install");
+    expect(joined).toContain("用法");
+    expect(joined).toContain("说明");
+  });
+
+  it("renderCommandHelp 输出命令级帮助（--help 分发层调用此函数）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    const { renderCommandHelp } = await import("../src/commands/misc.js");
+    renderCommandHelp(find("install"), ctx);
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("/install");
+    expect(joined).toContain("用法");
+    expect(joined).toContain("功能");
   });
 });
 

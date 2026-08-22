@@ -44,6 +44,7 @@ import { renderer } from "./terminal/renderer.js";
 import { tui } from "./terminal/tui.js";
 import { StreamOutputRenderer } from "./terminal/output.js";
 import { buildCliCommands } from "./commands/registry.js";
+import { renderCommandHelp, hasRequiredArgs } from "./commands/misc.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
 import { setAskProvider, isAskWaiting } from "./tools/ask-channel.js";
@@ -495,6 +496,11 @@ program
       if (matched) {
         const spaceIdx = trimmed.indexOf(" ");
         const arg = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
+        // 命令级帮助：--help / -h / help 后缀，或必选参数命令无参数时
+        if (arg === "--help" || arg === "-h" || arg === "help" || (!arg && hasRequiredArgs(matched))) {
+          renderCommandHelp(matched, commandCtx);
+          continue;
+        }
         const action = await matched.handler(commandCtx, arg, trimmed);
         if (action === "exit") break;
         continue;

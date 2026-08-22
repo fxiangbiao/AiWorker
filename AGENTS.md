@@ -33,7 +33,8 @@ npm run web:build      # Web UI 构建 → web/dist/
 ## CLI 命令系统（`src/commands/`）
 
 - 命令用**注册表**定义：`src/commands/types.ts` 的 `CliCommand`（name/aliases/usage/description/detail/handler），handler 签名 `(ctx, arg, line) => Promise<"continue"|"exit">`
-- **新增命令**：在对应分组文件注册即可（`collab.ts`/`config.ts`/`session.ts`/`skills.ts`/`plugins.ts`/`misc.ts`），`/help` 表格与 Tab 补全自动生成；数组顺序 = 匹配优先级
+- **新增命令**：在对应分组文件注册即可（`collab.ts`/`config.ts`/`session.ts`/`skills.ts`/`plugins.ts`/`jobs.ts`/`package.ts`/`misc.ts`），`/help` 表格与 Tab 补全自动生成；数组顺序 = 匹配优先级
+- **命令级帮助**：`/<命令> --help|-h|help` 与 `/help <命令>` 显示 用法/功能/说明/别名（`renderCommandHelp`，index.ts 分发层拦截）；**必选参数命令无参数自动显示帮助**（`hasRequiredArgs`：usage 中 `<` 在 `[` 之前）；`/help` 表格精简为 命令+别名 / 一句话功能 两列
 - `CommandContext`（零闭包捕获）由 `index.ts` 组装注入：会话状态/服务引用/输出抽象（`write`/`writeLine`/`printStatus`）；命令 handler 可独立单测（见 `test/cli-commands.test.ts`）
 - 工具函数：`commands/format.ts`（displayWidth/padToWidth/formatDuration/fmtK）、`commands/clipboard.ts`（copyToClipboard）
 

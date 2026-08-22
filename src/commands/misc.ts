@@ -5,8 +5,38 @@
 import chalk from "chalk";
 import { mcpManager } from "../mcp/mcp-manager.js";
 import { renderMarkdown } from "../terminal/markdown.js";
-import { padToWidth } from "./format.js";
-import type { CliCommand } from "./types.js";
+import { displayWidth, padToWidth } from "./format.js";
+import type { CliCommand, CommandContext } from "./types.js";
+
+/** 按展示宽度截断（CJK 安全），超出补省略号 */
+function truncateWidth(s: string, max: number): string {
+  let w = 0;
+  let out = "";
+  for (const ch of s) {
+    const cw = displayWidth(ch);
+    if (w + cw > max - 1) break;
+    out += ch;
+    w += cw;
+  }
+  return w < displayWidth(s) ? `${out}…` : out;
+}
+
+/** 渲染单个命令的详细帮助（/命令 --help 或必选参数命令无参数时） */
+export function renderCommandHelp(cmd: CliCommand, ctx: CommandContext): void {
+  const aliases = cmd.aliases?.length ? `（别名: ${cmd.aliases.map((a) => `/${a}`).join(", ")}）` : "";
+  ctx.writeLine("");
+  ctx.writeLine(chalk.bold(`/${cmd.name}${aliases}`));
+  ctx.writeLine(chalk.gray(`  用法: /${cmd.usage}`));
+  if (cmd.description) ctx.writeLine(`  功能: ${cmd.description}`);
+  if (cmd.detail) ctx.writeLine(chalk.gray(`  说明: ${cmd.detail}`));
+  ctx.writeLine("");
+  ctx.printStatus();
+}
+
+/** 命令是否有必选参数（usage 中 `<` 出现在任何 `[` 之前） */
+export function hasRequiredArgs(cmd: CliCommand): boolean {
+  return /^[^[]*</.test(cmd.usage);
+}
 
 export const miscCommands: CliCommand[] = [
   {
@@ -39,26 +69,41 @@ export const miscCommands: CliCommand[] = [
   },
   {
     name: "help",
-    usage: "help",
-    description: "帮助信息",
-    detail: "显示此表",
-    handler: async (ctx) => {
-      // /help 表格从注册表自动生成（新增命令无需手工维护）
-      // 防御：单元格内半角 | 会被表格解析当作列分隔符，统一替换为 /
+    usage: "help [命令名]",
+    description: "帮助信息（/help <命令> 查看用法）",
+    detail: "精简列表；详细参数用 /<命令> --help",
+    handler: async (ctx, arg) => {
+      // /help <命令> → 命令级详细帮助
+      if (arg.trim()) {
+        const target = ctx.listCommands().find((c) => {
+          const names = [c.name, ...(c.aliases ?? [])];
+          return names.includes(arg.trim().replace(/^\//, ""));
+        });
+        if (target) {
+          renderCommandHelp(target, ctx);
+        } else {
+          ctx.writeLine(chalk.red(`✗ 未知命令: ${arg.trim()}`));
+        }
+        return "continue";
+      }
+      // 精简表格：命令（含别名）+ 一句话功能；长内容下沉到 /<命令> --help
       const escapeCell = (s: string): string => s.replace(/\|/g, "/");
-      const rows: [string, string, string][] = ctx
+      const rows = ctx
         .listCommands()
-        .map((c) => [escapeCell(`/${c.usage}`), escapeCell(c.description), escapeCell(c.detail)]);
+        .map((c) => {
+          const names = [`/${c.name}`, ...(c.aliases ?? []).map((a) => `/${a}`)];
+          return [names.join(" "), truncateWidth(escapeCell(c.description || c.detail || "—"), 32)] as const;
+        });
       const mdRows = [
-        "| 命令 | 功能 | 说明 |",
-        "|---|---|---|",
-        ...rows.map(([a, b, c]) => `| ${a} | ${b} | ${c} |`),
+        "| 命令 | 功能 |",
+        "|---|---|",
+        ...rows.map(([a, b]) => `| ${a} | ${b} |`),
       ];
       const rendered = renderMarkdown(mdRows.join("\n"));
       ctx.writeLine("");
       for (const line of rendered) ctx.writeLine(line);
       ctx.writeLine("");
-      ctx.writeLine(chalk.dim(`💡 已加载 ${ctx.skillCount} 个技能，可直接输入 /技能名 激活（如 /code-review）`));
+      ctx.writeLine(chalk.dim(`💡 详细用法: /<命令> --help（如 /install --help） | 已加载 ${ctx.skillCount} 个技能，直接输入 /技能名 激活`));
       ctx.printStatus();
       return "continue";
     },
