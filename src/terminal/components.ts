@@ -18,6 +18,25 @@ function safeLine(line: string): string {
   return `${line}\x1b[0m`;
 }
 
+/**
+ * 从 line[i]（须为 \x1b）起定位完整转义序列的结束下标（不含）。
+ * 支持：CSI SGR（\x1b[...m）、OSC 8 超链接（\x1b]8;;...\x1b\）。
+ * 未识别或不完整返回 -1（调用方按普通字符处理）。
+ */
+function escapeEnd(line: string, i: number): number {
+  const next = line[i + 1];
+  if (next === "[") {
+    const m = line.indexOf("m", i + 2);
+    return m === -1 ? -1 : m + 1;
+  }
+  if (next === "]") {
+    // OSC：以 ESC \（\x1b 0x5c）结尾
+    const end = line.indexOf("\x1b\\", i + 2);
+    return end === -1 ? -1 : end + 2;
+  }
+  return -1;
+}
+
 /** CJK 安全截断 */
 function fit(line: string, width: number): string {
   return truncateToWidth(line, width);
@@ -148,15 +167,14 @@ export class MessageList implements Component {
     let w = 0;
     let chunk = "";
     while (i < line.length) {
-      if (line[i] === "\x1b" && line[i + 1] === "[") {
-        const end = line.indexOf("m", i);
-        if (end === -1) {
-          chunk += line.slice(i);
-          break;
+      if (line[i] === "\x1b") {
+        // 完整转义序列（SGR / OSC 8 超链接）零宽整段跳过，防拆断产生未闭合序列
+        const end = escapeEnd(line, i);
+        if (end !== -1) {
+          chunk += line.slice(i, end);
+          i = end;
+          continue;
         }
-        chunk += line.slice(i, end + 1);
-        i = end + 1;
-        continue;
       }
       const ch = line[i]!;
       const cw = charWidth(ch);

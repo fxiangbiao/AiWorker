@@ -7,14 +7,20 @@
 import chalk from "chalk";
 import { highlightLine } from "./highlight.js";
 
-/** 剥除 ANSI 颜色码 + OSC 8 超链接序列（不可见，不影响宽度） */
+/** 剥除 ANSI 颜色码 + OSC 超链接序列 + 残留 ST（不可见，不影响宽度） */
 function stripAnsiSequences(s: string): string {
   return s
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[\d+(;\d+)*m/g, "")
-    // OSC 8 超链接：\x1b]8;;url\x1b\ 和关闭 \x1b]8;;\x1b\
+    // OSC 序列（超链接等）：\x1b]...\x1b\（含 OSC 8 超链接）
     // eslint-disable-next-line no-control-regex
-    .replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "");
+    .replace(/\x1b\][^\x1b]*\x1b\\/g, "")
+    // 未闭合 OSC（行尾无 ST，wrap 拆断等异常残留）：整段剥除
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x1b]*$/g, "")
+    // 残留 ST（ESC \）与裸 ESC：不占列
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\\|\x1b/g, "");
 }
 
 /** emoji 呈现字符（✅⭐🔥 等，终端占 2 列） */

@@ -14,9 +14,14 @@
 import { stdout } from "node:process";
 import { displayWidth, truncateToWidth } from "./markdown.js";
 
-/** 行尾追加 SGR reset，防样式泄漏 */
+/** 行尾追加 SGR reset，防样式泄漏；未闭合 OSC 8 先补 ST 关闭（防吞掉后续 ANSI 定位命令） */
 function resetLine(line: string): string {
-  return `${line}\x1b[0m`;
+  // eslint-disable-next-line no-control-regex
+  const openCount = (line.match(/\x1b\]8;/g) ?? []).length;
+  // eslint-disable-next-line no-control-regex
+  const closeCount = (line.match(/\x1b\\/g) ?? []).length;
+  const tail = openCount > closeCount ? "\x1b\\" : "";
+  return `${line}${tail}\x1b[0m`;
 }
 
 export class Screen {
