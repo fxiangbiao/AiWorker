@@ -8,6 +8,8 @@ import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
+import { jobRunner } from "../src/core/job-runner.js";
+import { scheduler } from "../src/core/scheduler.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -726,5 +728,98 @@ describe("HTTP Server — WebSocket 实时总线", () => {
         ws.on("error", () => resolve());
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("HTTP Server — 后台任务与定时调度", () => {
+  let server4: Server | undefined;
+  let base4: string;
+  let store4: SessionStore;
+
+  beforeAll(async () => {
+    setupEnv(testDir);
+    store4 = new SessionStore(resolve(testDir, "jobs-server.db"));
+    jobRunner.init({
+      createAgent: () => mockAgent() as never,
+      workingDir: testDir,
+      sessionStore: store4,
+    });
+    scheduler.init({ submit: () => "" }, resolve(testDir, "schedule-server.json"));
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store4,
+    };
+    server4 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server4!.once("listening", () => resolve()));
+    const port = (server4!.address() as AddressInfo).port;
+    base4 = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(() => {
+    if (server4) {
+      server4.close();
+      server4 = undefined;
+    }
+    if (store4) store4.close();
+    teardownEnv();
+  });
+
+  it("POST /jobs 提交返回 id，GET /jobs 列表可见", async () => {
+    const resp = await fetch(`${base4}${API}/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agentId: "default", prompt: "后台任务" }),
+    });
+    expect(resp.status).toBe(200);
+    const { id } = (await resp.json()) as { id: string };
+    expect(id).toMatch(/^job-/);
+
+    const list = await (await fetch(`${base4}${API}/jobs`)).json();
+    expect((list.jobs as Array<{ id: string }>).some((j) => j.id === id)).toBe(true);
+  });
+
+  it("POST /jobs 缺 prompt 返回 400", async () => {
+    const resp = await fetch(`${base4}${API}/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("GET /schedule 空列表；POST 添加；DELETE 移除", async () => {
+    const empty = await (await fetch(`${base4}${API}/schedule`)).json();
+    expect(empty.jobs).toEqual([]);
+
+    const add = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cron: "0 8 * * *", prompt: "早报", agentId: "default" }),
+    });
+    expect(add.status).toBe(200);
+
+    const list = await (await fetch(`${base4}${API}/schedule`)).json();
+    expect(list.jobs).toHaveLength(1);
+    const id = (list.jobs as Array<{ id: string }>)[0]!.id;
+
+    const del = await fetch(`${base4}${API}/schedule/${id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    const after = await (await fetch(`${base4}${API}/schedule`)).json();
+    expect(after.jobs).toHaveLength(0);
+  });
+
+  it("POST /schedule 非法 cron 返回 400", async () => {
+    const resp = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cron: "not-cron", prompt: "x" }),
+    });
+    expect(resp.status).toBe(400);
   });
 });

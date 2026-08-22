@@ -18,6 +18,8 @@ import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
 import { eventBus } from "./server/event-bus.js";
+import { jobRunner } from "./core/job-runner.js";
+import { scheduler } from "./core/scheduler.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
 
@@ -466,6 +468,85 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/plugins") && req.method === "GET") {
       const plugins = deps.getPlugins?.() ?? [];
       sendJSON(res, 200, { plugins });
+      return;
+    }
+
+    // ─── 后台任务 ───
+    if (url === apiUrl("/jobs") && req.method === "GET") {
+      sendJSON(res, 200, { jobs: jobRunner.isInitialized() ? jobRunner.list() : [] });
+      return;
+    }
+    if (url === apiUrl("/jobs") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let req2: { agentId?: string; prompt?: string };
+      try {
+        req2 = JSON.parse(body) as { agentId?: string; prompt?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!req2.prompt || typeof req2.prompt !== "string") {
+        sendJSON(res, 400, { error: "Missing 'prompt' field" });
+        return;
+      }
+      if (!jobRunner.isInitialized()) {
+        sendJSON(res, 503, { error: "Job runner not initialized" });
+        return;
+      }
+      const id = jobRunner.submit(req2.agentId ?? "default", req2.prompt);
+      sendJSON(res, 200, { id });
+      return;
+    }
+    if (url.startsWith(apiUrl("/jobs/")) && req.method === "DELETE") {
+      const jobId = url.slice(apiUrl("/jobs/").length);
+      const ok = jobRunner.cancel(jobId);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "无法取消（仅排队中任务可取消）" });
+      return;
+    }
+
+    // ─── 定时调度 ───
+    if (url === apiUrl("/schedule") && req.method === "GET") {
+      sendJSON(res, 200, { jobs: scheduler.getJobs() });
+      return;
+    }
+    if (url === apiUrl("/schedule") && req.method === "POST") {
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let sched: { cron?: string; prompt?: string; agentId?: string };
+      try {
+        sched = JSON.parse(body) as { cron?: string; prompt?: string; agentId?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!sched.cron || !sched.prompt || typeof sched.cron !== "string" || typeof sched.prompt !== "string") {
+        sendJSON(res, 400, { error: "Missing 'cron' or 'prompt' field" });
+        return;
+      }
+      const ok = scheduler.addJob({
+        id: `sched-${Date.now().toString(36)}`,
+        cron: sched.cron,
+        prompt: sched.prompt,
+        agentId: sched.agentId ?? "default",
+      });
+      sendJSON(res, ok ? 200 : 400, ok ? { ok: true } : { error: "无效的 cron 表达式" });
+      return;
+    }
+    if (url.startsWith(apiUrl("/schedule/")) && req.method === "DELETE") {
+      const schedId = url.slice(apiUrl("/schedule/").length);
+      const ok = scheduler.removeJob(schedId);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "未找到该定时任务" });
       return;
     }
 

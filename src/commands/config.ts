@@ -3,14 +3,56 @@
  */
 
 import chalk from "chalk";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { hookManager } from "../hooks/hook-manager.js";
 import { createEvaluateSkillCreation } from "../hooks/handlers.js";
 import { getAppVersion } from "../core/version.js";
+import { runOnboarding } from "../core/onboarding.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
 import type { PermissionMode } from "../types.js";
 
 export const configCommands: CliCommand[] = [
+  {
+    name: "setup",
+    aliases: ["onboard"],
+    usage: "setup",
+    description: "重新运行首次引导（API Key / 权限模式）",
+    detail: "写 .env 与 config/permissions.json；TUI 交互输入",
+    handler: async (ctx) => {
+      const result = await runOnboarding({
+        ask: ctx.ask,
+        dataDir: ctx.dataDir,
+        workingDir: ctx.workingDir,
+        writeEnv: (key, value) => {
+          process.env[key] = value;
+          const envPath = resolve(process.cwd(), ".env");
+          const existing = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
+          const lines = existing.split(/\r?\n/).filter((l) => !l.trim().startsWith(`${key}=`));
+          lines.push(`${key}=${value}`);
+          writeFileSync(envPath, lines.join("\n") + "\n");
+          ctx.writeLine(chalk.green(`✓ ${key} 已写入 .env 并立即生效`));
+        },
+        writeDefaultMode: (mode) => {
+          const permPath = resolve(process.cwd(), "config", "permissions.json");
+          let cfg: Record<string, unknown> = {};
+          try {
+            cfg = JSON.parse(readFileSync(permPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown>;
+          } catch {
+            /* 文件缺失/损坏则重建 */
+          }
+          cfg.default_mode = mode;
+          writeFileSync(permPath, JSON.stringify(cfg, null, 2) + "\n");
+          ctx.writeLine(chalk.green(`✓ 默认权限模式 → ${mode}（已写入 config/permissions.json）`));
+        },
+        log: (line) => ctx.writeLine(line),
+      });
+      ctx.writeLine(result === "completed" ? chalk.green("✓ 引导完成") : chalk.gray("已跳过"));
+      ctx.printStatus();
+      return "continue";
+    },
+  },
   {
     name: "mode",
     usage: "mode <ask/plan/auto>",

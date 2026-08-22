@@ -34,6 +34,8 @@ export interface CommandContext {
   skillCount: number;
   /** 工作目录（读写统一基准） */
   workingDir: string;
+  /** 数据目录（会话/审计/引导标记等） */
+  dataDir: string;
   runtimeConfigPath: string;
   persistRuntimeConfig: () => void;
   /** 上下文分层统计（封装 ContextManager + 路由到当前 agent） */
@@ -44,6 +46,8 @@ export interface CommandContext {
   write: (text: string) => void;
   writeLine: (line: string) => void;
   printStatus: () => void;
+  /** 提问通道（/setup 引导用；TUI 走输入行，无 TUI 返回 null） */
+  ask: (question: string) => Promise<string | null>;
 }
 
 /** CLI 命令（数组顺序 = 匹配优先级 + /help 展示顺序） */

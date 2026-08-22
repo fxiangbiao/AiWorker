@@ -36,6 +36,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
   const writeLines: string[] = [];
   const prefillQueue: string[] = [];
   const mockAgent = {
+    getId: () => "default",
     getName: () => "测试专家",
     getMaxIterations: () => 100,
     setMaxIterations: vi.fn(),
@@ -75,6 +76,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     write: (t) => writes.push(t),
     writeLine: (l) => writeLines.push(l),
     printStatus: () => {},
+    ask: () => Promise.resolve(null),
+    dataDir: dir,
     ...overrides,
   };
   return { ctx, writes, writeLines, prefillQueue, store };
@@ -305,5 +308,69 @@ describe("plugins 命令", () => {
     const { ctx, writeLines } = makeCtx();
     await find("plugins").handler(ctx, "", "/plugins");
     expect(writeLines.join("\n")).toContain("未加载任何插件");
+  });
+});
+
+describe("bg / jobs / schedule 命令", () => {
+  it("/bg 提交后台任务并返回任务 ID", async () => {
+    const dir = makeTestDir("cli-jobs");
+    const { jobRunner } = await import("../src/core/job-runner.js");
+    const { SessionStore } = await import("../src/memory/session-store.js");
+    const store = new SessionStore(resolve(dir, "jobs.db"));
+    jobRunner.init({
+      createAgent: () =>
+        ({
+          runStream: async () => ({ success: true, text: "ok", truncated: false }),
+        }) as never,
+      workingDir: dir,
+      sessionStore: store,
+    });
+    const { ctx, writeLines } = makeCtx();
+    await find("bg").handler(ctx, "整理报告", "/bg 整理报告");
+    expect(writeLines.some((l) => l.includes("后台任务已提交") && l.includes("job-"))).toBe(true);
+    store.close();
+  });
+
+  it("/jobs 空列表提示；/bg 后可列出", async () => {
+    const dir = makeTestDir("cli-jobs2");
+    const { jobRunner } = await import("../src/core/job-runner.js");
+    const { SessionStore } = await import("../src/memory/session-store.js");
+    const store = new SessionStore(resolve(dir, "jobs.db"));
+    jobRunner.init({
+      createAgent: () =>
+        ({
+          runStream: async () => ({ success: true, text: "ok", truncated: false }),
+        }) as never,
+      workingDir: dir,
+      sessionStore: store,
+    });
+    const { ctx, writeLines } = makeCtx();
+    jobRunner.clear();
+    await find("jobs").handler(ctx, "", "/jobs");
+    expect(writeLines.some((l) => l.includes("暂无后台任务"))).toBe(true);
+
+    jobRunner.submit("default", "任务X");
+    writeLines.length = 0;
+    await find("jobs").handler(ctx, "", "/jobs");
+    expect(writeLines.some((l) => l.includes("job-"))).toBe(true);
+    store.close();
+  });
+
+  it("/schedule add 合法添加 / 非法 cron 拒绝 / remove", async () => {
+    const dir = makeTestDir("cli-schedule");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx();
+
+    await find("schedule").handler(ctx, "", '/schedule add "0 8 * * *" "每日早报"');
+    expect(writeLines.some((l) => l.includes("定时任务已添加"))).toBe(true);
+
+    await find("schedule").handler(ctx, "", '/schedule add "junk" "坏任务"');
+    expect(writeLines.some((l) => l.includes("cron 表达式无效"))).toBe(true);
+
+    const jobs = scheduler.getJobs();
+    expect(jobs).toHaveLength(1);
+    await find("schedule").handler(ctx, "", `/schedule remove ${jobs[0]!.id}`);
+    expect(scheduler.getJobs()).toHaveLength(0);
   });
 });

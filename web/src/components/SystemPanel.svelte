@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { API } from "$lib/stores/chat.svelte";
+  import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp" | "trace" | "plugins">("context");
+  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace">("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -64,6 +65,30 @@
     registeredHooks: number;
   }
   let pluginList = $state<PluginCard[]>([]);
+
+  interface SchedCard {
+    id: string;
+    cron: string;
+    prompt: string;
+    agentId: string;
+  }
+  let schedList = $state<SchedCard[]>([]);
+
+  interface JobCard {
+    id: string;
+    agentId: string;
+    prompt: string;
+    status: string;
+    summary: string;
+    error?: string;
+    startedAt?: number;
+    finishedAt?: number;
+  }
+  let jobList = $state<JobCard[]>([]);
+  let newCron = $state("0 8 * * *");
+  let newPrompt = $state("");
+  let newAgent = $state("default");
+  let schedMsg = $state("");
 
   const mcpStateLabel: Record<string, string> = {
     connected: "已连接",
@@ -150,7 +175,57 @@
       .finally(() => { loading = false; });
   }
 
-  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "trace" | "plugins") {
+  function loadSchedule() {
+    loading = true;
+    Promise.all([
+      fetch(`${API}/schedule`).then((r) => (r.ok ? r.json() : Promise.reject())),
+      fetch(`${API}/jobs`).then((r) => (r.ok ? r.json() : Promise.reject())),
+    ])
+      .then(([s, j]) => {
+        schedList = (s.jobs || []) as SchedCard[];
+        jobList = (j.jobs || []) as JobCard[];
+      })
+      .catch(() => { schedList = []; jobList = []; })
+      .finally(() => { loading = false; });
+  }
+
+  function addSchedule() {
+    if (!newPrompt.trim()) { schedMsg = "请输入任务描述"; return; }
+    schedMsg = "";
+    fetch(`${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cron: newCron.trim(), prompt: newPrompt.trim(), agentId: newAgent.trim() || "default" }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) { schedMsg = d.error; return; }
+        newPrompt = "";
+        loadSchedule();
+      })
+      .catch(() => { schedMsg = "添加失败"; });
+  }
+
+  function removeSchedule(id: string) {
+    fetch(`${API}/schedule/${id}`, { method: "DELETE" })
+      .then(() => loadSchedule())
+      .catch(() => {});
+  }
+
+  function cancelJob(id: string) {
+    fetch(`${API}/jobs/${id}`, { method: "DELETE" })
+      .then(() => loadSchedule())
+      .catch(() => {});
+  }
+
+  const jobStatusLabel: Record<string, string> = {
+    queued: "排队中",
+    running: "运行中",
+    done: "完成",
+    failed: "失败",
+  };
+
+  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "trace") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
@@ -158,9 +233,18 @@
     else if (t === "skills") loadSkills();
     else if (t === "mcp") loadMcp();
     else if (t === "plugins") loadPlugins();
+    else if (t === "schedule") loadSchedule();
   }
 
-  onMount(() => loadContext());
+  // WS job/done 事件 → 调度 Tab 数据实时刷新
+  let unsubWs: (() => void) | null = null;
+
+  onMount(() => {
+    loadContext();
+    unsubWs = onWsEvent((d) => {
+      if ((d as { type?: string }).type === "job/done") loadSchedule();
+    });
+  });
 </script>
 
 <div class="sys-panel">
@@ -170,6 +254,7 @@
     <button class="sp-tab" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-tab" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
     <button class="sp-tab" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
+    <button class="sp-tab" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
     <button class="sp-tab" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
@@ -288,6 +373,58 @@
                   {/each}
                 </div>
               {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else if tab === "schedule"}
+      <div class="sp-section"><div class="sp-row"><span>定时任务（config/schedule.json）</span></div></div>
+      {#if schedList.length === 0}
+        <div class="sp-empty">暂无定时任务</div>
+      {:else}
+        <div class="sp-mcp-list">
+          {#each schedList as s}
+            <div class="sp-mcp">
+              <div class="sp-mcp-head">
+                <span class="sp-mcp-name">{s.cron}</span>
+                <span class="sp-mcp-right">
+                  <span class="sp-mcp-meta">{s.agentId}</span>
+                  <button class="sp-del" onclick={() => removeSchedule(s.id)}>删除</button>
+                </span>
+              </div>
+              <div class="sp-mcp-meta">{s.prompt}</div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <div class="sp-sched-form">
+        <input class="sp-sched-input" bind:value={newCron} placeholder="cron 5 字段，如 0 8 * * *" />
+        <input class="sp-sched-input sp-sched-agent" bind:value={newAgent} placeholder="专家" />
+        <input class="sp-sched-input" bind:value={newPrompt} placeholder="任务描述" />
+        <button class="sp-sched-btn" onclick={addSchedule}>添加定时任务</button>
+      </div>
+      {#if schedMsg}
+        <div class="sp-mcp-error">{schedMsg}</div>
+      {/if}
+      <div class="sp-section"><div class="sp-row"><span>后台任务（/bg 或 POST /api/v1/jobs）</span></div></div>
+      {#if jobList.length === 0}
+        <div class="sp-empty">暂无后台任务</div>
+      {:else}
+        <div class="sp-mcp-list">
+          {#each jobList as j}
+            <div class="sp-mcp">
+              <div class="sp-mcp-head">
+                <span class="sp-mcp-name">{j.id}</span>
+                <span class="sp-mcp-right">
+                  <span class="sp-dot" class:on={j.status === "done"} class:off={j.status !== "done"}>
+                    {jobStatusLabel[j.status] || j.status}
+                  </span>
+                  {#if j.status === "queued"}
+                    <button class="sp-del" onclick={() => cancelJob(j.id)}>取消</button>
+                  {/if}
+                </span>
+              </div>
+              <div class="sp-mcp-meta">{j.agentId} · {(j.summary || j.error || j.prompt).slice(0, 80)}</div>
             </div>
           {/each}
         </div>
@@ -475,4 +612,11 @@
   .sp-mcp-meta { font-size: 11px; color: var(--dim); margin-top: 4px; }
   .sp-mcp-error { font-size: 11px; color: var(--error); margin-top: 4px; word-break: break-word; }
   .sp-warn { font-size: 11px; color: #d97706; margin-top: 4px; word-break: break-word; }
+  .sp-sched-form { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .sp-sched-input { font-size: 11px; font-family: var(--font-mono); padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); }
+  .sp-sched-agent { font-family: var(--font-ui); }
+  .sp-sched-btn { padding: 6px 10px; background: var(--primary); color: #fff; border: none; border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; }
+  .sp-sched-btn:hover { filter: brightness(1.1); }
+  .sp-del { padding: 2px 8px; font-size: 11px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
+  .sp-del:hover { color: var(--error); border-color: var(--error); }
 </style>

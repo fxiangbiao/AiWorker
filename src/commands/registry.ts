@@ -8,6 +8,7 @@ import { collabCommands } from "./collab.js";
 import { skillsCommands } from "./skills.js";
 import { configCommands } from "./config.js";
 import { pluginsCommands } from "./plugins.js";
+import { jobsCommands } from "./jobs.js";
 import { miscCommands } from "./misc.js";
 
 export type { CliCommand, CommandContext, CommandAction } from "./types.js";
@@ -20,6 +21,7 @@ export function buildCliCommands(): CliCommand[] {
     ...sessionCommands, // new, log, sessions, switch, copy, trace, context
     ...skillsCommands, // skill, skills, skill-evo
     ...pluginsCommands, // plugins
+    ...jobsCommands, // bg, jobs, schedule
     ...miscCommands, // mcps, help, exit
   ];
 }
