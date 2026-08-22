@@ -714,8 +714,8 @@
           <label class="sp-cfg-row">provider（可选）
             <input class="sp-cfg-input" bind:value={newModelProvider} placeholder="如 openai / deepseek" />
           </label>
-          <label class="sp-cfg-row">apiKey（可选，建议 ${ENV} 引用）
-            <input class="sp-cfg-input" bind:value={newModelKeyVal} placeholder="${MY_API_KEY} 或留空继承默认" />
+          <label class="sp-cfg-row">apiKey（可选，建议环境变量引用）
+            <input class="sp-cfg-input" bind:value={newModelKeyVal} placeholder={'${MY_API_KEY} 或留空继承默认'} />
           </label>
           <div class="sp-cfg-row">
             <button class="sp-io-btn" onclick={onAddModel}>添加模型</button>
