@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { resolve, dirname } from "node:path";
-import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { hookManager } from "../src/hooks/hook-manager.js";
 import { auditLogger } from "../src/core/audit-logger.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -224,6 +224,78 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(snapFiles.length).toBeGreaterThan(0);
     const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
     expect(content).toContain("+ line1");
+  });
+
+  it("captureDiff fs_write 修改已有文件：diff 行数精确（中间插入 +1 不改动后续行）", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
+
+    const file = resolve(testDir, "modify-precise.txt");
+    writeFileSync(file, "a\nb\nc\nd\ne\n", "utf-8");
+
+    // Pre: 保存旧内容
+    await handler(makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: file, content: "a\nb\nx\nc\nd\ne\n" }) },
+    }));
+
+    // 中间插入一行 x（b 和 c 之间）
+    writeFileSync(file, "a\nb\nx\nc\nd\ne\n", "utf-8");
+
+    const postCtx = makeCtx({
+      event: "onToolCallPost",
+      data: { toolName: "fs_write", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
+    });
+    await handler(postCtx);
+
+    const snapDir = resolve(testDir, "snapshots", "test-session");
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    // 中间插入 1 行：added=1, removed=0（不再因错位把后续行算入）
+    const adds = (content.match(/^\+ /gm) || []).length;
+    const dels = (content.match(/^- /gm) || []).length;
+    expect(adds).toBe(1);
+    expect(dels).toBe(0);
+    expect(content).toContain("+ x");
+  });
+
+  it("captureDiff fs_write 修改已有文件：中间删除/修改/追加行数精确", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
+    const snapDir = resolve(testDir, "snapshots", "test-session");
+
+    const run = async (oldContent: string, newContent: string) => {
+      const file = resolve(testDir, `modify-${Math.random().toString(36).slice(2, 8)}.txt`);
+      writeFileSync(file, oldContent, "utf-8");
+      await handler(makeCtx({
+        event: "onToolCallPre",
+        data: { toolName: "fs_write", args: JSON.stringify({ path: file, content: newContent }) },
+      }));
+      writeFileSync(file, newContent, "utf-8");
+      await handler(makeCtx({
+        event: "onToolCallPost",
+        data: { toolName: "fs_write", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
+      }));
+      // 按 mtime 取刚写入的快照（目录共享，readdirSync 顺序不定）
+      const snapFiles = readdirSync(snapDir)
+        .filter((f) => f.endsWith(".diff"))
+        .map((f) => resolve(snapDir, f))
+        .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+      const c = readFileSync(snapFiles[0], "utf-8");
+      return {
+        adds: (c.match(/^\+ /gm) || []).length,
+        dels: (c.match(/^- /gm) || []).length,
+      };
+    };
+
+    // 中间删除 1 行
+    expect(await run("a\nx\nb\nc\n", "a\nb\nc\n")).toEqual({ adds: 0, dels: 1 });
+    // 修改 1 行
+    expect(await run("a\nb\nc\n", "a\nB\nc\n")).toEqual({ adds: 1, dels: 1 });
+    // 末尾追加 1 行
+    expect(await run("a\nb\nc\n", "a\nb\nc\nd\n")).toEqual({ adds: 1, dels: 0 });
+    // 清空
+    expect(await run("a\nb\nc\n", "")).toEqual({ adds: 0, dels: 3 });
   });
 
   it("captureDiff 相对路径以工作目录为基准解析（与 fs_write 一致）", async () => {
