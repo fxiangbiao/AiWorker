@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { API, store } from "$lib/stores/chat.svelte";
   import { workingDir } from "$lib/stores/status";
 
@@ -113,7 +114,7 @@
 
   /** 以工作目录为根裁剪路径（树根不显示盘符/绝对路径） */
   function displayPath(p: string): string {
-    const wd = workingDir();
+    const wd = get(workingDir);
     if (wd) {
       const normWd = wd.replace(/[\\/]+$/, "");
       if (p.startsWith(normWd + "/") || p.startsWith(normWd + "\\")) {
