@@ -83,6 +83,9 @@
     debounceTimer = setTimeout(load, 400);
   });
 
+  /** 是否已按"仅展开最新会话"初始化折叠状态（只初始化一次，之后保留用户手动调整） */
+  let foldInitialized = false;
+
   function load() {
     loading = true;
     fetch(`${API}/diffs`)
@@ -90,6 +93,13 @@
       .then((d) => {
         const list: DiffSession[] = (d.sessions || []).sort((a: DiffSession, b: DiffSession) => (b.updatedAt || 0) - (a.updatedAt || 0));
         sessions = list;
+        if (!foldInitialized) {
+          foldInitialized = true;
+          // 默认只展开最新会话（list[0]，已按 updatedAt 降序），历史会话默认收起
+          const collapsed = new Set<string>();
+          for (let i = 1; i < list.length; i++) collapsed.add(list[i].sessionId);
+          collapsedSessions = collapsed;
+        }
         if (sessions.length > 0 && sessions[0].files.length > 0 && !selected) {
           selected = sessions[0].files[0];
         }
