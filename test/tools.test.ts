@@ -87,4 +87,12 @@ describe("7. 工具执行", () => {
       setAskProvider(null);
     }
   });
+
+  it("terminal_exec 失败时错误信息包含 stdout 真实原因（2>&1 场景）", async () => {
+    const handler = toolRegistry.getHandler("terminal_exec")!;
+    // 命令不存在：2>&1 场景 stderr 合并进 stdout，错误详情应包含真实原因而非仅 "Command failed"
+    const result = await handler({ command: "definitely-not-a-real-cmd-xyz 2>&1", timeout: 10000 }, ctx);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("definitely-not-a-real-cmd-xyz");
+  });
 });
