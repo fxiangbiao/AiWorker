@@ -163,9 +163,9 @@ function parseDiffFile(content: string): {
   const lines: DiffLine[] = [];
   let path: string | undefined;
   let currentContent: string | undefined;
-  let binary = false;
-  let modified = false;
-  let deleted = false;
+  let binary: boolean | undefined;
+  let modified: boolean | undefined;
+  let deleted: boolean | undefined;
   let inMeta = false;
   for (const rawLine of content.split("\n")) {
     if (inMeta) {
@@ -200,6 +200,37 @@ function parseDiffFile(content: string): {
     }
   }
   return { lines, path, currentContent, binary, modified, deleted };
+}
+
+/**
+ * 旧格式快照兼容推断（binary/modified/deleted 标记上线前生成的快照）：
+ * - diff 文本为"文件已删除" → deleted
+ * - diff 文本为"内容已变化（旧内容不可恢复）" → modified
+ * - diff 文本为"新增文件（N 行）"且文件当前不存在 → deleted（该文件已被删除）
+ * - 否则按文件当前是否存在：不存在 → deleted，存在 → modified
+ * 仅用于无显式标记的快照，避免 Web 列表显示误导性的 +0 -0。
+ */
+function inferLegacyFlags(
+  parsed: { lines: DiffLine[]; path?: string; binary?: boolean; modified?: boolean; deleted?: boolean },
+  entry: string,
+): { binary?: boolean; modified?: boolean; deleted?: boolean; addedFromText?: number } {
+  if (parsed.binary || parsed.modified || parsed.deleted) return {};
+  const firstCtx = parsed.lines.find((l) => l.type === "ctx")?.text ?? "";
+  const filePath = parsed.path ?? decodeDiffPath(entry);
+  const exists = existsSync(filePath);
+
+  if (firstCtx.includes("文件已删除")) return { deleted: true };
+  if (firstCtx.includes("内容已变化") || firstCtx.includes("旧内容不可恢复")) {
+    return { modified: true };
+  }
+  // 新增文件（N 行）：旧格式未解析出 + 行，从文本提取行数
+  const addMatch = firstCtx.match(/新增文件（(\d+) 行）|新增文件\((\d+) 行\)/);
+  if (addMatch) {
+    const addedFromText = Number(addMatch[1] ?? addMatch[2] ?? 0);
+    return exists ? { addedFromText } : { deleted: true, addedFromText };
+  }
+  // 兜底：无特征文本，按当前文件是否存在推断
+  return exists ? { modified: true } : { deleted: true };
 }
 
 /** 把安全化的文件名还原为可读路径（D_前缀 + 分隔符 _ → /） */
@@ -256,15 +287,21 @@ function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSessi
         updatedAt = Math.max(updatedAt, stat.mtimeMs);
         const content = readFileSync(resolve(dir, entry), "utf-8");
         const parsed = parseDiffFile(content);
+        // 旧格式快照兼容推断：无 binary/modified/deleted 显式标记时，
+        // 按 diff 文本 + 文件当前是否存在推断（避免历史快照显示误导性的 +0 -0）
+        const inferred = inferLegacyFlags(parsed, entry);
+        const added =
+          parsed.lines.filter((l) => l.type === "add").length ||
+          (inferred.addedFromText ?? 0);
         files.push({
           path: parsed.path ?? decodeDiffPath(entry),
-          added: parsed.lines.filter((l) => l.type === "add").length,
+          added,
           removed: parsed.lines.filter((l) => l.type === "del").length,
           lines: parsed.lines,
           currentContent: parsed.currentContent,
-          binary: parsed.binary,
-          modified: parsed.modified,
-          deleted: parsed.deleted,
+          binary: parsed.binary ?? inferred.binary,
+          modified: parsed.modified ?? inferred.modified,
+          deleted: parsed.deleted ?? inferred.deleted,
         });
       }
       if (files.length > 0) {

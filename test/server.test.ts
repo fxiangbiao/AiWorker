@@ -326,8 +326,46 @@ describe("HTTP Server", () => {
     local.close();
   });
 
-  it("GET /diffs 快照签名缓存：目录未变化时结果稳定", async () => {
+  it("GET /diffs 旧格式快照兼容推断（文件已删 → deleted，新增行数从文本提取）", async () => {
     const { startServer: _s } = await import("../src/server.js");
+    const snapDir = resolve(testDir, "snapshots", "sess-legacy");
+    mkdirSync(snapDir, { recursive: true });
+    // 旧格式"新增文件"快照：无 modified/deleted 标记，文件当前不存在
+    const gonePath = resolve(testDir, "legacy-gone.txt");
+    writeFileSync(
+      resolve(snapDir, "D_legacy-gone.txt.diff"),
+      `# path: ${gonePath}\n新增文件（14 行）：${gonePath}\n---\nold: 0 chars\nnew: 0 chars`,
+      "utf-8",
+    );
+    // 旧格式"内容已变化"快照：无标记，文件当前存在
+    const existPath = resolve(testDir, "legacy-exist.txt");
+    writeFileSync(existPath, "hello", "utf-8");
+    writeFileSync(
+      resolve(snapDir, "D_legacy-exist.txt.diff"),
+      `# path: ${existPath}\n内容已变化（旧内容不可恢复）：${existPath}\n---\nold: 3 chars\nnew: 5 chars`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      sessions: Array<{ files: Array<{ path: string; deleted?: boolean; modified?: boolean; added: number }> }>;
+    };
+    const sess = data.sessions.find((s) => s.sessionId === "sess-legacy");
+    expect(sess).toBeDefined();
+    const gone = sess!.files.find((f) => f.path === gonePath);
+    expect(gone?.deleted).toBe(true);
+    expect(gone?.added).toBe(14);
+    const exist = sess!.files.find((f) => f.path === existPath);
+    expect(exist?.modified).toBe(true);
+    local.close();
+  });
+
+  it("GET /diffs 快照签名缓存：目录未变化时结果稳定", async () => {
     const snapDir = resolve(testDir, "snapshots", "sess-cache");
     mkdirSync(snapDir, { recursive: true });
     writeFileSync(
