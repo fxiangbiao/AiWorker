@@ -8,7 +8,11 @@
 - **重试按钮修复**：流式输出期间点击不再静默无响应（提示"当前正在生成中"）；拦截类错误附注引导 LLM 更换实现方式，执行失败附注引导修正后重试
 - **terminal_exec 描述补充**：Windows 下命令在 cmd 执行，PowerShell 语法需 `powershell -Command` 包裹
 - **文件变更列表区分"已修改"**：指纹监控修改已有文件（无行级 diff）不再显示误导性的 `+0 -0`，改显示「已修改」徽标（`DiffFile.modified` 字段）
-- 测试 +5（rm 相对路径/引号/大小写/del 顺序/rd 别名绕过用例）
+- **terminal_exec 报错保留真实原因**：命令 `2>&1` 时 stderr 并入 stdout，错误详情回传 stdout 尾部（而非笼统 `Command failed`）；exec 环境显式补入 node 目录（修复 server 缺 PATH 时 `'node' is not recognized`）
+- **文件变更支持删除检测**：指纹反向对比发现删除 → `deleted` 标记 + Web「已删除」徽标
+- **旧格式快照兼容推断**：无标记历史快照按 diff 文本 + 文件当前状态推断（已删→已删除、无标记→已修改、新增行数从文本提取），不再显示 `+0 -0`
+- **移除 GitHub Actions CI**（`ci.yml` 频繁失败、用处不大），README badge 与 AGENTS.md 同步清理
+- 测试 +6（rm 绕过用例 5 + legacy 推断 1）
 
 ## 0.6.5 (2026-08-23)
 
