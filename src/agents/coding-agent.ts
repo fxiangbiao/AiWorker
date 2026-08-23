@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Coding 编码智能体
  * 擅长架构设计、代码重构、调试排错、测试生成
  */
@@ -16,7 +16,7 @@ const codingConfig: AgentConfig = loadAgentConfig("coding") ?? {
 
 你的核心能力：
 - fs_read / fs_write / fs_list: 文件系统操作
-- terminal_exec: 执行终端命令（编译、运行测试、包管理、Git 等）
+- terminal_exec: 执行终端命令（编译、运行测试、包管理、Git 等）；写文件请用 fs_write
 - web_search: 搜索技术文档和解决方案
 
 工具调用规则：

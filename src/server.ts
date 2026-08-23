@@ -134,6 +134,8 @@ interface DiffFile {
   lines: DiffLine[];
   /** 无行级 diff（指纹监控）时附带的当前内容全文 */
   currentContent?: string;
+  /** 二进制/不可展示内容文件（指纹监控降级快照，仅元信息） */
+  binary?: boolean;
 }
 
 interface DiffSession {
@@ -146,20 +148,28 @@ interface DiffSession {
 }
 
 /** 解析快照 .diff 文件为结构化行 */
-function parseDiffFile(content: string): { lines: DiffLine[]; path?: string; currentContent?: string } {
+function parseDiffFile(content: string): {
+  lines: DiffLine[];
+  path?: string;
+  currentContent?: string;
+  binary?: boolean;
+} {
   const lines: DiffLine[] = [];
   let path: string | undefined;
   let currentContent: string | undefined;
+  let binary = false;
   let inMeta = false;
   for (const rawLine of content.split("\n")) {
     if (inMeta) {
-      // 分隔符之后的元信息块（old/new 字符数 + 指纹监控附的 new_b64）
+      // 分隔符之后的元信息块（old/new 字符数 + 指纹监控附的 new_b64 / binary 标记）
       if (rawLine.startsWith("new_b64: ")) {
         try {
           currentContent = Buffer.from(rawLine.slice(9).trim(), "base64").toString("utf-8");
         } catch {
           currentContent = undefined;
         }
+      } else if (rawLine.startsWith("binary: ")) {
+        binary = rawLine.slice(8).trim() === "1";
       }
       continue;
     }
@@ -177,7 +187,7 @@ function parseDiffFile(content: string): { lines: DiffLine[]; path?: string; cur
       lines.push({ type: "ctx", text: rawLine });
     }
   }
-  return { lines, path, currentContent };
+  return { lines, path, currentContent, binary };
 }
 
 /** 把安全化的文件名还原为可读路径（D_前缀 + 分隔符 _ → /） */
@@ -238,6 +248,7 @@ function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSessi
           removed: parsed.lines.filter((l) => l.type === "del").length,
           lines: parsed.lines,
           currentContent: parsed.currentContent,
+          binary: parsed.binary,
         });
       }
       if (files.length > 0) {
@@ -248,6 +259,45 @@ function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSessi
   } catch {
     return [];
   }
+}
+
+// ── /diffs 快照目录签名缓存：文件数 + 目录 mtime 未变则复用上次解析结果 ──
+let diffsCache: { signature: string; sessions: DiffSession[]; cachedAt: number } | null = null;
+
+/** 快照目录签名（文件总数 + 最新 mtime + 会话目录数），变化才触发重新解析 */
+function snapshotsSignature(snapshotsDir: string): string {
+  try {
+    if (!existsSync(snapshotsDir)) return "empty";
+    let fileCount = 0;
+    let maxMtime = 0;
+    let dirCount = 0;
+    for (const d of readdirSync(snapshotsDir, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      dirCount++;
+      const dir = resolve(snapshotsDir, d.name);
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith(".diff")) continue;
+        fileCount++;
+        const st = statSync(resolve(dir, entry));
+        if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
+      }
+    }
+    return `${dirCount}:${fileCount}:${maxMtime}`;
+  } catch {
+    return "empty";
+  }
+}
+
+/** 带签名的 /diffs 结果（TTL 30s 兜底），避免每次请求全量解析所有快照 */
+function getDiffsCached(snapshotsDir: string, sessionStore?: SessionStore): DiffSession[] {
+  const now = Date.now();
+  if (diffsCache && now - diffsCache.cachedAt < 30000) {
+    const sig = snapshotsSignature(snapshotsDir);
+    if (sig === diffsCache.signature) return diffsCache.sessions;
+  }
+  const sessions = scanDiffs(snapshotsDir, sessionStore);
+  diffsCache = { signature: snapshotsSignature(snapshotsDir), sessions, cachedAt: now };
+  return sessions;
 }
 
 /** 将会话消息渲染为 Markdown 导出内容（TUI /export 共用） */
@@ -955,7 +1005,7 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === apiUrl("/diffs") && req.method === "GET") {
       const snapshotsDir = deps.dataDir ? resolve(deps.dataDir, "snapshots") : resolve(process.cwd(), "data", "snapshots");
-      sendJSON(res, 200, { sessions: scanDiffs(snapshotsDir, deps.sessionStore) });
+      sendJSON(res, 200, { sessions: getDiffsCached(snapshotsDir, deps.sessionStore) });
       return;
     }
 

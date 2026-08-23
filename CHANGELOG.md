@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.5 (2026-08-23)
+
+### 文件变更检测提速 + terminal_exec 用途明确
+- **指纹扫描只在「可能写文件的工具」后触发**（terminal_exec / terminal_session / MCP / 插件工具），只读工具（web_search/fs_read 等）不再全量扫描
+- **扫描范围分层**：跳过机器生成目录（`.godot`/build/out 等）；用户资产文件（.glb/.png 等）仍检测变更，但快照降级为元信息（`binary: 1` + 大小，不读全文不 base64），前端显示「二进制文件已变更（内容不可预览）」
+- **会话级节流**：同一会话两次指纹扫描间隔 ≥2s（`scanThrottleMs` 可注入，测试用 0）
+- **/diffs 签名缓存**：快照目录文件数 + mtime 未变时直接返回缓存，避免每次请求全量解析
+- **terminal_exec 描述重写**：明确写文件用 fs_write、禁止 shell 重定向写文件；fs_write 描述补充「首选本工具」；coding/default/data-analysis/game-dev 4 个 agent 提示词同步
+- 存量清理：删除 Godot 引擎缓存噪音快照 11817 个（16484 → 4667）
+- 测试 +3（binary 解析 + /diffs 缓存行为；hooks 指纹测试适配节流注入）
+
 ## 0.6.4 (2026-08-22)
 
 ### 添加模型 / Provider（TUI + Web）

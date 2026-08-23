@@ -3,8 +3,18 @@
  * 设计依据：Section 3.5 — 11 个 lifecycle handler
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync } from "node:fs";
-import { resolve, isAbsolute } from "node:path";
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+  openSync,
+  readSync,
+  closeSync,
+} from "node:fs";
+import { resolve, isAbsolute, extname } from "node:path";
 import { stdout } from "node:process";
 import { randomUUID } from "node:crypto";
 import chalk from "chalk";
@@ -32,6 +42,8 @@ export interface HandlerDependencies {
   dataDir?: string;
   telemetry?: TelemetryCoordinator;
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
+  /** 指纹扫描会话级节流间隔（ms），默认 2000；测试可注入 0 关闭 */
+  scanThrottleMs?: number;
 }
 
 /** 获取审批服务：优先注入实例，否则按 deps 自建（确认走 requestConfirm，保证行为等价） */
@@ -340,6 +352,9 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
   const dirSnapshots = new Map<string, Map<string, { mtimeMs: number; size: number }>>();
   // session -> Set<filePath> 已由 fs_write 精确逻辑处理的路径（目录指纹对比时跳过，防重复）
   const fsWritePaths = new Map<string, Set<string>>();
+  // session -> 上次实际扫描时间戳（节流：避免一轮内多次写工具调用反复全量扫描）
+  const lastScanAt = new Map<string, number>();
+  const scanThrottleMs = deps.scanThrottleMs ?? SCAN_THROTTLE_MS;
   const projectBase = deps.workingDir ? resolve(deps.workingDir) : process.cwd();
   const dataBase = deps.dataDir ? resolve(deps.dataDir) : resolve(process.cwd(), "data");
 
@@ -348,6 +363,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
       snapshots.delete(ctx.sessionId);
       dirSnapshots.delete(ctx.sessionId);
       fsWritePaths.delete(ctx.sessionId);
+      lastScanAt.delete(ctx.sessionId);
       // TTL 清理: 超过 30 分钟未使用的快照
       return;
     }
@@ -384,27 +400,34 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
     if (ctx.event === "onToolCallPost") {
       const toolName = ctx.data.toolName as string;
 
-      // ── 工作目录指纹监控：捕获任意工具（terminal_exec/MCP 等）对工作目录的写入 ──
-      if (projectBase !== process.cwd()) {
-        const current = scanDirFingerprint(projectBase);
-        const prev = dirSnapshots.get(ctx.sessionId);
-        if (prev) {
-          for (const [absPath, info] of current) {
-            const old = prev.get(absPath);
-            const existedBefore = old !== undefined;
-            const changed = !existedBefore || old.mtimeMs !== info.mtimeMs || old.size !== info.size;
-            if (!changed) continue;
-            // 已由 fs_write 精确逻辑处理的路径跳过，避免重复记录
-            if (fsWritePaths.get(ctx.sessionId)?.has(absPath)) continue;
-            const added = existedBefore ? 0 : newFileLineCount(absPath);
-            const removed = 0;
-            const diffText = existedBefore
-              ? `内容已变化（旧内容不可恢复）：${absPath}`
-              : `新增文件（${added} 行）：${absPath}`;
-            recordDirDiff(ctx, deps, dataBase, absPath, added, removed, diffText);
+      // ── 工作目录指纹监控：仅在"可能写文件的工具"（terminal_exec/MCP/插件等）调用后触发；
+      //    只读工具（web_search/fs_read 等）不扫描；fs_write 走下方精确快照逻辑 ──
+      if (MAY_WRITE_TOOL.test(toolName) && toolName !== "fs_write" && projectBase !== process.cwd()) {
+        // 会话级节流：间隔内同一会话不重复全量扫描（变化由下次扫描兜底捕获）
+        const now = Date.now();
+        const last = lastScanAt.get(ctx.sessionId) ?? 0;
+        if (now - last >= scanThrottleMs) {
+          lastScanAt.set(ctx.sessionId, now);
+          const current = scanDirFingerprint(projectBase);
+          const prev = dirSnapshots.get(ctx.sessionId);
+          if (prev) {
+            for (const [absPath, info] of current) {
+              const old = prev.get(absPath);
+              const existedBefore = old !== undefined;
+              const changed = !existedBefore || old.mtimeMs !== info.mtimeMs || old.size !== info.size;
+              if (!changed) continue;
+              // 已由 fs_write 精确逻辑处理的路径跳过，避免重复记录
+              if (fsWritePaths.get(ctx.sessionId)?.has(absPath)) continue;
+              const added = existedBefore ? 0 : newFileLineCount(absPath);
+              const removed = 0;
+              const diffText = existedBefore
+                ? `内容已变化（旧内容不可恢复）：${absPath}`
+                : `新增文件（${added} 行）：${absPath}`;
+              recordDirDiff(ctx, deps, dataBase, absPath, added, removed, diffText);
+            }
           }
+          dirSnapshots.set(ctx.sessionId, current);
         }
-        dirSnapshots.set(ctx.sessionId, current);
       }
 
       // ── fs_write 精确快照逻辑 ──
@@ -495,7 +518,13 @@ function recordDirDiff(
 
   deps.onFileDiff?.(filePath, added, removed, diffText);
 
-  // 指纹监控无旧内容快照：读取当前新内容随快照落盘，前端可展示"当前内容"
+  // 内容不可展示（二进制/大文件）→ 仅元信息快照（不读全文、不 base64）
+  if (!isDisplayableText(filePath)) {
+    writeBinaryDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText);
+    return;
+  }
+
+  // 文本文件：读取当前新内容随快照落盘，前端可展示"当前内容"
   let newContent: string | undefined;
   try {
     newContent = readFileSync(filePath, "utf-8");
@@ -531,13 +560,86 @@ function writeDiffSnapshot(
   }
 }
 
+/** 二进制/不可展示内容文件：仅写元信息快照（不读全文、不 base64），前端显示"不可预览" */
+function writeBinaryDiffSnapshot(dataBase: string, sessionId: string, filePath: string, diffText: string): void {
+  try {
+    const snapDir = resolve(dataBase, "snapshots", sessionId);
+    mkdirSync(snapDir, { recursive: true });
+    const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
+    let size = 0;
+    try {
+      size = statSync(filePath).size;
+    } catch {
+      /* 文件可能已被删除 */
+    }
+    writeFileSync(
+      resolve(snapDir, `${safeName}.diff`),
+      `# path: ${filePath}\n${diffText}\n---\nbinary: 1\nsize: ${size}`,
+      "utf-8",
+    );
+  } catch {
+    // 静默失败
+  }
+}
+
+/** 指纹监控触发白名单：可能写文件的工具（terminal_exec / MCP / 插件工具） */
+const MAY_WRITE_TOOL = /^(terminal_exec|terminal_session|mcp_|plugin_)/;
+
+/** 指纹扫描会话级节流间隔（ms）：同一会话两次全量扫描至少间隔此值 */
+const SCAN_THROTTLE_MS = 2000;
+
+/** 跳过扫描的目录（机器生成/缓存/依赖，变更无业务价值） */
+const SKIP_DIRS = new Set([
+  ".godot",
+  "node_modules",
+  ".git",
+  "dist",
+  "web",
+  ".svelte-kit",
+  ".aiworker_history",
+  "build",
+  "out",
+  "target",
+  "coverage",
+  ".next",
+  ".vite",
+]);
+
+/** 内容可展示为文本的扩展名白名单（其余按二进制降级处理） */
+const TEXT_EXT = new Set([
+  ".ts", ".js", ".mjs", ".cjs", ".json", ".md", ".html", ".css", ".svelte", ".py",
+  ".txt", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".env", ".gitignore", ".sh",
+  ".bat", ".ps1", ".tsx", ".jsx", ".svg", ".xml", ".csv", ".log",
+]);
+
+/** 判定文件内容是否可展示为文本（扩展名白名单 或 文件头无 NUL 字节） */
+function isDisplayableText(filePath: string): boolean {
+  const ext = extname(filePath).toLowerCase();
+  if (TEXT_EXT.has(ext)) return true;
+  // 未知扩展名：检查文件头 512 字节是否含 NUL（二进制特征）
+  try {
+    const fd = openSync(filePath, "r");
+    try {
+      const buf = Buffer.alloc(512);
+      const n = readSync(fd, buf, 0, 512, 0);
+      for (let i = 0; i < n; i++) {
+        if (buf[i] === 0) return false;
+      }
+      return true;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false; // 读取失败按不可展示处理
+  }
+}
+
 /**
  * scanDirFingerprint — 递归扫描目录，返回 绝对路径 → {mtimeMs, size}
- * 跳过 node_modules/.git/dist/web/dist 等噪音目录，仅覆盖输出目录内文件
+ * 跳过机器生成的缓存/依赖/产物目录（SKIP_DIRS），仅覆盖输出目录内用户关心的文件
  */
 function scanDirFingerprint(root: string): Map<string, { mtimeMs: number; size: number }> {
   const result = new Map<string, { mtimeMs: number; size: number }>();
-  const skipDirs = new Set(["node_modules", ".git", "dist", "web", ".svelte-kit", ".aiworker_history"]);
   const walk = (dir: string): void => {
     let entries: import("node:fs").Dirent[];
     try {
@@ -549,7 +651,7 @@ function scanDirFingerprint(root: string): Map<string, { mtimeMs: number; size: 
       const full = resolve(dir, e.name);
       try {
         if (e.isDirectory()) {
-          if (skipDirs.has(e.name)) continue;
+          if (SKIP_DIRS.has(e.name)) continue;
           walk(full);
         } else if (e.isFile()) {
           const st = statSync(full);

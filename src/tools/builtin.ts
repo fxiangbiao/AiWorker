@@ -65,7 +65,7 @@ const writeFileDef: ToolDefinition = {
   type: "function",
   function: {
     name: "fs_write",
-    description: "写入文件内容。自动创建父目录。",
+    description: "写入文件内容。自动创建父目录。写文件请首选本工具（变更可精确追踪与审计）。",
     parameters: {
       type: "object",
       properties: {
@@ -154,7 +154,10 @@ const execCmdDef: ToolDefinition = {
   type: "function",
   function: {
     name: "terminal_exec",
-    description: "执行终端命令。返回 stdout 和 stderr。",
+    description:
+      "执行终端命令（编译、运行测试、包管理、Git、查看输出等）。" +
+      "写入/修改文件请使用 fs_write 工具（支持精确差异记录与审计）；" +
+      "不要用 shell 重定向（>、echo、type、copy、move 等）写文件，否则变更无法被精确追踪。",
     parameters: {
       type: "object",
       properties: {

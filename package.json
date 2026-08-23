@@ -1,7 +1,7 @@
 {
   "name": "aiworker",
-  "version": "0.6.4",
-  "description": "AiWorker - 个人 AI Agent 助手，多智能体协作 + MCP + Skills + Hooks",
+  "version": "0.6.5",
+  "description": "AiWorker - 涓汉 AI Agent 鍔╂墜锛屽鏅鸿兘浣撳崗浣?+ MCP + Skills + Hooks",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

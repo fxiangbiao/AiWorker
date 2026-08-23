@@ -271,7 +271,7 @@ describe("13. Phase 3 Hook Handlers", () => {
     const proj = resolve(testDir, "proj-monitor");
     const snap = resolve(testDir, "snap-monitor");
     const tracked = new Set<string>();
-    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap, onFileDiff: (p) => tracked.add(p) });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap, scanThrottleMs: 0, onFileDiff: (p) => tracked.add(p) });
 
     const outFile = resolve(proj, "terminal-out.txt");
     rmSync(outFile, { force: true });
@@ -301,7 +301,7 @@ describe("13. Phase 3 Hook Handlers", () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-monitor-mod");
     const snap = resolve(testDir, "snap-monitor-mod");
-    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap, scanThrottleMs: 0 });
 
     const modFile = resolve(proj, "mod-file.txt");
     mkdirSync(proj, { recursive: true });
@@ -327,14 +327,14 @@ describe("13. Phase 3 Hook Handlers", () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-dedup");
     const snap = resolve(testDir, "snap-dedup");
-    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap });
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap, scanThrottleMs: 0 });
 
     const newFile = resolve(proj, "fs-new.txt");
     rmSync(newFile, { force: true });
     mkdirSync(proj, { recursive: true });
 
-    // 首次 onToolCallPost 建立目录指纹基线
-    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "fs_list", args: "{}", result: { success: true, content: "ok" } } }));
+    // 首次 onToolCallPost（写工具白名单内）建立目录指纹基线
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
 
     // fs_write pre：记录路径到 fsWritePaths（不保存旧内容，因为文件不存在）
     await handler(makeCtx({ event: "onToolCallPre", data: { toolName: "fs_write", args: JSON.stringify({ path: newFile, content: "a\nb\n" }) } }));

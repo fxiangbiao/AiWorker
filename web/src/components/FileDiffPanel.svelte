@@ -15,6 +15,8 @@
     lines: DiffLine[];
     /** 无行级 diff（指纹监控）时附带的当前内容全文 */
     currentContent?: string;
+    /** 二进制/不可展示内容文件（仅元信息，内容不可预览） */
+    binary?: boolean;
   }
   interface DiffSession {
     sessionId: string;
@@ -309,6 +311,12 @@
       {#if selected.currentContent && selected.lines.every((l) => l.type === "ctx")}
         <div class="dd-current-label">当前内容（外部修改，无行级 diff）</div>
         <div class="dd-current"><pre>{selected.currentContent}</pre></div>
+      {:else if selected.binary}
+        <div class="dd-binary">
+          <div class="dd-binary-icon">📦</div>
+          <div class="dd-binary-label">二进制文件已变更</div>
+          <div class="dd-binary-hint">内容不可预览</div>
+        </div>
       {:else}
         <div class="dd-lines">
           {#each selected.lines as ln, i (i)}
@@ -433,6 +441,20 @@
   .dd-line.del .dd-sign { color: var(--error); }
   .dd-text { flex: 1; }
   .dd-current-label { font-size: 11px; font-weight: 600; color: var(--dim); margin-bottom: 4px; }
+  .dd-binary {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--dim);
+  }
+  .dd-binary-icon { font-size: 28px; }
+  .dd-binary-label { font-size: 13px; font-weight: 600; }
+  .dd-binary-hint { font-size: 11px; }
   .dd-current {
     flex: 1;
     overflow: auto;

@@ -299,6 +299,64 @@ describe("HTTP Server", () => {
     local.close();
   });
 
+  it("parseDiffFile 解析 binary 标记（二进制文件降级快照）", async () => {
+    const { startServer: _s } = await import("../src/server.js");
+    const snapDir = resolve(testDir, "snapshots", "sess-bin");
+    mkdirSync(snapDir, { recursive: true });
+    writeFileSync(
+      resolve(snapDir, "D_assets_model.glb.diff"),
+      `# path: D:\\\\x\\\\assets\\\\model.glb\n内容已变化（旧内容不可恢复）：D:\\\\x\\\\assets\\\\model.glb\n---\nbinary: 1\nsize: 4096`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      sessions: Array<{ files: Array<{ binary?: boolean; currentContent?: string; path: string }> }>;
+    };
+    const sess = data.sessions.find((s) => s.files.some((f) => f.path.includes("model.glb")));
+    expect(sess).toBeDefined();
+    const file = sess!.files.find((f) => f.path.includes("model.glb"));
+    expect(file?.binary).toBe(true);
+    expect(file?.currentContent).toBeUndefined();
+    local.close();
+  });
+
+  it("GET /diffs 快照签名缓存：目录未变化时结果稳定", async () => {
+    const { startServer: _s } = await import("../src/server.js");
+    const snapDir = resolve(testDir, "snapshots", "sess-cache");
+    mkdirSync(snapDir, { recursive: true });
+    writeFileSync(
+      resolve(snapDir, "D_a.txt.diff"),
+      `# path: D:\\\\x\\\\a.txt\n新增文件（1 行）：D:\\\\x\\\\a.txt\n---\nold: 0 chars\nnew: 5 chars`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const url = `http://127.0.0.1:${port}${API}/diffs`;
+    const first = (await (await fetch(url)).json()) as { sessions: Array<{ sessionId: string; files: unknown[] }> };
+    const second = (await (await fetch(url)).json()) as { sessions: Array<{ sessionId: string; files: unknown[] }> };
+    expect(first.sessions.length).toBeGreaterThan(0);
+    expect(second.sessions).toEqual(first.sessions);
+    // 新增快照文件 → 签名变化 → 结果更新
+    writeFileSync(
+      resolve(snapDir, "D_b.txt.diff"),
+      `# path: D:\\\\x\\\\b.txt\n新增文件（1 行）：D:\\\\x\\\\b.txt\n---\nold: 0 chars\nnew: 4 chars`,
+      "utf-8",
+    );
+    const third = (await (await fetch(url)).json()) as { sessions: Array<{ sessionId: string; files: unknown[] }> };
+    const target = third.sessions.find((s) => s.sessionId === "sess-cache");
+    expect(target?.files.length).toBe(2);
+    local.close();
+  });
+
   it("POST /confirm 未知 id 返回 404", async () => {
     const resp = await fetch(`${base}${API}/confirm`, {
       method: "POST",
