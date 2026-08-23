@@ -425,6 +425,14 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
                 : `新增文件（${added} 行）：${absPath}`;
               recordDirDiff(ctx, deps, dataBase, absPath, added, removed, diffText, existedBefore);
             }
+            // 反向对比：prev 存在但 current 缺失 → 文件被删除
+            for (const absPath of prev.keys()) {
+              if (current.has(absPath)) continue;
+              // 已由 fs_write 精确逻辑处理的路径跳过，避免重复记录
+              if (fsWritePaths.get(ctx.sessionId)?.has(absPath)) continue;
+              const diffText = `文件已删除：${absPath}`;
+              recordDirDiff(ctx, deps, dataBase, absPath, 0, 0, diffText, true, true);
+            }
           }
           dirSnapshots.set(ctx.sessionId, current);
         }
@@ -503,6 +511,8 @@ function recordDirDiff(
   diffText: string,
   /** 变更前文件已存在（无旧内容，行级 diff 不可得，标记 modified 供前端区分） */
   modified: boolean,
+  /** 文件被删除（指纹反向对比发现） */
+  deleted = false,
 ): void {
   try {
     auditLogger.log({
@@ -512,13 +522,19 @@ function recordDirDiff(
       action: `file_diff:${filePath}`,
       target: filePath.slice(0, 200),
       result: "success",
-      detail: `+${added} -${removed} 行`,
+      detail: deleted ? "已删除" : `+${added} -${removed} 行`,
     });
   } catch {
     /* ignore */
   }
 
   deps.onFileDiff?.(filePath, added, removed, diffText);
+
+  // 文件已删除：无新内容可读，仅写元信息快照
+  if (deleted) {
+    writeDeletedDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText);
+    return;
+  }
 
   // 内容不可展示（二进制/大文件）→ 仅元信息快照（不读全文、不 base64）
   if (!isDisplayableText(filePath)) {
@@ -580,6 +596,22 @@ function writeBinaryDiffSnapshot(dataBase: string, sessionId: string, filePath: 
     writeFileSync(
       resolve(snapDir, `${safeName}.diff`),
       `# path: ${filePath}\n${diffText}\n---\nbinary: 1\nsize: ${size}${modFlag}`,
+      "utf-8",
+    );
+  } catch {
+    // 静默失败
+  }
+}
+
+/** 文件删除快照：仅元信息（deleted: 1），无内容可读 */
+function writeDeletedDiffSnapshot(dataBase: string, sessionId: string, filePath: string, diffText: string): void {
+  try {
+    const snapDir = resolve(dataBase, "snapshots", sessionId);
+    mkdirSync(snapDir, { recursive: true });
+    const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
+    writeFileSync(
+      resolve(snapDir, `${safeName}.diff`),
+      `# path: ${filePath}\n${diffText}\n---\ndeleted: 1`,
       "utf-8",
     );
   } catch {

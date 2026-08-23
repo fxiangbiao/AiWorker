@@ -323,6 +323,33 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(content).toContain("内容已变化");
   });
 
+  it("captureDiff 工作目录指纹监控捕获文件删除", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const proj = resolve(testDir, "proj-monitor-del");
+    const snap = resolve(testDir, "snap-monitor-del");
+    const handler = createCaptureDiff({ workingDir: proj, dataDir: snap, scanThrottleMs: 0 });
+
+    const delFile = resolve(proj, "del-file.txt");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(delFile, "old\n", "utf-8");
+
+    // 首次 onToolCallPost 建立基线（文件存在）
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
+
+    // terminal_exec 删除该文件
+    rmSync(delFile, { force: true });
+
+    await handler(makeCtx({ event: "onToolCallPost", data: { toolName: "terminal_exec", args: "{}", result: { success: true, content: "ok" } } }));
+
+    const snapDir = resolve(snap, "snapshots", "test-session");
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]), "utf-8");
+    expect(content).toContain("# path: " + delFile);
+    expect(content).toContain("文件已删除");
+    expect(content).toContain("deleted: 1");
+  });
+
   it("captureDiff fs_write 写入不触发目录指纹重复记录", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-dedup");

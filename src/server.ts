@@ -138,6 +138,8 @@ interface DiffFile {
   binary?: boolean;
   /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
   modified?: boolean;
+  /** 文件被删除（指纹反向对比发现） */
+  deleted?: boolean;
 }
 
 interface DiffSession {
@@ -156,16 +158,18 @@ function parseDiffFile(content: string): {
   currentContent?: string;
   binary?: boolean;
   modified?: boolean;
+  deleted?: boolean;
 } {
   const lines: DiffLine[] = [];
   let path: string | undefined;
   let currentContent: string | undefined;
   let binary = false;
   let modified = false;
+  let deleted = false;
   let inMeta = false;
   for (const rawLine of content.split("\n")) {
     if (inMeta) {
-      // 分隔符之后的元信息块（old/new 字符数 + 指纹监控附的 new_b64 / binary / modified 标记）
+      // 分隔符之后的元信息块（old/new 字符数 + 指纹监控附的 new_b64 / binary / modified / deleted 标记）
       if (rawLine.startsWith("new_b64: ")) {
         try {
           currentContent = Buffer.from(rawLine.slice(9).trim(), "base64").toString("utf-8");
@@ -176,6 +180,8 @@ function parseDiffFile(content: string): {
         binary = rawLine.slice(8).trim() === "1";
       } else if (rawLine.startsWith("modified: ")) {
         modified = rawLine.slice(10).trim() === "1";
+      } else if (rawLine.startsWith("deleted: ")) {
+        deleted = rawLine.slice(9).trim() === "1";
       }
       continue;
     }
@@ -193,7 +199,7 @@ function parseDiffFile(content: string): {
       lines.push({ type: "ctx", text: rawLine });
     }
   }
-  return { lines, path, currentContent, binary, modified };
+  return { lines, path, currentContent, binary, modified, deleted };
 }
 
 /** 把安全化的文件名还原为可读路径（D_前缀 + 分隔符 _ → /） */
@@ -258,6 +264,7 @@ function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSessi
           currentContent: parsed.currentContent,
           binary: parsed.binary,
           modified: parsed.modified,
+          deleted: parsed.deleted,
         });
       }
       if (files.length > 0) {

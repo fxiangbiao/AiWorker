@@ -19,6 +19,8 @@
     binary?: boolean;
     /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
     modified?: boolean;
+    /** 文件被删除（指纹反向对比发现） */
+    deleted?: boolean;
   }
   interface DiffSession {
     sessionId: string;
@@ -304,7 +306,9 @@
                 tabindex="0"
               >
                 <span class="dl-name" title={row.path}>{row.name}</span>
-                {#if row.file.modified}
+                {#if row.file.deleted}
+                  <span class="dl-del">已删除</span>
+                {:else if row.file.modified}
                   <span class="dl-mod">已修改</span>
                 {:else}
                   <span class="dl-add">+{row.file.added}</span>
@@ -324,7 +328,13 @@
     {#if selected}
       <div class="dd-title">{basename(selected.path)}</div>
       <div class="dd-path">{selected.path}</div>
-      {#if selected.currentContent && selected.lines.every((l) => l.type === "ctx")}
+      {#if selected.deleted}
+        <div class="dd-binary">
+          <div class="dd-binary-icon">🗑️</div>
+          <div class="dd-binary-label">文件已删除</div>
+          <div class="dd-binary-hint">内容不可恢复</div>
+        </div>
+      {:else if selected.currentContent && selected.lines.every((l) => l.type === "ctx")}
         <div class="dd-current-label">当前内容（外部修改，无行级 diff）</div>
         <div class="dd-current"><pre>{selected.currentContent}</pre></div>
       {:else if selected.binary}
@@ -425,6 +435,7 @@
   .dl-add { color: var(--success); font-weight: 600; font-size: 11px; }
   .dl-rem { color: var(--error); font-weight: 600; font-size: 11px; }
   .dl-mod { color: var(--primary); font-weight: 600; font-size: 11px; }
+  .dl-del { color: var(--error); font-weight: 600; font-size: 11px; }
   .diff-detail { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   .dd-title { font-size: 12px; font-weight: 600; word-break: break-all; }
   .dd-path { font-size: 10px; color: var(--dim); margin-bottom: 8px; word-break: break-all; }
