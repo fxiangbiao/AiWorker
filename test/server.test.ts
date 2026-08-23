@@ -6,7 +6,7 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
 import { jobRunner } from "../src/core/job-runner.js";
@@ -272,6 +272,31 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(Array.isArray(data.sessions)).toBe(true);
+  });
+
+  it("parseDiffFile 解析 new_b64（指纹监控附的当前内容）", async () => {
+    const { startServer: _s, parseDiffFile: _p } = await import("../src/server.js");
+    // parseDiffFile 为模块内私有：通过构造快照目录 + /diffs 端点间接验证
+    const snapDir = resolve(testDir, "snapshots", "sess-x");
+    mkdirSync(snapDir, { recursive: true });
+    const content = "新内容第一行\n第二行";
+    writeFileSync(
+      resolve(snapDir, "D_crypto.ts.diff"),
+      `# path: D:\\\\x\\\\crypto.ts\n内容已变化（旧内容不可恢复）：D:\\\\x\\\\crypto.ts\n---\nold: 0 chars\nnew: ${content.length} chars\nnew_b64: ${Buffer.from(content, "utf-8").toString("base64")}`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { sessions: Array<{ files: Array<{ currentContent?: string; path: string }> }> };
+    const sess = data.sessions.find((s) => s.files.some((f) => f.currentContent));
+    expect(sess).toBeDefined();
+    expect(sess!.files[0]!.currentContent).toContain("新内容第一行");
+    local.close();
   });
 
   it("POST /confirm 未知 id 返回 404", async () => {

@@ -495,7 +495,14 @@ function recordDirDiff(
 
   deps.onFileDiff?.(filePath, added, removed, diffText);
 
-  writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, undefined, undefined);
+  // 指纹监控无旧内容快照：读取当前新内容随快照落盘，前端可展示"当前内容"
+  let newContent: string | undefined;
+  try {
+    newContent = readFileSync(filePath, "utf-8");
+  } catch {
+    /* 读取失败则不带新内容 */
+  }
+  writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, undefined, newContent);
 }
 
 /** 将 diff 快照写入磁盘 */
@@ -511,9 +518,12 @@ function writeDiffSnapshot(
     const snapDir = resolve(dataBase, "snapshots", sessionId);
     mkdirSync(snapDir, { recursive: true });
     const safeName = filePath.replace(/[^a-zA-Z0-9_\-./\\]/g, "_").replace(/[/\\]/g, "_");
+    const meta = `old: ${oldContent?.length ?? 0} chars\nnew: ${newContent?.length ?? 0} chars`;
+    // 无行级 diff（指纹监控场景）时附新内容全文（base64 防格式破坏），前端展示"当前内容"
+    const newB64 = newContent ? `\nnew_b64: ${Buffer.from(newContent, "utf-8").toString("base64")}` : "";
     writeFileSync(
       resolve(snapDir, `${safeName}.diff`),
-      `# path: ${filePath}\n${diffText}\n---\nold: ${oldContent?.length ?? 0} chars\nnew: ${newContent?.length ?? 0} chars`,
+      `# path: ${filePath}\n${diffText}\n---\n${meta}${newB64}`,
       "utf-8",
     );
   } catch {

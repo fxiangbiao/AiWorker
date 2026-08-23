@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { API, store } from "$lib/stores/chat.svelte";
+  import { workingDir } from "$lib/stores/status";
 
   interface DiffLine {
     type: "add" | "del" | "ctx";
@@ -11,9 +12,12 @@
     added: number;
     removed: number;
     lines: DiffLine[];
+    /** 无行级 diff（指纹监控）时附带的当前内容全文 */
+    currentContent?: string;
   }
   interface DiffSession {
     sessionId: string;
+    summary?: string | null;
     files: DiffFile[];
     createdAt: number;
     updatedAt: number;
@@ -107,11 +111,30 @@
     return `${d.getMonth() + 1}/${d.getDate()} ${h}:${m}`;
   }
 
-  /** 文件列表 → 目录树 */
+  /** 以工作目录为根裁剪路径（树根不显示盘符/绝对路径） */
+  function displayPath(p: string): string {
+    const wd = workingDir();
+    if (wd) {
+      const normWd = wd.replace(/[\\/]+$/, "");
+      if (p.startsWith(normWd + "/") || p.startsWith(normWd + "\\")) {
+        return p.slice(normWd.length + 1);
+      }
+      // 大小写不敏感兜底（Windows 盘符大小写差异）
+      const lower = p.toLowerCase();
+      const lowerWd = normWd.toLowerCase();
+      if (lower.startsWith(lowerWd + "/") || lower.startsWith(lowerWd + "\\")) {
+        return p.slice(normWd.length + 1);
+      }
+    }
+    return p;
+  }
+
+  /** 文件列表 → 目录树（路径以工作目录为根） */
   function buildTree(files: DiffFile[]): DirNode {
     const root: DirNode = { name: "", path: "", dirs: [], files: [] };
     for (const f of files) {
-      const parts = f.path.split(/[\\/]/);
+      const rel = displayPath(f.path);
+      const parts = rel.split(/[\\/]/);
       const fileName = parts.pop()!;
       let node = root;
       let dirPath = "";
@@ -127,6 +150,14 @@
       node.files.push({ ...f, path: f.path });
     }
     return root;
+  }
+
+  /** 会话显示名：摘要（标题）优先，回退 sessionId 短形式 */
+  function sessionTitle(s: { id: string; summary?: string | null }): string {
+    if (s.summary && s.summary.trim()) return s.summary.trim();
+    const local = store.chats.find((c) => c.id === s.id);
+    if (local?.title && local.title !== "新对话") return local.title;
+    return `${s.id.slice(0, 8)}...`;
   }
 
   function flattenTree(node: DirNode, depth: number, out: TreeRow[], collapsed: ReadonlySet<string>): void {
@@ -149,7 +180,7 @@
       const collapsedSet = collapsedDirs.get(s.sessionId) ?? EMPTY_SET;
       const rows: TreeRow[] = [];
       flattenTree(buildTree(s.files), 0, rows, collapsedSet);
-      return { id: s.sessionId, updatedAt: s.updatedAt, collapsed: collapsedSessions.has(s.sessionId), rows };
+      return { id: s.sessionId, summary: s.summary, updatedAt: s.updatedAt, collapsed: collapsedSessions.has(s.sessionId), rows };
     }),
   );
 
@@ -232,7 +263,7 @@
           onclick={() => toggleSession(item.id)}
           onkeydown={(e) => e.key === "Enter" && toggleSession(item.id)}>
           <span class="dl-caret">{item.collapsed ? "▸" : "▾"}</span>
-          <span class="dl-sid">{item.id.slice(0, 8)}...</span>
+          <span class="dl-sid" title={item.id}>{sessionTitle(item)}</span>
           <span class="dl-stime">{fmtTime(item.updatedAt)}</span>
         </div>
         {#if !item.collapsed}
@@ -274,18 +305,23 @@
     {#if selected}
       <div class="dd-title">{basename(selected.path)}</div>
       <div class="dd-path">{selected.path}</div>
-      <div class="dd-lines">
-        {#each selected.lines as ln, i (i)}
-          <div class="dd-line" class:add={ln.type === "add"} class:del={ln.type === "del"}
-            class:copied={copiedLine === i}
-            title="点击复制该行"
-            onclick={() => copyLine(ln, i)}>
-            <span class="dd-no">{i + 1}</span>
-            <span class="dd-sign">{ln.type === "add" ? "+" : ln.type === "del" ? "-" : " "}</span>
-            <span class="dd-text">{ln.text}</span>
-          </div>
-        {/each}
-      </div>
+      {#if selected.currentContent && selected.lines.every((l) => l.type === "ctx")}
+        <div class="dd-current-label">当前内容（外部修改，无行级 diff）</div>
+        <div class="dd-current"><pre>{selected.currentContent}</pre></div>
+      {:else}
+        <div class="dd-lines">
+          {#each selected.lines as ln, i (i)}
+            <div class="dd-line" class:add={ln.type === "add"} class:del={ln.type === "del"}
+              class:copied={copiedLine === i}
+              title="点击复制该行"
+              onclick={() => copyLine(ln, i)}>
+              <span class="dd-no">{i + 1}</span>
+              <span class="dd-sign">{ln.type === "add" ? "+" : ln.type === "del" ? "-" : " "}</span>
+              <span class="dd-text">{ln.text}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {:else}
       <div class="dd-empty">选择左侧文件查看变更</div>
     {/if}
@@ -395,4 +431,13 @@
   .dd-line.add .dd-sign { color: var(--success); }
   .dd-line.del .dd-sign { color: var(--error); }
   .dd-text { flex: 1; }
+  .dd-current-label { font-size: 11px; font-weight: 600; color: var(--dim); margin-bottom: 4px; }
+  .dd-current {
+    flex: 1;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+  .dd-current pre { font-family: var(--font-mono); font-size: 11px; margin: 0; padding: 8px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
 </style>

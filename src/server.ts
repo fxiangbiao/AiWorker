@@ -132,20 +132,37 @@ interface DiffFile {
   added: number;
   removed: number;
   lines: DiffLine[];
+  /** 无行级 diff（指纹监控）时附带的当前内容全文 */
+  currentContent?: string;
 }
 
 interface DiffSession {
   sessionId: string;
+  /** 会话摘要（标题），无则 undefined */
+  summary?: string | null;
   files: DiffFile[];
   createdAt: number;
   updatedAt: number;
 }
 
 /** 解析快照 .diff 文件为结构化行 */
-function parseDiffFile(content: string): { lines: DiffLine[]; path?: string } {
+function parseDiffFile(content: string): { lines: DiffLine[]; path?: string; currentContent?: string } {
   const lines: DiffLine[] = [];
   let path: string | undefined;
+  let currentContent: string | undefined;
+  let inMeta = false;
   for (const rawLine of content.split("\n")) {
+    if (inMeta) {
+      // 分隔符之后的元信息块（old/new 字符数 + 指纹监控附的 new_b64）
+      if (rawLine.startsWith("new_b64: ")) {
+        try {
+          currentContent = Buffer.from(rawLine.slice(9).trim(), "base64").toString("utf-8");
+        } catch {
+          currentContent = undefined;
+        }
+      }
+      continue;
+    }
     if (rawLine.startsWith("# path: ")) {
       path = rawLine.slice(8).trim();
       continue;
@@ -155,12 +172,12 @@ function parseDiffFile(content: string): { lines: DiffLine[]; path?: string } {
     } else if (rawLine.startsWith("- ") || rawLine === "-") {
       lines.push({ type: "del", text: rawLine.slice(2) });
     } else if (rawLine.startsWith("---")) {
-      break; // diff 内容在 --- 分隔之前
+      inMeta = true; // diff 内容结束，进入元信息块
     } else if (rawLine.trim()) {
       lines.push({ type: "ctx", text: rawLine });
     }
   }
-  return { lines, path };
+  return { lines, path, currentContent };
 }
 
 /** 把安全化的文件名还原为可读路径（D_前缀 + 分隔符 _ → /） */
@@ -188,10 +205,17 @@ async function runWithChannels<T>(write: (data: object) => void, fn: () => Promi
   }
 }
 
-/** 扫描 data/snapshots 目录，返回全部会话的文件变更 */
-function scanDiffs(snapshotsDir: string): DiffSession[] {
+/** 扫描 data/snapshots 目录，返回全部会话的文件变更（含会话摘要） */
+function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSession[] {
   try {
     if (!existsSync(snapshotsDir)) return [];
+    // 会话摘要索引（会话标题）
+    const summaryBySession = new Map<string, string>();
+    if (sessionStore) {
+      for (const s of sessionStore.listSessions(1000)) {
+        if (s.summary) summaryBySession.set(s.id, s.summary);
+      }
+    }
     const sessions: DiffSession[] = [];
     const sessionDirs = readdirSync(snapshotsDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
@@ -213,10 +237,11 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
           added: parsed.lines.filter((l) => l.type === "add").length,
           removed: parsed.lines.filter((l) => l.type === "del").length,
           lines: parsed.lines,
+          currentContent: parsed.currentContent,
         });
       }
       if (files.length > 0) {
-        sessions.push({ sessionId, files, createdAt: updatedAt, updatedAt });
+        sessions.push({ sessionId, summary: summaryBySession.get(sessionId), files, createdAt: updatedAt, updatedAt });
       }
     }
     return sessions;
@@ -930,7 +955,7 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === apiUrl("/diffs") && req.method === "GET") {
       const snapshotsDir = deps.dataDir ? resolve(deps.dataDir, "snapshots") : resolve(process.cwd(), "data", "snapshots");
-      sendJSON(res, 200, { sessions: scanDiffs(snapshotsDir) });
+      sendJSON(res, 200, { sessions: scanDiffs(snapshotsDir, deps.sessionStore) });
       return;
     }
 
