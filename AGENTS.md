@@ -108,7 +108,6 @@ npm run web:build      # Web UI 构建 → web/dist/
 - **测试隔离**：读真实 `config/*.json` 一律注入 fixture（`test/fixtures/models.json`）；`terminal-session.test.ts` 用 `describe.skipIf(非 win32)`
 - 端点测试 mock coordinator/agent + `listen(0)` 随机端口 + fetch；**WS 测试用 `ws` 客户端**（值导入 `WebSocket as WsClient`，Node 22 全局 WebSocket 无 `.on`）
 - 关键文件：`agent-loop.test.ts`（超时/防循环/白名单/toolScope/迭代预算）、`tool-registry.test.ts`（作用域）、`server.test.ts`（端点+WS）、`plugin-manager.test.ts`、`sandbox.test.ts`、`approval-service.test.ts`、`package-installer.test.ts`（zip/.aw/裸格式/mcp）、`scheduler.test.ts`、`nl-schedule.test.ts`、`job-runner.test.ts`、`env-loader.test.ts`、`onboarding.test.ts`、`screen.test.ts`、`cli-commands.test.ts`
-- CI：`.github/workflows/ci.yml`（windows+ubuntu：npm ci + lint + build + test + web:build）
 
 ## CLI 交互命令
 

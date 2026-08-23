@@ -8,7 +8,6 @@
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
 ![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
-![ci](https://github.com/fxiangbiao/AiWorker/actions/workflows/ci.yml/badge.svg)
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP、技能库、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种界面。
 
