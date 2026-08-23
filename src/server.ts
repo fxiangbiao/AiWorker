@@ -229,7 +229,9 @@ function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSessi
     const sessions: DiffSession[] = [];
     const sessionDirs = readdirSync(snapshotsDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+      .map((d) => d.name)
+      // 单测产生的会话（hooks 测试快照）不展示
+      .filter((name) => name !== "test-session");
 
     for (const sessionId of sessionDirs) {
       const dir = resolve(snapshotsDir, sessionId);

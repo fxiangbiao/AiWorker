@@ -159,7 +159,7 @@ describe("13. Phase 3 Hook Handlers", () => {
   // 13c. CaptureDiff
   it("captureDiff 在 fs_write 前后捕获快照", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
-    const handler = createCaptureDiff({});
+    const handler = createCaptureDiff({ dataDir: testDir });
 
     const testFile = resolve(testDir, "test-diff.txt");
     writeFileSync(testFile, "line1\nline2\n", "utf-8");
@@ -185,14 +185,14 @@ describe("13. Phase 3 Hook Handlers", () => {
     });
     await handler(postCtx);
 
-    // 验证 diff 文件被写入（handler 用 process.cwd()，测试用项目根）
-    const snapDir = resolve(process.cwd(), "data", "snapshots", "test-session");
+    // 验证 diff 文件被写入（快照落在测试目录，不污染真实 data/snapshots）
+    const snapDir = resolve(testDir, "snapshots", "test-session");
     expect(existsSync(snapDir)).toBe(true);
   });
 
   it("captureDiff 对新文件写入磁盘快照（added = 新文件行数）", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
-    const handler = createCaptureDiff({});
+    const handler = createCaptureDiff({ dataDir: testDir });
 
     const newFile = resolve(testDir, "new-file.txt");
     try {
@@ -218,7 +218,7 @@ describe("13. Phase 3 Hook Handlers", () => {
     await handler(postCtx);
 
     // 磁盘快照包含 diff 内容（含 + line 行）
-    const snapDir = resolve(process.cwd(), "data", "snapshots", "test-session");
+    const snapDir = resolve(testDir, "snapshots", "test-session");
     expect(existsSync(snapDir)).toBe(true);
     const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
     expect(snapFiles.length).toBeGreaterThan(0);
