@@ -1108,7 +1108,6 @@ export function startServer(deps: ServerDeps, port: number) {
 
   server.listen(port, () => {
     stdout.write(chalk.green(`\n✓ HTTP Server 已启动: http://localhost:${port}\n`));
-    stdout.write(chalk.gray(`  端点: POST ${API_PREFIX}/chat | ${API_PREFIX}/plan | ${API_PREFIX}/debate | GET ${API_PREFIX}/status | ${API_PREFIX}/tools | ${API_PREFIX}/agents | WS ${API_PREFIX}/ws\n`));
   });
 
   return server;
