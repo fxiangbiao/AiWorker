@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.6.6 (2026-08-23)
+
+### 高危拦截加固 + 工具错误展示/重试优化
+- **danger-detector 正则加固**（修复绕过漏洞）：`rm -rf` 拦截任意目标（相对路径/引号路径/盘符）；全部匹配大小写不敏感（`RM -RF` 不再绕过）；`del` 的 `/s /q` 任意顺序；`rd`/`rmdir` /s 别名覆盖
+- **Web 工具卡片区分「操作被拦截 / 执行失败」**：不再把所有 error 统一标成"被拦截"（如 `Select-Object is not recognized`、`Command failed` 实为命令执行失败）
+- **重试按钮修复**：流式输出期间点击不再静默无响应（提示"当前正在生成中"）；拦截类错误附注引导 LLM 更换实现方式，执行失败附注引导修正后重试
+- **terminal_exec 描述补充**：Windows 下命令在 cmd 执行，PowerShell 语法需 `powershell -Command` 包裹
+- **文件变更列表区分"已修改"**：指纹监控修改已有文件（无行级 diff）不再显示误导性的 `+0 -0`，改显示「已修改」徽标（`DiffFile.modified` 字段）
+- 测试 +5（rm 相对路径/引号/大小写/del 顺序/rd 别名绕过用例）
+
+## 0.6.5 (2026-08-23)
+
+### 文件变更检测提速 + terminal_exec 用途明确
+- **指纹扫描只在「可能写文件的工具」后触发**（terminal_exec / terminal_session / MCP / 插件工具），只读工具（web_search/fs_read 等）不再全量扫描
+- **扫描范围分层**：跳过机器生成目录（`.godot`/build/out 等）；用户资产文件（.glb/.png 等）仍检测变更，但快照降级为元信息（`binary: 1` + 大小，不读全文不 base64），前端显示「二进制文件已变更（内容不可预览）」
+- **会话级节流**：同一会话两次指纹扫描间隔 ≥2s（`scanThrottleMs` 可注入，测试用 0）
+- **/diffs 签名缓存**：快照目录文件数 + mtime 未变时直接返回缓存，避免每次请求全量解析
+- **terminal_exec 描述重写**：明确写文件用 fs_write、禁止 shell 重定向写文件；fs_write 描述补充「首选本工具」；coding/default/data-analysis/game-dev 4 个 agent 提示词同步
+- 存量清理：删除 Godot 引擎缓存噪音快照 11817 个（16484 → 4667）
+- 测试 +3（binary 解析 + /diffs 缓存行为；hooks 指纹测试适配节流注入）
+
 ## 0.6.4 (2026-08-22)
 
 ### 添加模型 / Provider（TUI + Web）

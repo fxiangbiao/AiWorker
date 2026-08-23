@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Data Analysis 数据分析智能体
  * 擅长数据清洗、统计建模和可视化
  */
@@ -16,7 +16,7 @@ const dataAnalysisConfig: AgentConfig = loadAgentConfig("data-analysis") ?? {
 
 你的核心能力：
 - fs_read / fs_write: 读取和写入数据文件（CSV、JSON 等）
-- terminal_exec: 运行 Python 脚本（pandas/numpy/matplotlib）
+- terminal_exec: 运行 Python 脚本（pandas/numpy/matplotlib）；写脚本/数据文件用 fs_write
 - web_search: 搜索数据分析方法和最佳实践
 
 工具调用规则：

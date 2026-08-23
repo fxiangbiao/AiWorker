@@ -6,7 +6,7 @@ import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
 import { jobRunner } from "../src/core/job-runner.js";
@@ -272,6 +272,127 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(Array.isArray(data.sessions)).toBe(true);
+  });
+
+  it("parseDiffFile 解析 new_b64（指纹监控附的当前内容）", async () => {
+    const { startServer: _s, parseDiffFile: _p } = await import("../src/server.js");
+    // parseDiffFile 为模块内私有：通过构造快照目录 + /diffs 端点间接验证
+    const snapDir = resolve(testDir, "snapshots", "sess-x");
+    mkdirSync(snapDir, { recursive: true });
+    const content = "新内容第一行\n第二行";
+    writeFileSync(
+      resolve(snapDir, "D_crypto.ts.diff"),
+      `# path: D:\\\\x\\\\crypto.ts\n内容已变化（旧内容不可恢复）：D:\\\\x\\\\crypto.ts\n---\nold: 0 chars\nnew: ${content.length} chars\nnew_b64: ${Buffer.from(content, "utf-8").toString("base64")}`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { sessions: Array<{ files: Array<{ currentContent?: string; path: string }> }> };
+    const sess = data.sessions.find((s) => s.files.some((f) => f.currentContent));
+    expect(sess).toBeDefined();
+    expect(sess!.files[0]!.currentContent).toContain("新内容第一行");
+    local.close();
+  });
+
+  it("parseDiffFile 解析 binary 标记（二进制文件降级快照）", async () => {
+    const { startServer: _s } = await import("../src/server.js");
+    const snapDir = resolve(testDir, "snapshots", "sess-bin");
+    mkdirSync(snapDir, { recursive: true });
+    writeFileSync(
+      resolve(snapDir, "D_assets_model.glb.diff"),
+      `# path: D:\\\\x\\\\assets\\\\model.glb\n内容已变化（旧内容不可恢复）：D:\\\\x\\\\assets\\\\model.glb\n---\nbinary: 1\nsize: 4096`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      sessions: Array<{ files: Array<{ binary?: boolean; currentContent?: string; path: string }> }>;
+    };
+    const sess = data.sessions.find((s) => s.files.some((f) => f.path.includes("model.glb")));
+    expect(sess).toBeDefined();
+    const file = sess!.files.find((f) => f.path.includes("model.glb"));
+    expect(file?.binary).toBe(true);
+    expect(file?.currentContent).toBeUndefined();
+    local.close();
+  });
+
+  it("GET /diffs 旧格式快照兼容推断（文件已删 → deleted，新增行数从文本提取）", async () => {
+    const { startServer: _s } = await import("../src/server.js");
+    const snapDir = resolve(testDir, "snapshots", "sess-legacy");
+    mkdirSync(snapDir, { recursive: true });
+    // 旧格式"新增文件"快照：无 modified/deleted 标记，文件当前不存在
+    const gonePath = resolve(testDir, "legacy-gone.txt");
+    writeFileSync(
+      resolve(snapDir, "D_legacy-gone.txt.diff"),
+      `# path: ${gonePath}\n新增文件（14 行）：${gonePath}\n---\nold: 0 chars\nnew: 0 chars`,
+      "utf-8",
+    );
+    // 旧格式"内容已变化"快照：无标记，文件当前存在
+    const existPath = resolve(testDir, "legacy-exist.txt");
+    writeFileSync(existPath, "hello", "utf-8");
+    writeFileSync(
+      resolve(snapDir, "D_legacy-exist.txt.diff"),
+      `# path: ${existPath}\n内容已变化（旧内容不可恢复）：${existPath}\n---\nold: 3 chars\nnew: 5 chars`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/diffs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      sessions: Array<{ files: Array<{ path: string; deleted?: boolean; modified?: boolean; added: number }> }>;
+    };
+    const sess = data.sessions.find((s) => s.sessionId === "sess-legacy");
+    expect(sess).toBeDefined();
+    const gone = sess!.files.find((f) => f.path === gonePath);
+    expect(gone?.deleted).toBe(true);
+    expect(gone?.added).toBe(14);
+    const exist = sess!.files.find((f) => f.path === existPath);
+    expect(exist?.modified).toBe(true);
+    local.close();
+  });
+
+  it("GET /diffs 快照签名缓存：目录未变化时结果稳定", async () => {
+    const snapDir = resolve(testDir, "snapshots", "sess-cache");
+    mkdirSync(snapDir, { recursive: true });
+    writeFileSync(
+      resolve(snapDir, "D_a.txt.diff"),
+      `# path: D:\\\\x\\\\a.txt\n新增文件（1 行）：D:\\\\x\\\\a.txt\n---\nold: 0 chars\nnew: 5 chars`,
+      "utf-8",
+    );
+    const deps = mockDeps();
+    deps.dataDir = testDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const url = `http://127.0.0.1:${port}${API}/diffs`;
+    const first = (await (await fetch(url)).json()) as { sessions: Array<{ sessionId: string; files: unknown[] }> };
+    const second = (await (await fetch(url)).json()) as { sessions: Array<{ sessionId: string; files: unknown[] }> };
+    expect(first.sessions.length).toBeGreaterThan(0);
+    expect(second.sessions).toEqual(first.sessions);
+    // 新增快照文件 → 签名变化 → 结果更新
+    writeFileSync(
+      resolve(snapDir, "D_b.txt.diff"),
+      `# path: D:\\\\x\\\\b.txt\n新增文件（1 行）：D:\\\\x\\\\b.txt\n---\nold: 0 chars\nnew: 4 chars`,
+      "utf-8",
+    );
+    const third = (await (await fetch(url)).json()) as { sessions: Array<{ sessionId: string; files: unknown[] }> };
+    const target = third.sessions.find((s) => s.sessionId === "sess-cache");
+    expect(target?.files.length).toBe(2);
+    local.close();
   });
 
   it("POST /confirm 未知 id 返回 404", async () => {

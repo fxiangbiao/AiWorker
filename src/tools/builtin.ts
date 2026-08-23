@@ -16,6 +16,22 @@ import { terminalSessionPool } from "./terminal-session.js";
 
 const detector = new DangerDetector();
 
+/**
+ * 构造 exec 环境：确保 node 可执行目录在 PATH 中。
+ * server 若从受限环境启动（PATH 缺 node 目录），node/npm 命令会报 'node' is not recognized；
+ * 此处显式补入 node 目录（幂等），保证 terminal_exec 能调用 node/npm。
+ */
+function buildExecEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const nodeDir = dirname(process.execPath);
+  const isWin = process.platform === "win32";
+  const sep = isWin ? ";" : ":";
+  const pathKey = isWin ? "Path" : "PATH";
+  const cur = String(base[pathKey] ?? base.PATH ?? "");
+  const parts = cur.split(sep).filter(Boolean);
+  if (parts.some((p) => p.toLowerCase() === nodeDir.toLowerCase())) return base;
+  return { ...base, [pathKey]: `${nodeDir}${sep}${cur}` };
+}
+
 // ===== 文件读取 =====
 
 const readFileDef: ToolDefinition = {
@@ -65,7 +81,7 @@ const writeFileDef: ToolDefinition = {
   type: "function",
   function: {
     name: "fs_write",
-    description: "写入文件内容。自动创建父目录。",
+    description: "写入文件内容。自动创建父目录。写文件请首选本工具（变更可精确追踪与审计）。",
     parameters: {
       type: "object",
       properties: {
@@ -154,7 +170,11 @@ const execCmdDef: ToolDefinition = {
   type: "function",
   function: {
     name: "terminal_exec",
-    description: "执行终端命令。返回 stdout 和 stderr。",
+    description:
+      "执行终端命令（编译、运行测试、包管理、Git、查看输出等）。" +
+      "Windows 下命令在 cmd 中执行：PowerShell 语法需用 powershell -Command 包裹（如 Select-Object 不能直接在 cmd 用）。" +
+      "写入/修改文件请使用 fs_write 工具（支持精确差异记录与审计）；" +
+      "不要用 shell 重定向（>、echo、type、copy、move 等）写文件，否则变更无法被精确追踪。",
     parameters: {
       type: "object",
       properties: {
@@ -202,7 +222,7 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     timeout,
     maxBuffer: 1024 * 1024 * 10, // 10MB
     encoding: "buffer",
-    env: sandbox.stripSecretEnv ? sanitizeEnv(process.env) : process.env,
+    env: buildExecEnv(sandbox.stripSecretEnv ? sanitizeEnv(process.env) : process.env),
   };
 
   // Windows cmd 输出默认 GBK，前缀 chcp 65001 强制 UTF-8 避免中文乱码
@@ -213,11 +233,15 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
       if (error) {
+        // 命令 2>&1 时 stderr 已合并进 stdout：真实失败原因在 out 里，
+        // 若只回 error.message（笼统的 "Command failed: ..."）会丢失根因。
+        // 失败时回传 stdout 尾部作为错误详情，供模型/用户定位（如 'node' is not recognized）。
+        const detail = (err || out || error.message).trim().slice(-1500);
         resolve({
           tool_call_id: "",
           success: false,
           content: out,
-          error: err || error.message,
+          error: detail || error.message,
         });
       } else {
         resolve({

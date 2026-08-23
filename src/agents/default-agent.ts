@@ -15,7 +15,7 @@ const defaultConfig: AgentConfig = loadAgentConfig("default") ?? {
 
 你可以使用工具来帮助用户完成任务，工具会在每轮对话中通过 function calling 提供：
 - fs_read / fs_write / fs_list: 文件系统操作
-- terminal_exec: 执行终端命令
+- terminal_exec: 执行终端命令（编译、测试、包管理等）；写文件用 fs_write
 - web_search / web_fetch: 搜索和抓取网页
 - mcp:builtin:math_eval / uuid_gen / json_format / timestamp_convert: 通用工具
 

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import { API, store } from "$lib/stores/chat.svelte";
+  import { workingDir } from "$lib/stores/status";
 
   interface DiffLine {
     type: "add" | "del" | "ctx";
@@ -11,9 +13,18 @@
     added: number;
     removed: number;
     lines: DiffLine[];
+    /** 无行级 diff（指纹监控）时附带的当前内容全文 */
+    currentContent?: string;
+    /** 二进制/不可展示内容文件（仅元信息，内容不可预览） */
+    binary?: boolean;
+    /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
+    modified?: boolean;
+    /** 文件被删除（指纹反向对比发现） */
+    deleted?: boolean;
   }
   interface DiffSession {
     sessionId: string;
+    summary?: string | null;
     files: DiffFile[];
     createdAt: number;
     updatedAt: number;
@@ -76,6 +87,9 @@
     debounceTimer = setTimeout(load, 400);
   });
 
+  /** 是否已按"仅展开最新会话"初始化折叠状态（只初始化一次，之后保留用户手动调整） */
+  let foldInitialized = false;
+
   function load() {
     loading = true;
     fetch(`${API}/diffs`)
@@ -83,6 +97,13 @@
       .then((d) => {
         const list: DiffSession[] = (d.sessions || []).sort((a: DiffSession, b: DiffSession) => (b.updatedAt || 0) - (a.updatedAt || 0));
         sessions = list;
+        if (!foldInitialized) {
+          foldInitialized = true;
+          // 默认只展开最新会话（list[0]，已按 updatedAt 降序），历史会话默认收起
+          const collapsed = new Set<string>();
+          for (let i = 1; i < list.length; i++) collapsed.add(list[i].sessionId);
+          collapsedSessions = collapsed;
+        }
         if (sessions.length > 0 && sessions[0].files.length > 0 && !selected) {
           selected = sessions[0].files[0];
         }
@@ -107,11 +128,30 @@
     return `${d.getMonth() + 1}/${d.getDate()} ${h}:${m}`;
   }
 
-  /** 文件列表 → 目录树 */
+  /** 以工作目录为根裁剪路径（树根不显示盘符/绝对路径） */
+  function displayPath(p: string): string {
+    const wd = get(workingDir);
+    if (wd) {
+      const normWd = wd.replace(/[\\/]+$/, "");
+      if (p.startsWith(normWd + "/") || p.startsWith(normWd + "\\")) {
+        return p.slice(normWd.length + 1);
+      }
+      // 大小写不敏感兜底（Windows 盘符大小写差异）
+      const lower = p.toLowerCase();
+      const lowerWd = normWd.toLowerCase();
+      if (lower.startsWith(lowerWd + "/") || lower.startsWith(lowerWd + "\\")) {
+        return p.slice(normWd.length + 1);
+      }
+    }
+    return p;
+  }
+
+  /** 文件列表 → 目录树（路径以工作目录为根） */
   function buildTree(files: DiffFile[]): DirNode {
     const root: DirNode = { name: "", path: "", dirs: [], files: [] };
     for (const f of files) {
-      const parts = f.path.split(/[\\/]/);
+      const rel = displayPath(f.path);
+      const parts = rel.split(/[\\/]/);
       const fileName = parts.pop()!;
       let node = root;
       let dirPath = "";
@@ -127,6 +167,14 @@
       node.files.push({ ...f, path: f.path });
     }
     return root;
+  }
+
+  /** 会话显示名：摘要（标题）优先，回退 sessionId 短形式 */
+  function sessionTitle(s: { id: string; summary?: string | null }): string {
+    if (s.summary && s.summary.trim()) return s.summary.trim();
+    const local = store.chats.find((c) => c.id === s.id);
+    if (local?.title && local.title !== "新对话") return local.title;
+    return `${s.id.slice(0, 8)}...`;
   }
 
   function flattenTree(node: DirNode, depth: number, out: TreeRow[], collapsed: ReadonlySet<string>): void {
@@ -149,7 +197,7 @@
       const collapsedSet = collapsedDirs.get(s.sessionId) ?? EMPTY_SET;
       const rows: TreeRow[] = [];
       flattenTree(buildTree(s.files), 0, rows, collapsedSet);
-      return { id: s.sessionId, updatedAt: s.updatedAt, collapsed: collapsedSessions.has(s.sessionId), rows };
+      return { id: s.sessionId, summary: s.summary, updatedAt: s.updatedAt, collapsed: collapsedSessions.has(s.sessionId), rows };
     }),
   );
 
@@ -232,7 +280,7 @@
           onclick={() => toggleSession(item.id)}
           onkeydown={(e) => e.key === "Enter" && toggleSession(item.id)}>
           <span class="dl-caret">{item.collapsed ? "▸" : "▾"}</span>
-          <span class="dl-sid">{item.id.slice(0, 8)}...</span>
+          <span class="dl-sid" title={item.id}>{sessionTitle(item)}</span>
           <span class="dl-stime">{fmtTime(item.updatedAt)}</span>
         </div>
         {#if !item.collapsed}
@@ -258,8 +306,14 @@
                 tabindex="0"
               >
                 <span class="dl-name" title={row.path}>{row.name}</span>
-                <span class="dl-add">+{row.file.added}</span>
-                <span class="dl-rem">-{row.file.removed}</span>
+                {#if row.file.deleted}
+                  <span class="dl-del">已删除</span>
+                {:else if row.file.modified}
+                  <span class="dl-mod">已修改</span>
+                {:else}
+                  <span class="dl-add">+{row.file.added}</span>
+                  <span class="dl-rem">-{row.file.removed}</span>
+                {/if}
               </div>
             {/if}
           {/each}
@@ -274,18 +328,35 @@
     {#if selected}
       <div class="dd-title">{basename(selected.path)}</div>
       <div class="dd-path">{selected.path}</div>
-      <div class="dd-lines">
-        {#each selected.lines as ln, i (i)}
-          <div class="dd-line" class:add={ln.type === "add"} class:del={ln.type === "del"}
-            class:copied={copiedLine === i}
-            title="点击复制该行"
-            onclick={() => copyLine(ln, i)}>
-            <span class="dd-no">{i + 1}</span>
-            <span class="dd-sign">{ln.type === "add" ? "+" : ln.type === "del" ? "-" : " "}</span>
-            <span class="dd-text">{ln.text}</span>
-          </div>
-        {/each}
-      </div>
+      {#if selected.deleted}
+        <div class="dd-binary">
+          <div class="dd-binary-icon">🗑️</div>
+          <div class="dd-binary-label">文件已删除</div>
+          <div class="dd-binary-hint">内容不可恢复</div>
+        </div>
+      {:else if selected.currentContent && selected.lines.every((l) => l.type === "ctx")}
+        <div class="dd-current-label">当前内容（外部修改，无行级 diff）</div>
+        <div class="dd-current"><pre>{selected.currentContent}</pre></div>
+      {:else if selected.binary}
+        <div class="dd-binary">
+          <div class="dd-binary-icon">📦</div>
+          <div class="dd-binary-label">二进制文件已变更</div>
+          <div class="dd-binary-hint">内容不可预览</div>
+        </div>
+      {:else}
+        <div class="dd-lines">
+          {#each selected.lines as ln, i (i)}
+            <div class="dd-line" class:add={ln.type === "add"} class:del={ln.type === "del"}
+              class:copied={copiedLine === i}
+              title="点击复制该行"
+              onclick={() => copyLine(ln, i)}>
+              <span class="dd-no">{i + 1}</span>
+              <span class="dd-sign">{ln.type === "add" ? "+" : ln.type === "del" ? "-" : " "}</span>
+              <span class="dd-text">{ln.text}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {:else}
       <div class="dd-empty">选择左侧文件查看变更</div>
     {/if}
@@ -363,6 +434,8 @@
   .dl-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dl-add { color: var(--success); font-weight: 600; font-size: 11px; }
   .dl-rem { color: var(--error); font-weight: 600; font-size: 11px; }
+  .dl-mod { color: var(--primary); font-weight: 600; font-size: 11px; }
+  .dl-del { color: var(--error); font-weight: 600; font-size: 11px; }
   .diff-detail { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   .dd-title { font-size: 12px; font-weight: 600; word-break: break-all; }
   .dd-path { font-size: 10px; color: var(--dim); margin-bottom: 8px; word-break: break-all; }
@@ -395,4 +468,27 @@
   .dd-line.add .dd-sign { color: var(--success); }
   .dd-line.del .dd-sign { color: var(--error); }
   .dd-text { flex: 1; }
+  .dd-current-label { font-size: 11px; font-weight: 600; color: var(--dim); margin-bottom: 4px; }
+  .dd-binary {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--dim);
+  }
+  .dd-binary-icon { font-size: 28px; }
+  .dd-binary-label { font-size: 13px; font-weight: 600; }
+  .dd-binary-hint { font-size: 11px; }
+  .dd-current {
+    flex: 1;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+  .dd-current pre { font-family: var(--font-mono); font-size: 11px; margin: 0; padding: 8px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
 </style>

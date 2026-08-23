@@ -132,20 +132,59 @@ interface DiffFile {
   added: number;
   removed: number;
   lines: DiffLine[];
+  /** 无行级 diff（指纹监控）时附带的当前内容全文 */
+  currentContent?: string;
+  /** 二进制/不可展示内容文件（指纹监控降级快照，仅元信息） */
+  binary?: boolean;
+  /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
+  modified?: boolean;
+  /** 文件被删除（指纹反向对比发现） */
+  deleted?: boolean;
 }
 
 interface DiffSession {
   sessionId: string;
+  /** 会话摘要（标题），无则 undefined */
+  summary?: string | null;
   files: DiffFile[];
   createdAt: number;
   updatedAt: number;
 }
 
 /** 解析快照 .diff 文件为结构化行 */
-function parseDiffFile(content: string): { lines: DiffLine[]; path?: string } {
+function parseDiffFile(content: string): {
+  lines: DiffLine[];
+  path?: string;
+  currentContent?: string;
+  binary?: boolean;
+  modified?: boolean;
+  deleted?: boolean;
+} {
   const lines: DiffLine[] = [];
   let path: string | undefined;
+  let currentContent: string | undefined;
+  let binary: boolean | undefined;
+  let modified: boolean | undefined;
+  let deleted: boolean | undefined;
+  let inMeta = false;
   for (const rawLine of content.split("\n")) {
+    if (inMeta) {
+      // 分隔符之后的元信息块（old/new 字符数 + 指纹监控附的 new_b64 / binary / modified / deleted 标记）
+      if (rawLine.startsWith("new_b64: ")) {
+        try {
+          currentContent = Buffer.from(rawLine.slice(9).trim(), "base64").toString("utf-8");
+        } catch {
+          currentContent = undefined;
+        }
+      } else if (rawLine.startsWith("binary: ")) {
+        binary = rawLine.slice(8).trim() === "1";
+      } else if (rawLine.startsWith("modified: ")) {
+        modified = rawLine.slice(10).trim() === "1";
+      } else if (rawLine.startsWith("deleted: ")) {
+        deleted = rawLine.slice(9).trim() === "1";
+      }
+      continue;
+    }
     if (rawLine.startsWith("# path: ")) {
       path = rawLine.slice(8).trim();
       continue;
@@ -155,12 +194,43 @@ function parseDiffFile(content: string): { lines: DiffLine[]; path?: string } {
     } else if (rawLine.startsWith("- ") || rawLine === "-") {
       lines.push({ type: "del", text: rawLine.slice(2) });
     } else if (rawLine.startsWith("---")) {
-      break; // diff 内容在 --- 分隔之前
+      inMeta = true; // diff 内容结束，进入元信息块
     } else if (rawLine.trim()) {
       lines.push({ type: "ctx", text: rawLine });
     }
   }
-  return { lines, path };
+  return { lines, path, currentContent, binary, modified, deleted };
+}
+
+/**
+ * 旧格式快照兼容推断（binary/modified/deleted 标记上线前生成的快照）：
+ * - diff 文本为"文件已删除" → deleted
+ * - diff 文本为"内容已变化（旧内容不可恢复）" → modified
+ * - diff 文本为"新增文件（N 行）"且文件当前不存在 → deleted（该文件已被删除）
+ * - 否则按文件当前是否存在：不存在 → deleted，存在 → modified
+ * 仅用于无显式标记的快照，避免 Web 列表显示误导性的 +0 -0。
+ */
+function inferLegacyFlags(
+  parsed: { lines: DiffLine[]; path?: string; binary?: boolean; modified?: boolean; deleted?: boolean },
+  entry: string,
+): { binary?: boolean; modified?: boolean; deleted?: boolean; addedFromText?: number } {
+  if (parsed.binary || parsed.modified || parsed.deleted) return {};
+  const firstCtx = parsed.lines.find((l) => l.type === "ctx")?.text ?? "";
+  const filePath = parsed.path ?? decodeDiffPath(entry);
+  const exists = existsSync(filePath);
+
+  if (firstCtx.includes("文件已删除")) return { deleted: true };
+  if (firstCtx.includes("内容已变化") || firstCtx.includes("旧内容不可恢复")) {
+    return { modified: true };
+  }
+  // 新增文件（N 行）：旧格式未解析出 + 行，从文本提取行数
+  const addMatch = firstCtx.match(/新增文件（(\d+) 行）|新增文件\((\d+) 行\)/);
+  if (addMatch) {
+    const addedFromText = Number(addMatch[1] ?? addMatch[2] ?? 0);
+    return exists ? { addedFromText } : { deleted: true, addedFromText };
+  }
+  // 兜底：无特征文本，按当前文件是否存在推断
+  return exists ? { modified: true } : { deleted: true };
 }
 
 /** 把安全化的文件名还原为可读路径（D_前缀 + 分隔符 _ → /） */
@@ -188,14 +258,23 @@ async function runWithChannels<T>(write: (data: object) => void, fn: () => Promi
   }
 }
 
-/** 扫描 data/snapshots 目录，返回全部会话的文件变更 */
-function scanDiffs(snapshotsDir: string): DiffSession[] {
+/** 扫描 data/snapshots 目录，返回全部会话的文件变更（含会话摘要） */
+function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSession[] {
   try {
     if (!existsSync(snapshotsDir)) return [];
+    // 会话摘要索引（会话标题）
+    const summaryBySession = new Map<string, string>();
+    if (sessionStore) {
+      for (const s of sessionStore.listSessions(1000)) {
+        if (s.summary) summaryBySession.set(s.id, s.summary);
+      }
+    }
     const sessions: DiffSession[] = [];
     const sessionDirs = readdirSync(snapshotsDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+      .map((d) => d.name)
+      // 单测产生的会话（hooks 测试快照）不展示
+      .filter((name) => name !== "test-session");
 
     for (const sessionId of sessionDirs) {
       const dir = resolve(snapshotsDir, sessionId);
@@ -208,21 +287,70 @@ function scanDiffs(snapshotsDir: string): DiffSession[] {
         updatedAt = Math.max(updatedAt, stat.mtimeMs);
         const content = readFileSync(resolve(dir, entry), "utf-8");
         const parsed = parseDiffFile(content);
+        // 旧格式快照兼容推断：无 binary/modified/deleted 显式标记时，
+        // 按 diff 文本 + 文件当前是否存在推断（避免历史快照显示误导性的 +0 -0）
+        const inferred = inferLegacyFlags(parsed, entry);
+        const added =
+          parsed.lines.filter((l) => l.type === "add").length ||
+          (inferred.addedFromText ?? 0);
         files.push({
           path: parsed.path ?? decodeDiffPath(entry),
-          added: parsed.lines.filter((l) => l.type === "add").length,
+          added,
           removed: parsed.lines.filter((l) => l.type === "del").length,
           lines: parsed.lines,
+          currentContent: parsed.currentContent,
+          binary: parsed.binary ?? inferred.binary,
+          modified: parsed.modified ?? inferred.modified,
+          deleted: parsed.deleted ?? inferred.deleted,
         });
       }
       if (files.length > 0) {
-        sessions.push({ sessionId, files, createdAt: updatedAt, updatedAt });
+        sessions.push({ sessionId, summary: summaryBySession.get(sessionId), files, createdAt: updatedAt, updatedAt });
       }
     }
     return sessions;
   } catch {
     return [];
   }
+}
+
+// ── /diffs 快照目录签名缓存：文件数 + 目录 mtime 未变则复用上次解析结果 ──
+let diffsCache: { signature: string; sessions: DiffSession[]; cachedAt: number } | null = null;
+
+/** 快照目录签名（文件总数 + 最新 mtime + 会话目录数），变化才触发重新解析 */
+function snapshotsSignature(snapshotsDir: string): string {
+  try {
+    if (!existsSync(snapshotsDir)) return "empty";
+    let fileCount = 0;
+    let maxMtime = 0;
+    let dirCount = 0;
+    for (const d of readdirSync(snapshotsDir, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      dirCount++;
+      const dir = resolve(snapshotsDir, d.name);
+      for (const entry of readdirSync(dir)) {
+        if (!entry.endsWith(".diff")) continue;
+        fileCount++;
+        const st = statSync(resolve(dir, entry));
+        if (st.mtimeMs > maxMtime) maxMtime = st.mtimeMs;
+      }
+    }
+    return `${dirCount}:${fileCount}:${maxMtime}`;
+  } catch {
+    return "empty";
+  }
+}
+
+/** 带签名的 /diffs 结果（TTL 30s 兜底），避免每次请求全量解析所有快照 */
+function getDiffsCached(snapshotsDir: string, sessionStore?: SessionStore): DiffSession[] {
+  const now = Date.now();
+  if (diffsCache && now - diffsCache.cachedAt < 30000) {
+    const sig = snapshotsSignature(snapshotsDir);
+    if (sig === diffsCache.signature) return diffsCache.sessions;
+  }
+  const sessions = scanDiffs(snapshotsDir, sessionStore);
+  diffsCache = { signature: snapshotsSignature(snapshotsDir), sessions, cachedAt: now };
+  return sessions;
 }
 
 /** 将会话消息渲染为 Markdown 导出内容（TUI /export 共用） */
@@ -930,7 +1058,7 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === apiUrl("/diffs") && req.method === "GET") {
       const snapshotsDir = deps.dataDir ? resolve(deps.dataDir, "snapshots") : resolve(process.cwd(), "data", "snapshots");
-      sendJSON(res, 200, { sessions: scanDiffs(snapshotsDir) });
+      sendJSON(res, 200, { sessions: getDiffsCached(snapshotsDir, deps.sessionStore) });
       return;
     }
 
@@ -1083,7 +1211,6 @@ export function startServer(deps: ServerDeps, port: number) {
 
   server.listen(port, () => {
     stdout.write(chalk.green(`\n✓ HTTP Server 已启动: http://localhost:${port}\n`));
-    stdout.write(chalk.gray(`  端点: POST ${API_PREFIX}/chat | ${API_PREFIX}/plan | ${API_PREFIX}/debate | GET ${API_PREFIX}/status | ${API_PREFIX}/tools | ${API_PREFIX}/agents | WS ${API_PREFIX}/ws\n`));
   });
 
   return server;

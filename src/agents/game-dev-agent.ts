@@ -36,7 +36,7 @@ Godot 4.x 关键知识：
 1. 理解游戏概念和核心玩法
 2. 拆解为可实现的系统模块
 3. 编写 Game Design Document (GDD)
-4. 实现 GDScript 代码
+4. 实现 GDScript 代码（写文件用 fs_write，不要用 shell 重定向）
 5. 数值平衡计算
 
 输出要求：

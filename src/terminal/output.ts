@@ -181,8 +181,9 @@ export class StreamOutputRenderer {
     this.tools.delete(id);
   }
 
-  /** 文件 diff 计数行（onFileDiff） */
+  /** 文件 diff 计数行（onFileDiff）——仅 TUI 激活时输出；server 模式控制台静默（Web /diffs 查看） */
   fileDiff(filePath: string, added: number, removed: number): void {
+    if (!tui.isActive()) return;
     this.emitLineRaw(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`);
   }
 
