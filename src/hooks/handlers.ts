@@ -944,32 +944,98 @@ function tryParseJson(s: string): unknown {
   }
 }
 
+/** 按行切分：空文本无行；尾部换行符不产生额外空行（与常见 diff 工具一致） */
+function splitLines(text: string): string[] {
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/** LCS 行 diff（精确行数）；大文件退化为简单逐行比较 */
 function computeSimpleDiff(oldText: string, newText: string): { added: number; removed: number; text: string } | null {
   if (oldText === newText) return null;
 
-  const oldLines = oldText.split("\n");
-  const newLines = newText.split("\n");
-  let added = 0;
-  let removed = 0;
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
 
-  // 简单逐行比较
-  const maxLen = Math.max(oldLines.length, newLines.length);
-  const diffLines: string[] = [];
+  // LCS 代价保护：n*m 过大（如大文件/日志）时退化为前缀后缀剥离 + 简单比较
+  const MAX_CELLS = 4_000_000;
+  if (oldLines.length * newLines.length > MAX_CELLS) {
+    return simpleDiffFallback(oldLines, newLines);
+  }
+  return lcsDiff(oldLines, newLines);
+}
 
-  for (let i = 0; i < maxLen; i++) {
-    if (i >= oldLines.length) {
-      diffLines.push(`+ ${newLines[i]}`);
-      added++;
-    } else if (i >= newLines.length) {
-      diffLines.push(`- ${oldLines[i]}`);
-      removed++;
-    } else if (oldLines[i] !== newLines[i]) {
-      diffLines.push(`- ${oldLines[i]}`);
-      diffLines.push(`+ ${newLines[i]}`);
-      added++;
-      removed++;
+/** LCS 行 diff：匹配行跳过，只输出变更行，added/removed 精确 */
+function lcsDiff(oldLines: string[], newLines: string[]): { added: number; removed: number; text: string } {
+  const n = oldLines.length;
+  const m = newLines.length;
+  const width = m + 1;
+  const dp = new Int32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      const idx = i * width + j;
+      if (oldLines[i] === newLines[j]) dp[idx] = dp[(i + 1) * width + (j + 1)] + 1;
+      else dp[idx] = Math.max(dp[(i + 1) * width + j], dp[i * width + (j + 1)]);
     }
   }
+  const diffLines: string[] = [];
+  let added = 0;
+  let removed = 0;
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oldLines[i] === newLines[j]) {
+      i++;
+      j++;
+    } else if (dp[i * width + j] === dp[(i + 1) * width + j]) {
+      diffLines.push(`- ${oldLines[i]}`);
+      i++;
+      removed++;
+    } else {
+      diffLines.push(`+ ${newLines[j]}`);
+      j++;
+      added++;
+    }
+  }
+  while (i < n) {
+    diffLines.push(`- ${oldLines[i]}`);
+    i++;
+    removed++;
+  }
+  while (j < m) {
+    diffLines.push(`+ ${newLines[j]}`);
+    j++;
+    added++;
+  }
+  return { added, removed, text: diffLines.join("\n") };
+}
 
+/** 大文件退化：前缀后缀剥离后剩余部分逐行比较 */
+function simpleDiffFallback(oldLines: string[], newLines: string[]): { added: number; removed: number; text: string } {
+  // 公共前缀
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix++;
+  }
+  // 公共后缀
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  const oldMid = oldLines.slice(prefix, oldLines.length - suffix);
+  const newMid = newLines.slice(prefix, newLines.length - suffix);
+  const added = newMid.length;
+  const removed = oldMid.length;
+  const diffLines = [...oldMid.map((l) => `- ${l}`), ...newMid.map((l) => `+ ${l}`)];
   return { added, removed, text: diffLines.join("\n") };
 }
