@@ -505,10 +505,16 @@
   }
   /** 工具重试：重发当前提问并附注"上次 X 工具失败，请重试"（始终走 chat 流） */
   function retryTool(tool: import("$lib/stores/chat.svelte").TimelineItem) {
-    if (stream.sending) return;
+    if (stream.sending) {
+      errors = [...errors, "当前正在生成中，请稍候再重试"];
+      return;
+    }
     const lastUser = [...store.messages].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
-    const note = `\n\n> ⚠️ 上次调用工具 \`${tool.name}\` 失败：${tool.error ?? ""}。请重试该操作。`;
+    const isBlocked = /拦截|禁止|不允许|高危|沙箱/.test(tool.error ?? "");
+    const note = isBlocked
+      ? `\n\n> ⚠️ 上次调用工具 \`${tool.name}\` 被系统拦截：${tool.error ?? ""}。请更换实现方式（如改用 fs_write 或调整命令），不要重复相同操作。`
+      : `\n\n> ⚠️ 上次调用工具 \`${tool.name}\` 失败：${tool.error ?? ""}。请修正后重试。`;
     store.messages.push({ role: "user", content: `${lastUser.content}${note}` });
     const chat = store.chats.find((c) => c.id === store.activeChatId);
     if (chat) {

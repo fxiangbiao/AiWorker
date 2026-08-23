@@ -13,6 +13,8 @@
       return "";
     }
   });
+  /** 拦截类错误（安全层拒绝）与执行失败（命令/环境错误）区分 */
+  let isBlocked = $derived.by(() => /拦截|禁止|不允许|高危|沙箱/.test(tool.error ?? ""));
 </script>
 
 <div class="tool-card" class:error={!!tool.error}>
@@ -23,11 +25,11 @@
   {#if tool.pending && !tool.result}
     <div class="tc-result pending"><span class="spin"></span>执行中...</div>
   {:else if tool.error}
-    <div class="tc-bubble">
-      <span class="tb-title">⚠ 操作被拦截</span>
+    <div class="tc-bubble" class:blocked={isBlocked}>
+      <span class="tb-title">{isBlocked ? "⚠ 操作被拦截" : "⚠ 执行失败"}</span>
       <span class="tb-msg">{esc(tool.error)}</span>
       {#if onRetry}
-        <button class="tb-retry" onclick={() => onRetry(tool)}>&#8635; 重试</button>
+        <button class="tb-retry" onclick={() => onRetry(tool)}>&#8635; {isBlocked ? "调整后重试" : "重试"}</button>
       {/if}
     </div>
   {:else if tool.result}

@@ -156,6 +156,7 @@ const execCmdDef: ToolDefinition = {
     name: "terminal_exec",
     description:
       "执行终端命令（编译、运行测试、包管理、Git、查看输出等）。" +
+      "Windows 下命令在 cmd 中执行：PowerShell 语法需用 powershell -Command 包裹（如 Select-Object 不能直接在 cmd 用）。" +
       "写入/修改文件请使用 fs_write 工具（支持精确差异记录与审计）；" +
       "不要用 shell 重定向（>、echo、type、copy、move 等）写文件，否则变更无法被精确追踪。",
     parameters: {

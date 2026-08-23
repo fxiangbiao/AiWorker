@@ -72,6 +72,24 @@ describe("2. 危险操作检测", () => {
   it("del /s /q 递归删除拦截", () => {
     expect(detector.check("del /s /q C:\\temp").isDangerous).toBe(true);
   });
+  it("rm -rf 相对路径拦截（防绕过）", () => {
+    expect(detector.check("rm -rf ./dist").isDangerous).toBe(true);
+    expect(detector.check("rm -rf node_modules").isDangerous).toBe(true);
+    expect(detector.check("rm -rf ../secrets").isDangerous).toBe(true);
+  });
+  it("rm -rf 引号路径拦截（防绕过）", () => {
+    expect(detector.check('rm -rf "my folder"').isDangerous).toBe(true);
+  });
+  it("RM -RF 大小写不敏感拦截（防绕过）", () => {
+    expect(detector.check("RM -RF C:\\Windows").isDangerous).toBe(true);
+  });
+  it("del 参数任意顺序拦截（防绕过）", () => {
+    expect(detector.check("del /q /s C:\\temp").isDangerous).toBe(true);
+  });
+  it("rd / rmdir /s 递归删除拦截（Windows 别名）", () => {
+    expect(detector.check("rd /s /q C:\\x").isDangerous).toBe(true);
+    expect(detector.check("rmdir /s /q C:\\x").isDangerous).toBe(true);
+  });
   it("ls -la 安全", () => {
     expect(detector.check("ls -la").isDangerous).toBe(false);
   });

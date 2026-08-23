@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 危险操作检测器
  * 设计依据：调研报告 6.3 节——高危操作正则拦截
  */
@@ -7,17 +7,15 @@ import type { PermissionMode } from "../types.js";
 
 // 默认拦截的高危操作 (Auto 模式下需二次确认)
 const DANGEROUS_PATTERNS = [
-  // 文件系统
-  /rm\s+-rf\s+\//,
-  /rm\s+-rf\s+~/,
-  /rm\s+-rf\s+\$HOME/i,
+  // 文件系统（rm 目标任意：相对路径/引号/盘符均覆盖，大小写不敏感）
+  /rm\s+-rf\s+\S+/i, // rm -rf <任意目标>（含相对路径/引号/盘符）
+  /rm\s+-r\s+[^\s"']+/i, // 递归删除单个目标（保留）
+  /rm\s+-r[f]?\s+["'][^&|;]+["']/i, // rm -r/-rf 引号内目标（含空格路径）
   /rm\s+(?!-)(?:"[^"]+"|\S+)/i, // 删除单个文件 rm <file>（含引号路径，不可逆）
-  /del\s+\/s\s+\/q/i,
-  /del\s+(?!\/)(?:"[^"]+"|\S+)/i, // 删除单个文件 del <file>（Windows，含引号路径，不可逆）
-  /rmdir\s+\/s/i,
+  /del\s+(\/s\s*)?(\/q\s*)?[^\s&|;]+/i, // del <file> 任意 /s /q 顺序（Windows，不可逆）
+  /(?:rd|rmdir)\s+\/s\b/i, // rd / rmdir /s（递归删除目录，Windows 别名覆盖）
   /Remove-Item.*-Recurse.*-Force/i,
   /Remove-Item\s+/i, // Remove-Item 任意删除（PowerShell）
-  /rm\s+-r\s+[^\s"']+/i, // 递归删除单个目标
   // 数据库
   /DROP\s+(TABLE|DATABASE)/i,
   /DELETE\s+FROM\s+\w+\s*;?\s*$/i,

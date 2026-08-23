@@ -17,6 +17,8 @@
     currentContent?: string;
     /** 二进制/不可展示内容文件（仅元信息，内容不可预览） */
     binary?: boolean;
+    /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
+    modified?: boolean;
   }
   interface DiffSession {
     sessionId: string;
@@ -302,8 +304,12 @@
                 tabindex="0"
               >
                 <span class="dl-name" title={row.path}>{row.name}</span>
-                <span class="dl-add">+{row.file.added}</span>
-                <span class="dl-rem">-{row.file.removed}</span>
+                {#if row.file.modified}
+                  <span class="dl-mod">已修改</span>
+                {:else}
+                  <span class="dl-add">+{row.file.added}</span>
+                  <span class="dl-rem">-{row.file.removed}</span>
+                {/if}
               </div>
             {/if}
           {/each}
@@ -418,6 +424,7 @@
   .dl-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dl-add { color: var(--success); font-weight: 600; font-size: 11px; }
   .dl-rem { color: var(--error); font-weight: 600; font-size: 11px; }
+  .dl-mod { color: var(--primary); font-weight: 600; font-size: 11px; }
   .diff-detail { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
   .dd-title { font-size: 12px; font-weight: 600; word-break: break-all; }
   .dd-path { font-size: 10px; color: var(--dim); margin-bottom: 8px; word-break: break-all; }

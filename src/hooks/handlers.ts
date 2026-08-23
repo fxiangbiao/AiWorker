@@ -423,7 +423,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
               const diffText = existedBefore
                 ? `内容已变化（旧内容不可恢复）：${absPath}`
                 : `新增文件（${added} 行）：${absPath}`;
-              recordDirDiff(ctx, deps, dataBase, absPath, added, removed, diffText);
+              recordDirDiff(ctx, deps, dataBase, absPath, added, removed, diffText, existedBefore);
             }
           }
           dirSnapshots.set(ctx.sessionId, current);
@@ -501,6 +501,8 @@ function recordDirDiff(
   added: number,
   removed: number,
   diffText: string,
+  /** 变更前文件已存在（无旧内容，行级 diff 不可得，标记 modified 供前端区分） */
+  modified: boolean,
 ): void {
   try {
     auditLogger.log({
@@ -520,7 +522,7 @@ function recordDirDiff(
 
   // 内容不可展示（二进制/大文件）→ 仅元信息快照（不读全文、不 base64）
   if (!isDisplayableText(filePath)) {
-    writeBinaryDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText);
+    writeBinaryDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, modified);
     return;
   }
 
@@ -531,7 +533,7 @@ function recordDirDiff(
   } catch {
     /* 读取失败则不带新内容 */
   }
-  writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, undefined, newContent);
+  writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, undefined, newContent, modified);
 }
 
 /** 将 diff 快照写入磁盘 */
@@ -542,6 +544,7 @@ function writeDiffSnapshot(
   diffText: string,
   oldContent: string | undefined,
   newContent: string | undefined,
+  modified = false,
 ): void {
   try {
     const snapDir = resolve(dataBase, "snapshots", sessionId);
@@ -550,9 +553,10 @@ function writeDiffSnapshot(
     const meta = `old: ${oldContent?.length ?? 0} chars\nnew: ${newContent?.length ?? 0} chars`;
     // 无行级 diff（指纹监控场景）时附新内容全文（base64 防格式破坏），前端展示"当前内容"
     const newB64 = newContent ? `\nnew_b64: ${Buffer.from(newContent, "utf-8").toString("base64")}` : "";
+    const modFlag = modified ? "\nmodified: 1" : "";
     writeFileSync(
       resolve(snapDir, `${safeName}.diff`),
-      `# path: ${filePath}\n${diffText}\n---\n${meta}${newB64}`,
+      `# path: ${filePath}\n${diffText}\n---\n${meta}${newB64}${modFlag}`,
       "utf-8",
     );
   } catch {
@@ -561,7 +565,7 @@ function writeDiffSnapshot(
 }
 
 /** 二进制/不可展示内容文件：仅写元信息快照（不读全文、不 base64），前端显示"不可预览" */
-function writeBinaryDiffSnapshot(dataBase: string, sessionId: string, filePath: string, diffText: string): void {
+function writeBinaryDiffSnapshot(dataBase: string, sessionId: string, filePath: string, diffText: string, modified = false): void {
   try {
     const snapDir = resolve(dataBase, "snapshots", sessionId);
     mkdirSync(snapDir, { recursive: true });
@@ -572,9 +576,10 @@ function writeBinaryDiffSnapshot(dataBase: string, sessionId: string, filePath: 
     } catch {
       /* 文件可能已被删除 */
     }
+    const modFlag = modified ? "\nmodified: 1" : "";
     writeFileSync(
       resolve(snapDir, `${safeName}.diff`),
-      `# path: ${filePath}\n${diffText}\n---\nbinary: 1\nsize: ${size}`,
+      `# path: ${filePath}\n${diffText}\n---\nbinary: 1\nsize: ${size}${modFlag}`,
       "utf-8",
     );
   } catch {
