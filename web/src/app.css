@@ -20,6 +20,26 @@
   --shadow: 0 1px 3px rgba(26, 29, 46, .04), 0 1px 2px rgba(26, 29, 46, .02);
   --sidebar-w: 300px;
 }
+
+/* 暗色模式（Sprint 34：顶栏开关 + localStorage 记忆，默认跟随系统） */
+[data-theme="dark"] {
+  --bg: #12151F;
+  --surface: #1A1F2E;
+  --border: #2A3247;
+  --text: #E4E8F2;
+  --dim: #8A93A8;
+  --primary: #5B8DEF;
+  --primary-hover: #4A7AE0;
+  --primary-active: #3A64C4;
+  --primary-light: rgba(91, 141, 239, .12);
+  --hover-bg: #222A3E;
+  --success: #3FB8F0;
+  --warn: #F5B16B;
+  --error: #F06A80;
+  --info: #4FAEEC;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .35), 0 1px 2px rgba(0, 0, 0, .25);
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 body {
@@ -30,9 +50,18 @@ body {
   display: flex;
   flex-direction: column;
   line-height: 1.5;
+  transition: background .2s, color .2s;
 }
 #app { display: flex; flex-direction: column; height: 100%; }
-::-webkit-scrollbar { display: none; }
-* { scrollbar-width: none; }
+
+/* 细滚动条（Sprint 34：6px，hover 加深，替代全隐藏） */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+::-webkit-scrollbar-track { background: transparent; }
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+
+/* 键盘焦点可见性（Sprint 34） */
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; border-radius: var(--radius-sm); }
 
 @media (max-width: 768px) { .sidebar { display: none; } }

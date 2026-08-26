@@ -1,13 +1,28 @@
 <script lang="ts">
   import { API, store, deleteChat, renameChat, exportChat } from "$lib/stores/chat.svelte";
   import { stream } from "$lib/stores/stream.svelte";
+  import { MessageSquare, Box, ListChecks, Settings, Cpu, PanelLeftClose } from "lucide-svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
+  import AppsPanel from "./AppsPanel.svelte";
+  import ProcessesPanel from "./ProcessesPanel.svelte";
+  import JobsPanel from "./JobsPanel.svelte";
 
-  let { onNewChat, onSwitch, onHide } = $props<{
+  let { onNewChat, onSwitch, onHide, onOpenSystem } = $props<{
     onNewChat: () => void;
     onSwitch: (id: string) => void;
     onHide: () => void;
+    onOpenSystem: () => void;
   }>();
+
+  type NavTab = "chat" | "apps" | "processes" | "jobs";
+  let nav = $state<NavTab>("chat");
+
+  const NAV_ITEMS: { id: NavTab; label: string; icon: typeof Box }[] = [
+    { id: "chat", label: "对话", icon: MessageSquare },
+    { id: "apps", label: "应用", icon: Box },
+    { id: "processes", label: "进程", icon: Cpu },
+    { id: "jobs", label: "任务", icon: ListChecks },
+  ];
 
   interface SStats {
     sessionId: string;
@@ -105,49 +120,71 @@
 </script>
 
 <div class="sidebar">
-  <div class="s-top">
-    <button class="new-btn" onclick={onNewChat}>+ 新对话</button>
-    <button class="hide-btn" title="隐藏左侧栏" onclick={onHide}>&#8810;</button>
+  <div class="s-nav">
+    {#each NAV_ITEMS as item (item.id)}
+      <button class="s-nav-btn" class:active={nav === item.id} title={item.label} onclick={() => (nav = item.id)}>
+        <item.icon size={14} />
+        <span>{item.label}</span>
+      </button>
+    {/each}
+    <button class="s-nav-fixed" title="设置" onclick={onOpenSystem}>
+      <Settings size={14} />
+    </button>
+    <button class="s-nav-fixed" title="隐藏左侧栏" onclick={onHide}>
+      <PanelLeftClose size={14} />
+    </button>
   </div>
-  <div class="s-list">
-    {#each groups() as [key, chats]}
-      <div class="s-group">{dayLabel(chats[0].createdAt || 0)}</div>
-      {#each chats as c}
-        <div
-          class="s-item"
-          class:active={c.id === store.activeChatId}
-          onclick={() => handleClick(c.id)}
-          onkeydown={(e) => e.key === "Enter" && handleClick(c.id)}
-          onmouseenter={() => (menuFor = c.id)}
-          onmouseleave={() => (menuFor = null)}
-          role="button"
-          tabindex="0"
-        >
-          <div class="s-title">{c.title}</div>
-          <div class="s-meta">
-            <span class="s-time">{fmtTime(c.createdAt)}</span>
-            <span>{c.turns || 0} 轮 &middot; {c.agentId || "default"}</span>
-            {#if statsMap[c.id]}
-              <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
-                {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
-                {#if (statsMap[c.id].toolCallsFailed ?? 0) > 0}· 失败 {statsMap[c.id].toolCallsFailed}{/if}
-              </span>
+
+  {#if nav === "chat"}
+    <div class="s-top">
+      <button class="new-btn" onclick={onNewChat}>+ 新对话</button>
+    </div>
+    <div class="s-list">
+      {#each groups() as [key, chats]}
+        <div class="s-group">{dayLabel(chats[0].createdAt || 0)}</div>
+        {#each chats as c}
+          <div
+            class="s-item"
+            class:active={c.id === store.activeChatId}
+            onclick={() => handleClick(c.id)}
+            onkeydown={(e) => e.key === "Enter" && handleClick(c.id)}
+            onmouseenter={() => (menuFor = c.id)}
+            onmouseleave={() => (menuFor = null)}
+            role="button"
+            tabindex="0"
+          >
+            <div class="s-title">{c.title}</div>
+            <div class="s-meta">
+              <span class="s-time">{fmtTime(c.createdAt)}</span>
+              <span>{c.turns || 0} 轮 &middot; {c.agentId || "default"}</span>
+              {#if statsMap[c.id]}
+                <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
+                  {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
+                  {#if (statsMap[c.id].toolCallsFailed ?? 0) > 0}· 失败 {statsMap[c.id].toolCallsFailed}{/if}
+                </span>
+              {/if}
+            </div>
+            {#if menuFor === c.id}
+              <div class="s-actions" onclick={(e) => e.stopPropagation()}>
+                <button class="sa-btn" title="重命名" onclick={() => handleRename(c.id)}>&#9998;</button>
+                <button class="sa-btn" title="导出 Markdown" onclick={() => handleExport(c.id)}>&#11015;</button>
+                <button class="sa-btn danger" title="删除" onclick={() => handleDelete(c.id)}>&#10005;</button>
+              </div>
             {/if}
           </div>
-          {#if menuFor === c.id}
-            <div class="s-actions" onclick={(e) => e.stopPropagation()}>
-              <button class="sa-btn" title="重命名" onclick={() => handleRename(c.id)}>&#9998;</button>
-              <button class="sa-btn" title="导出 Markdown" onclick={() => handleExport(c.id)}>&#11015;</button>
-              <button class="sa-btn danger" title="删除" onclick={() => handleDelete(c.id)}>&#10005;</button>
-            </div>
-          {/if}
-        </div>
+        {/each}
       {/each}
-    {/each}
-    {#if store.chats.length === 0}
-      <div class="s-empty">暂无会话</div>
-    {/if}
-  </div>
+      {#if store.chats.length === 0}
+        <div class="s-empty">暂无会话</div>
+      {/if}
+    </div>
+  {:else if nav === "apps"}
+    <AppsPanel />
+  {:else if nav === "processes"}
+    <ProcessesPanel />
+  {:else if nav === "jobs"}
+    <JobsPanel />
+  {/if}
 </div>
 
 {#if modal}
@@ -183,6 +220,44 @@
     flex-direction: column;
     flex-shrink: 0;
   }
+  .s-nav {
+    display: flex;
+    gap: 2px;
+    padding: 8px 8px 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .s-nav-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 4px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--dim);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .s-nav-btn:hover { background: var(--hover-bg); color: var(--primary); }
+  .s-nav-btn.active { background: var(--primary-light); color: var(--primary); }
+  .s-nav-fixed {
+    width: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--dim);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .s-nav-fixed:hover { background: var(--hover-bg); color: var(--primary); }
   .s-top { padding: 12px; display: flex; gap: 8px; align-items: center; }
   .new-btn {
     flex: 1;
@@ -196,21 +271,6 @@
     font-weight: 600;
     cursor: pointer;
   }
-  .hide-btn {
-    width: 32px;
-    height: 32px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--dim);
-    font-size: 14px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-  .hide-btn:hover { background: var(--hover-bg); color: var(--primary); }
   .s-list { flex: 1; overflow-y: auto; padding: 0 8px; }
   .s-group {
     font-size: 11px;

@@ -1,0 +1,104 @@
+<script lang="ts">
+  /**
+   * 进程视图面板（Sprint 34）
+   * Agent/App/Job 三类进程实时列表（WS 事件驱动）
+   */
+  import { processes, processStats, loadProcesses } from "$lib/stores/apps.svelte";
+  import { Brain, Box, ListChecks, RefreshCw } from "lucide-svelte";
+
+  function fmtTime(ts: number): string {
+    const d = new Date(ts);
+    const h = String(d.getHours()).padStart(2, "0");
+    const m = String(d.getMinutes()).padStart(2, "0");
+    return `${h}:${m}`;
+  }
+
+  const KIND_LABEL = { agent: "Agent", app: "应用", job: "任务" } as const;
+  const KIND_ICON = { agent: Brain, app: Box, job: ListChecks } as const;
+
+  function statusColor(status: string): string {
+    switch (status) {
+      case "running":
+      case "done":
+        return "var(--success)";
+      case "starting":
+      case "queued":
+        return "var(--warn)";
+      case "failed":
+        return "var(--error)";
+      default:
+        return "var(--dim)";
+    }
+  }
+
+  function pidShort(pid: string): string {
+    const parts = pid.split("-");
+    return parts.slice(0, 2).join("-");
+  }
+</script>
+
+<div class="pp">
+  <div class="pp-head">
+    <span class="pp-title">进程</span>
+    <button class="pp-refresh" title="刷新" onclick={() => void loadProcesses()}><RefreshCw size={13} /></button>
+  </div>
+
+  <div class="pp-stats">
+    <span class="pp-stat"><Brain size={12} /> {$processStats.agent}</span>
+    <span class="pp-stat"><Box size={12} /> {$processStats.app}</span>
+    <span class="pp-stat"><ListChecks size={12} /> {$processStats.job}</span>
+  </div>
+
+  {#if $processes.length === 0}
+    <div class="pp-empty">暂无运行中的进程</div>
+  {:else}
+    <div class="pp-list">
+      {#each $processes as p (p.pid)}
+        {@const Icon = KIND_ICON[p.kind] ?? ListChecks}
+        <div class="pp-item">
+          <span class="pp-ico" style:color={statusColor(p.status)}><Icon size={14} /></span>
+          <div class="pp-body">
+            <div class="pp-name">
+              {KIND_LABEL[p.kind] ?? p.kind}
+              {#if p.kind === "agent" && p.agentId}<span class="pp-sub">{p.agentId}</span>{/if}
+              {#if p.kind === "app" && p.appId}<span class="pp-sub">{p.appId}</span>{/if}
+              {#if p.kind === "job" && p.jobId}<span class="pp-sub">{String(p.jobId).slice(0, 18)}</span>{/if}
+            </div>
+            <div class="pp-meta">
+              <span style:color={statusColor(p.status)}>{p.status}</span>
+              {#if typeof p.startedAt === "number"}
+                <span>{fmtTime(p.startedAt)}</span>
+              {/if}
+              <span class="pp-pid">{pidShort(p.pid)}</span>
+            </div>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+</div>
+
+<style>
+  .pp { display: flex; flex-direction: column; height: 100%; padding: 10px 12px; gap: 8px; overflow-y: auto; }
+  .pp-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 6px; }
+  .pp-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); }
+  .pp-refresh {
+    border: none; background: transparent; color: var(--dim); cursor: pointer;
+    display: flex; align-items: center; padding: 3px; border-radius: var(--radius-sm);
+  }
+  .pp-refresh:hover { background: var(--hover-bg); color: var(--primary); }
+  .pp-stats { display: flex; gap: 12px; padding: 0 4px 6px; font-size: 12px; color: var(--dim); }
+  .pp-stat { display: flex; align-items: center; gap: 4px; }
+  .pp-empty { color: var(--dim); font-size: 12px; text-align: center; padding: 24px 0; }
+  .pp-list { display: flex; flex-direction: column; gap: 5px; }
+  .pp-item {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+  .pp-ico { display: flex; align-items: center; padding-top: 1px; }
+  .pp-body { flex: 1; min-width: 0; }
+  .pp-name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .pp-sub { font-size: 11px; color: var(--dim); font-weight: 400; }
+  .pp-meta { font-size: 11px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+  .pp-pid { color: var(--primary); font-weight: 500; }
+</style>

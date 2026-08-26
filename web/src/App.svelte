@@ -20,6 +20,9 @@
   } from "./lib/stores/chat.svelte";
   import { serverOnline, currentModel, totalTokens, workingDir } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
+  import { PanelRightClose, FileText } from "lucide-svelte";
+  import { get } from "svelte/store";
+  import { theme, applyTheme } from "./lib/stores/theme.svelte";
   import { fmtN } from "./lib/utils/format";
 
   let agents: { id: string; name: string }[] = $state([]);
@@ -91,6 +94,7 @@
   }
 
   onMount(() => {
+    applyTheme(get(theme));
     loadSettings();
     loadChats();
     loadAgents();
@@ -128,7 +132,7 @@
 </div>
 <div id="main">
   {#if !leftHidden}
-    <Sidebar onNewChat={handleNewChat} onSwitch={handleSwitch} onHide={() => (leftHidden = true)} />
+    <Sidebar onNewChat={handleNewChat} onSwitch={handleSwitch} onHide={() => (leftHidden = true)} onOpenSystem={() => (systemOpen = true)} />
   {/if}
   <ChatPanel />
   {#if !rightHidden}
@@ -136,9 +140,9 @@
     <div class="right-panel" id="right-panel" style:width={rightWidth ? `${rightWidth}px` : "40%"}>
       <div class="rp-tabs">
         <button class="rp-tab active" onclick={() => {}}>
-          <span class="rp-ico">&#128196;</span>文件变更
+          <span class="rp-ico"><FileText size={13} /></span>文件变更
         </button>
-        <button class="rp-hide" title="隐藏右侧栏" onclick={() => (rightHidden = true)}>&#8811;</button>
+        <button class="rp-hide" title="隐藏右侧栏" onclick={() => (rightHidden = true)}><PanelRightClose size={14} /></button>
       </div>
       <FileDiffPanel />
     </div>

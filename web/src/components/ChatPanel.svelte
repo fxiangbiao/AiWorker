@@ -6,6 +6,7 @@
   import AskCard from "./AskCard.svelte";
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
+  import { MessageSquare, Box, Cpu, Mic } from "lucide-svelte";
   import {
     store,
     saveChats,
@@ -531,7 +532,25 @@
       <div class="empty-state">
         <div class="mark-big">&#9670;</div>
         <h2>AiWorker</h2>
-        <p>个人 AI Agent 助手 &mdash; 多智能体协作 + 流式工具执行</p>
+        <p>个人 AI Agent 助手 &mdash; AI OS 升级中</p>
+        <div class="launcher">
+          <button class="launch-btn" onclick={() => errors.push("在下方输入框直接开始对话")}>
+            <MessageSquare size={16} />
+            <span>新对话</span>
+          </button>
+          <button class="launch-btn" onclick={() => errors.push("应用即时生成将在 Sprint 35 开放（先支持插件/目录安装）")}>
+            <Box size={16} />
+            <span>生成应用</span>
+          </button>
+          <button class="launch-btn" onclick={() => errors.push("进程/应用视图在左侧导航栏（对话 / 应用 / 进程 / 任务）")}>
+            <Cpu size={16} />
+            <span>查看进程</span>
+          </button>
+          <button class="launch-btn" onclick={() => errors.push("语音交互将在 Sprint 36 开放")}>
+            <Mic size={16} />
+            <span>语音输入</span>
+          </button>
+        </div>
       </div>
     {:else}
       <div class="msg-inner">
@@ -587,6 +606,16 @@
     text-align: center;
     padding: 24px 48px;
   }
+  .launcher { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
+  .launch-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    width: 104px; padding: 16px 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); color: var(--dim);
+    font-family: var(--font-ui); font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all .15s;
+  }
+  .launch-btn:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-light); transform: translateY(-1px); }
   .mark-big { font-size: 40px; opacity: .15; }
   h2 { font-size: 18px; font-weight: 600; color: var(--text); }
   p { font-size: 13px; max-width: 340px; color: var(--dim); line-height: 1.6; }

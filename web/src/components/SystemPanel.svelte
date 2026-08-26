@@ -3,8 +3,11 @@
   import { API } from "$lib/stores/chat.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
+  import AppsPanel from "./AppsPanel.svelte";
+  import ProcessesPanel from "./ProcessesPanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace">("context");
+  type SystemTab = "context" | "logs" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace";
+  let tab = $state<SystemTab>("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -476,6 +479,8 @@
     <button class="sp-nav" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
+    <button class="sp-nav" class:active={tab === "apps"} onclick={() => switchTab("apps")}>应用</button>
+    <button class="sp-nav" class:active={tab === "processes"} onclick={() => switchTab("processes")}>进程</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
     <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
     <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
@@ -605,6 +610,10 @@
           {/each}
         </div>
       {/if}
+    {:else if tab === "apps"}
+      <AppsPanel />
+    {:else if tab === "processes"}
+      <ProcessesPanel />
     {:else if tab === "schedule"}
       <div class="sp-section"><div class="sp-row"><span>定时任务（config/schedule.json）</span></div></div>
       {#if schedList.length === 0}

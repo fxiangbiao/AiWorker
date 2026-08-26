@@ -1,8 +1,17 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { fmtN, basename } from "$lib/utils/format";
   import { currentModel, totalTokens, workingDir, serverOnline, PRICING } from "$lib/stores/status";
+  import { processStats, loadApps, loadProcesses, initAppsWs } from "$lib/stores/apps.svelte";
+  import { Cpu, Box } from "lucide-svelte";
 
   let cost = $derived((($totalTokens || 0) * (PRICING.prompt + PRICING.completion)) / 1e6);
+
+  onMount(() => {
+    void loadApps();
+    void loadProcesses();
+    initAppsWs();
+  });
 </script>
 
 <div class="statusbar">
@@ -10,6 +19,10 @@
   <div class="sb-item">model: {$currentModel}</div>
   <div class="sb-item">tokens: {fmtN($totalTokens)}</div>
   <span>cost: ¥{cost.toFixed(4)}</span>
+  <div class="sb-item" title="进程 / 应用">
+    <Cpu size={11} />{$processStats.agent + $processStats.job}
+    <Box size={11} />{$processStats.app}
+  </div>
   <span class="sb-dir" title="工作目录: {$workingDir}">💻 {basename($workingDir) || "--"}</span>
 </div>
 
