@@ -13,6 +13,9 @@
 | 3 | 进化引擎应用粒度 | **仅建议、用户确认**（保守可控） |
 | 4 | 生成应用渲染方式 | **iframe 沙箱**（隔离优先） |
 | 5 | 桌面端 Tauri 壳 | 留到 1.0 之后评估（暂不做） |
+| 6 | 应用 UI 形态 | **三容器形态**（panel/float/widget）+ 统一窗口引擎，挂独立窗口层与现有布局解耦 |
+| 7 | 文档型产出 | **不生成应用 UI**，统一走内置「文档工作台」渲染 |
+| 8 | CLI/TUI 对 App | **TUI 只做管理+状态通知+跨设备联动，渲染归 Web** |
 
 ---
 
@@ -207,15 +210,60 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
 | `skill` | SKILL.md | 注册进 skillRegistry |
 | `service` | Node 常驻脚本 | app-manager 拉起子进程，心跳监控 |
 
+**产出类型分流**（生成前判断——**不是所有应用都有 UI**）：
+
+```
+交互型（番茄钟/待办/电子宠物）──► webapp 模板 → iframe 窗口
+文档型（报告/方案/文档）      ──► 文档模板 → 结构化文档（.md + data.json）
+                                      │
+                                      ▼
+                      内置「文档工作台」（系统级 app，仅此一个）
+                      目录树 + 图表 + 表格 + 代码块 + 一键导出 .md/.html
+```
+
+文档型产出**不生成独立应用 UI**，统一交给文档工作台渲染（只实现一次，LLM 只需产出标准 Markdown/JSON，生成最稳）。
+
 **新增文件**：`src/core/app-factory.ts` + `src/core/app-templates/*.ts`（模板字符串）
 **命令**：`/app new|list|start|stop|keep|destroy|install <路径>`
 **安全**：生成应用默认 `permissions: []`（零授权），用到再申请；高危权限（network/terminal）需用户确认。
 
-### 4.4 三模式交互
+### 4.4 应用 UI 与窗口体系（AppWindow）
+
+五类应用中仅 `app`（webapp）类型有独立 UI surface；tool/skill/agent/service 注册进对应注册表即可，无界面需求。
+
+**三种容器形态**（统一窗口引擎，仅参数不同）：
+
+| 形态 | 典型应用 | 特征 |
+|------|---------|------|
+| `panel` 工作区 | 文档工作台、数据看板 | 复用现有 modal 模式（SystemPanel 同款），可调尺寸的全屏级工作区 |
+| `float` 悬浮窗 | 番茄钟、计算器 | fixed 自由定位，可拖拽/缩放/最小化/置顶 |
+| `widget` 小部件 | 电子宠物、状态指示器 | 无边框透明、**永远置顶**、可拖到任意位置，点击展开为 float |
+
+**统一窗口引擎（AppHost）**：
+- 每个应用 iframe 外包一层系统容器（`AppHost.svelte`）：标题栏（拖拽手柄）+ 置顶/最小化/关闭
+- 拖拽用 pointer 事件实现，**拖拽手柄在容器 chrome 上，iframe 内不做拖拽**（安全边界清晰，应用只画内容）
+- 位置/尺寸按 appId 持久化 localStorage——电子宠物拖到右下角，刷新后仍在原地
+- **z-index 分层**：内容布局 0-10 → float 40-80 → panel/modal 100 → **widget 200 永置顶**（系统弹窗打开时宠物依然可见）
+- **与现有布局完全解耦**：应用不进 Sidebar/ChatPanel/右侧栏的 flex 流，挂独立窗口层 `AppHostLayer`（App.svelte 末尾追加，`{#each}` 遍历运行中的应用），现有组件零改动
+- **widget 锚定浏览器视口（非 StatusBar）**：StatusBar 是 30px 底部信息行（model/tokens/cost/目录），widget 不进它的布局流、不挤占内容；默认初始位置 = 内容区右下角（距状态栏 12px），四角可配置，拖到状态栏上方也只是 fixed 层视觉覆盖
+- 通信：iframe ⇄ 宿主走 postMessage（应用请求权限/通知/展开收起；宿主同步状态）
+- 服务端：`/apps/<id>/index.html` 静态路由
+
+**窗口可被大脑调度**（窗口是 OS 资源）：
+```
+window/list   查看所有应用窗口
+window/focus  把某应用带到前台
+window/close  关闭窗口（不销毁应用）
+app/destroy   销毁应用（代码+进程+权限全清）
+```
+
+**窄屏降级**：float/widget 在窄屏自动降级为 panel 全屏，避免拖出视口。
+
+### 4.5 三模式交互
 
 统一原则：**CLI / Web / 语音视频都是同一内核的不同"设备"**，共享同一套意图解析与事件流。
 
-#### 4.4.1 语音/视频（全新建造）
+#### 4.5.1 语音/视频（全新建造）
 
 ```
 语音输入:  Web 麦克风采集 → WebSocket 音频流 → ASR adapter → 文本进 chat
@@ -230,12 +278,22 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
 - Web 端：`VoiceBar.svelte`（按住说话 / 语音会话模式开关）+ `ImageInput`（粘贴/截图上传）
 - CLI 端语音：TUI 内不做实时语音（终端无标准音频），提供 `/voice` 透传 Web 端会话；**语音主战场在 Web**
 
-#### 4.4.2 CLI 与 Web（已有，补齐 OS 管理命令）
+#### 4.5.2 CLI 与 Web（已有，补齐 OS 管理命令）
 
 新增 CLI：`/app`（应用生命周期）、`/evo`（进化）、`/os status`（OS 总览：进程数/应用数/模型/资源）
-Web：SystemPanel → **AI OS 控制台**（见 4.6）
+Web：SystemPanel → **AI OS 控制台**（见 4.7）
 
-### 4.5 进化引擎 — 自进化闭环
+**CLI/TUI 对 App 类的处理原则：TUI 是管理端 + 触发端，Web 是展示端**（终端无法渲染图形应用，不做伪渲染）：
+
+| App 类型 | TUI 中的呈现 |
+|---------|-------------|
+| tool / agent / skill | 注册进对应注册表，CLI 会话中 LLM 直接可用，无需任何 UI |
+| service | 后台运行，`/app status` / `/jobs` 查看 |
+| webapp（app） | TUI 只做生命周期管理 + 状态通知：生成/启动/停止/销毁反馈 + 打印访问 URL（TUI markdown 已支持 OSC 8 超链接，可直接点击在浏览器打开） |
+
+**跨设备联动**（一个 OS、多设备）：TUI 中 `/app new 番茄钟` → 生成完成广播 `app/started` 事件 → Web 端自动弹出窗口。终端发指令、浏览器看结果；Web 端窗口操作也可从 TUI 下发（`/app focus|close <id>`，经 event-bus 广播窗口指令）。
+
+### 4.6 进化引擎 — 自进化闭环
 
 把现在的"技能自动沉淀"升级为**系统级进化**，四阶段闭环：
 
@@ -260,7 +318,7 @@ Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置
 **新增文件**：`src/core/evolution-engine.ts` + `data/evolution/{proposals,ledger,snapshots}/`
 **Web**：进化 Tab（提案列表：采纳 / 拒绝 / 回滚按钮 + 台账时间线）
 
-### 4.6 AI OS 控制台（Web SystemPanel 升级）
+### 4.7 AI OS 控制台（Web SystemPanel 升级）
 
 现有 8 Tab 升级为 OS 控制台：
 
@@ -292,8 +350,11 @@ Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置
 
 ### Sprint 35（0.8.0）— AppFactory：即时生成应用
 **目标**：一句话生成应用，留存/销毁闭环。
-- `app-factory.ts` + 五模板（webapp/tool/agent/skill/service）+ 校验器
-- Web `/apps/<id>/` 静态路由 + 应用面板（iframe）+ 生成向导 UI
+- `app-factory.ts` + 五模板（webapp/tool/agent/skill/service）+ 校验器 + **产出类型分流**（交互型→webapp / 文档型→文档工作台）
+- **Web 窗口体系**：`AppHostLayer` / `AppHost` + 三容器形态（panel/float/widget）+ z-index 分层 + 位置持久化 + postMessage 通信
+- Web `/apps/<id>/` 静态路由 + 生成向导 UI
+- **内置「文档工作台」系统应用**（文档型产出统一渲染：目录树/图表/导出）
+- CLI/TUI：`/app new|keep|destroy|focus|close` + 跨设备联动（广播 `app/started` → Web 自动弹窗）
 - `/app new <描述>|keep|destroy` 全命令
 - 验证：实机"帮我做一个番茄钟" → 生成→运行→使用→销毁，全程无手写代码；生成物非法时重试/报错路径单测
 
