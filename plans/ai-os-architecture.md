@@ -1,6 +1,6 @@
 # AiWorker → AI OS 架构规划
 
-> 版本：v0.4（已补 Web UI 优化分级清单）
+> 版本：v0.5（二轮审核修订：生成期安全/恢复策略/依赖与 terminal 边界/文档数据流/多文件 webapp）
 > 目标版本：0.7.0 → 1.0.0
 > 一句话愿景：把 AiWorker 从"多智能体个人助手"升级为**个人 AI 操作系统**——AI 是大脑、Harness 是手脚、应用是进程、一切皆可即时生成、用完即毁。
 
@@ -12,12 +12,13 @@
 | v0.2 | 固化已确认决策（HTML 单文件/sherpa-onnx/仅建议/iframe/窗口体系/文档工作台/TUI 原则） |
 | v0.3 | **审核修订**：补应用运行时能力桥、tool/service 子进程隔离、iframe 安全细节、app 权限与三模式审批映射；明确预算调度/事件订阅/TTS 离线/模型下载/应用升级/destroy 数据边界/多设备窗口状态；进化引擎补 5 层自进化与闭环细化 |
 | v0.4 | **Web UI 优化分级清单**：暗色模式/图标统一/滚动条/可访问性/空状态启动台（低成本，入 Sprint 34 前置）+ OS 导航/顶栏整合（中成本，随 Sprint 34/35）+ 主题体系/多窗口适配（高成本，1.0） |
+| v0.5 | **二轮审核修订**：① 生成期安全（prompt 注入防护：权限上限模板硬编码、独立提示、权限声明审查）② 应用状态持久化与崩溃恢复（state.json/autostart/指数退避重启）③ 依赖边界（MVP 禁外部依赖）④ terminal 权限 MVP 禁用 ⑤ 文档工作台数据流闭环（data/docs/）⑥ webapp 单文件改**多文件约定目录**（index.html+app.js+style.css，分块生成）⑦ 生成成本/复杂度上限、会话关联、单实例、通知授权、审计 Tab、进化独立预算、mock 生成器测试 |
 
 ### 已确认决策（用户拍板）
 
 | # | 决策项 | 结论 |
 |---|--------|------|
-| 1 | webapp 应用技术栈 | **纯 HTML/JS 单文件**，零构建，直接静态服务 |
+| 1 | webapp 应用技术栈 | **纯静态多文件约定目录**（`index.html` + `app.js` + `style.css`，v0.5 从单文件升级），零构建，直接静态服务 |
 | 2 | 语音 ASR 实现 | **本地 sherpa-onnx**（离线、隐私），adapter 化可切云端 |
 | 3 | 进化引擎应用粒度 | **仅建议、用户确认**（保守可控） |
 | 4 | 生成应用渲染方式 | **iframe 沙箱**（隔离优先） |
@@ -25,6 +26,7 @@
 | 6 | 应用 UI 形态 | **三容器形态**（panel/float/widget）+ 统一窗口引擎，挂独立窗口层与现有布局解耦 |
 | 7 | 文档型产出 | **不生成应用 UI**，统一走内置「文档工作台」渲染 |
 | 8 | CLI/TUI 对 App | **TUI 只做管理+状态通知+跨设备联动，渲染归 Web** |
+| 9 | 应用权限边界（v0.5） | **MVP 应用无 terminal 权限**（能力桥不提供，manifest 无此权限）；**禁止外部依赖**（仅 Node 内置模块 + 能力桥 API） |
 
 ---
 
@@ -132,10 +134,12 @@
   "name": "番茄钟",
   "version": "1.0.0",
   "description": "专注计时器，25 分钟工作 + 5 分钟休息",
-  "entry": "index.js",           // 相对沙箱目录
-  "permissions": ["fs:data/apps/pomodoro", "notify"],  // 声明式授权
+  "entry": "index.html",         // webapp 类型指向 index.html；tool/service 指向入口脚本
+  "permissions": ["fs:data/apps/pomodoro", "notify"],  // 声明式授权（无 terminal 权限）
   "lifecycle": { "onStart": "start()", "onStop": "stop()", "onDestroy": "cleanup()" },
-  "ui": { "surface": "panel", "route": "/apps/pomodoro" }  // app 类型专属
+  "ui": { "surface": "panel", "route": "/apps/pomodoro" },  // app 类型专属
+  "originSessionId": "cxxx",     // 生成来源会话（审计回溯，可选）
+  "autostart": false             // service 类型：OS 启动时自动拉起
 }
 ```
 
@@ -160,9 +164,14 @@
 - `destroy` = 停止进程 + 卸载注册（工具/UI/权限全撤销）+ 删除 `data/apps/<id>/` + 广播 `app/destroy` + 写审计
 - 现有 `pluginManager` **保留不删**，作为 `tool` 类应用的兼容加载器；新系统在其上包一层生命周期
 
+**状态持久化与崩溃恢复（v0.5）**：
+- app-manager 持久化运行状态到 `data/apps/state.json`（每个应用的 status/pid/配置）
+- **OS 重启恢复**：installed 应用回到 stopped（按需启动）；`autostart: true` 的 service 自动拉起
+- **崩溃恢复**：service/app 进程意外退出 → 心跳检测 → 指数退避重启（1s/2s/4s，≤3 次）→ 仍失败则置 failed 并告警（控制台红色状态）；记录崩溃原因到审计
+
 **新增文件**：
 - `src/core/app-manifest.ts` — manifest schema 校验（复用 package-installer 的 .aw 校验思路）
-- `src/core/app-manager.ts` — 状态机 + 沙箱 + 权限 + 生命周期钩子，`appManager.getInstance()`
+- `src/core/app-manager.ts` — 状态机 + 持久化（state.json）+ 恢复 + 沙箱 + 权限 + 生命周期钩子，`appManager.getInstance()`
 - `src/core/app-sandbox.ts` — 应用沙箱目录隔离 + 路径穿越防护（复用 fs 工具防护模式）
 
 **应用运行时 API（能力桥）**——应用访问系统能力的唯一通道（无它则生成应用只能是"刷新即失的玩具"）：
@@ -179,9 +188,11 @@ tool/service 类（子进程 ⇄ 主进程，stdin/stdout JSON-RPC）:
   ctx.storage / ctx.notify / ctx.llm / ctx.fs / ctx.http  同语义白名单 API
 ```
 
+- **能力边界（v0.5 硬约束）**：能力桥**不含 terminal**（MVP 应用无 shell 执行权限，manifest 不提供该权限，连申请都不行）；**禁外部依赖**（仅 Node 内置模块 + 能力桥 API，防依赖注入与供应链风险）
 - 能力桥消息**统一带 appId + 权限校验**，未授权的能力直接拒绝并记审计
 - 请求-响应带超时（默认 10s）与结果大小上限（复用 spillOrTruncate 思路）
 - 协议版本化（`cap: 1`），宿主升级向后兼容
+- notify 权限在 Web 端依赖浏览器 Notification API 授权——首次使用时引导授权，拒绝则降级为应用内角标
 
 ### 4.2 进程模型 — 一切皆进程
 
@@ -211,7 +222,7 @@ type OsProcess =
 app-factory 识别目标类型（默认 app/webapp）→ 选模板
   │
   ▼
-LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代修正）
+LLM 按模板分块生成: app.json + 入口文件（webapp 三步：骨架→逻辑→样式）+ README（可迭代修正）
   │
   ▼
 校验器: manifest schema 合法 + 代码语法检查（tsx/esbuild transform）
@@ -230,35 +241,58 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
           不满意: /app destroy <id>（干净销毁，代码进程权限全清）
 ```
 
-**模板类型（MVP 五个，webapp 已确认为纯 HTML/JS 单文件）**：
+**模板类型（MVP 五个）**：
 | 模板 | 生成物 | 运行方式 |
 |------|--------|---------|
-| `webapp` | 单文件 HTML/JS + manifest | 静态服务 `/apps/<id>/`，Web 面板 **iframe 沙箱**渲染（零构建） |
-| `tool` | Node 脚本 + 工具定义 | 注册进 toolRegistry |
+| `webapp` | **约定目录**：`index.html`（骨架）+ `app.js`（逻辑）+ `style.css`（样式）+ manifest | 静态服务 `/apps/<id>/`（index.html 相对路径引用），Web 面板 **iframe 沙箱**渲染（零构建） |
+| `tool` | Node 脚本 + 工具定义（仅内置模块） | 注册进 toolRegistry（子进程运行） |
 | `agent` | 人设 YAML（prompt+工具+技能引用） | 注册进 agent 路由 |
 | `skill` | SKILL.md | 注册进 skillRegistry |
-| `service` | Node 常驻脚本 | app-manager 拉起子进程，心跳监控 |
+| `service` | Node 常驻脚本（仅内置模块） | app-manager 拉起子进程，心跳监控 + 崩溃重启 |
+
+**webapp 多文件设计（v0.5，替代原单文件）**——单文件在应用复杂时会超 LLM 单次输出上限，且难维护：
+
+```
+data/apps/<id>/
+  index.html   骨架 + 挂载点（≤200 行，引用 app.js/style.css）
+  app.js       逻辑（≤500 行）
+  style.css    样式（≤300 行，可选）
+  data.json    初始数据/配置（可选，运行时经能力桥读写）
+  app.json     manifest
+```
+
+- **分块生成管线**：LLM 按「骨架 → 逻辑 → 样式」**三步独立生成**（每步独立提示、独立校验、失败独立重试 ≤2 次）——单块输出长度可控
+- **校验器扩展**：三文件各自语法检查 + **引用完整性检查**（index.html 引用的 js/css 路径存在，无 404）
+- **复杂度上限（MVP）**：三文件合计 ≤ 1000 行，超出提示 LLM 简化或拆能力
+- **迭代（update）只重生成变更块**：改逻辑只重生成 app.js，其余保留——数据不丢（配合 v0.3 的 update 设计）
+- 浏览器加载：普通 `<script src="app.js">`（同源静态服务，无 CORS 问题）
 
 **产出类型分流**（生成前判断——**不是所有应用都有 UI**）：
 
 ```
 交互型（番茄钟/待办/电子宠物）──► webapp 模板 → iframe 窗口
-文档型（报告/方案/文档）      ──► 文档模板 → 结构化文档（.md + data.json）
-                                      │
+文档型（报告/方案/文档）      ──► 文档模板 → 落盘 data/docs/<sessionId>/<title>.md
+                                      │（+ 可选 data.json 图表数据）
                                       ▼
                       内置「文档工作台」（系统级 app，仅此一个）
                       目录树 + 图表 + 表格 + 代码块 + 一键导出 .md/.html
 ```
 
-文档型产出**不生成独立应用 UI**，统一交给文档工作台渲染（只实现一次，LLM 只需产出标准 Markdown/JSON，生成最稳）。
+- 文档型产出**不生成独立应用 UI**，统一交给文档工作台渲染（只实现一次，LLM 只需产出标准 Markdown/JSON，生成最稳）
+- **数据流闭环（v0.5）**：文档是**会话资产**（落 `data/docs/<sessionId>/`，不进应用沙箱）；文档工作台按路径打开；会话消息里留「查看文档」入口；导出/重开不依赖生成会话
 
-**新增文件**：`src/core/app-factory.ts` + `src/core/app-templates/*.ts`（模板字符串）
-**命令**：`/app new|list|start|stop|keep|destroy|install <路径>`
-**安全（v0.3 强化）**：
+**新增文件**：`src/core/app-factory.ts` + `src/core/app-templates/*.ts`（模板字符串，含 webapp 三文件骨架）
+**命令**：`/app new|list|start|stop|keep|destroy|install|update <路径>`
+**安全（v0.3 强化 + v0.5 补生成期安全）**：
 - **隔离**：tool/service 类应用**不进程内加载**——`child_process` 子进程 + stdin/stdout JSON-RPC + 白名单 API（见 4.1 能力桥）；webapp 类天然在 iframe 内
 - **运行时限制**：子进程超时（工具调用 60s）、内存上限（`resourceLimits`）、stdout 截断——防死循环/内存炸弹
-- **权限**：生成应用默认 `permissions: []`（零授权），**运行时按需申请**（能力桥请求 → 现有 ask 通道确认：Web ConfirmModal / TUI stdin / 无确认通道默认拒绝）；高危（network/terminal）需用户确认；sandbox.ts 强制层扩展"应用权限"维度（先于权限层检查）
+- **权限**：生成应用默认 `permissions: []`（零授权），**运行时按需申请**（能力桥请求 → 现有 ask 通道确认：Web ConfirmModal / TUI stdin / 无确认通道默认拒绝）；高危（network）需用户确认；sandbox.ts 强制层扩展"应用权限"维度（先于权限层检查）；**terminal 权限 MVP 不存在**（见 4.1 能力边界）
 - 应用权限分**静态声明**（manifest 预授权，安装时展示给用户）+ **运行时申请**（动态补权，走 ask 通道）两种，均记审计
+- **生成期安全（v0.5，防 prompt 注入生成恶意应用）**：
+  - **权限上限由模板硬编码，不由 LLM 输出决定**——LLM 只决定"用哪些能力"，不决定"给什么权限"
+  - 生成进程用**独立最小化系统提示**（不携带主会话上下文，防上下文注入）
+  - **权限声明审查**：生成物 manifest 声明的高危权限与模板能力白名单比对，超出的直接拒绝
+- **生成成本控制（v0.5）**：每次生成固定 token 预算（≤8k）+ 总耗时上限；失败重试 ≤2 次计入预算
 
 ### 4.4 应用 UI 与窗口体系（AppWindow）
 
@@ -282,6 +316,7 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
 - 通信：iframe ⇄ 宿主走 postMessage（应用请求权限/通知/展开收起；宿主同步状态）
 - 服务端：`/apps/<id>/index.html` 静态路由（路径穿越防护，复用 server.ts 静态托管模式）
 - **懒挂载**：窗口关闭/应用停止即销毁 iframe（释放内存），恢复时重建——避免多窗口常驻 iframe 拖垮浏览器
+- **单实例（v0.5 明确）**：应用为**进程级单例 + 单窗口**（MVP 不做多开）；同一应用重复 start 是幂等 no-op，重复打开窗口聚焦已有窗口
 
 **iframe 安全细节（v0.3 补充）**：
 - `sandbox` 属性集：`allow-scripts`（必给）+ 按需 `allow-forms`/`allow-modals`；**不给 `allow-same-origin`**（防同源读取父页面 localStorage/状态）
@@ -394,6 +429,7 @@ Promote/Rollback
 - 每类变更限频（如每天 ≤3 条）、配置快照保留最近 N 份
 - 所有进化动作走审计 + 广播 `evolution/*` 事件
 - 回滚是硬能力：`/evo rollback <id>` 一键还原
+- **进化预算独立配额（v0.5）**：meta-agent 观察/提议/测试消耗独立 token 预算（如每月固定上限），不挤占日常会话；超预算暂停进化，控制台提示
 
 **新增文件**：`src/core/evolution-engine.ts` + `data/evolution/{proposals,ledger,snapshots,cases}/`
 **Web**：进化 Tab（提案列表：采纳 / 拒绝 / 回滚按钮 + 台账时间线 + 观察指标仪表）
@@ -413,6 +449,7 @@ Promote/Rollback
 | **进化**（新） | 提案 / 台账 / 回滚 |
 | 轨迹 | 已有 |
 | 调度 | 已有，并入进程视图联动 |
+| **审计**（新，1.0） | 全量操作审计可查：应用生命周期 / 权限申请与授予 / 进化动作 / 崩溃记录 |
 
 ### 4.8 Web UI 优化（分级清单，v0.4）
 
@@ -449,24 +486,27 @@ Promote/Rollback
 - **前置：Web UI 基础优化**（4.8 🟢 五项）：暗色模式 / 图标统一 / 细滚动条 / `:focus-visible` / 空状态启动台
 - **🟡 随做**：左侧栏 OS 导航（对话/应用/任务/记忆/设置）+ 顶栏整合（预算占用条）
 - `app-manifest.ts` / `app-manager.ts` / `app-sandbox.ts`（四类应用：tool/skill/agent/service，webapp 留到 35）
-- **能力桥 v1**：tool/service 子进程隔离（child_process + stdin/stdout JSON-RPC + 白名单 ctx API）+ 运行时限制（超时/内存上限）
+- **能力桥 v1**：tool/service 子进程隔离（child_process + stdin/stdout JSON-RPC + 白名单 ctx API）+ 运行时限制（超时/内存上限）+ **能力边界硬约束**（无 terminal 权限、禁外部依赖）
+- **状态持久化与恢复**：`data/apps/state.json` + OS 重启恢复（autostart 拉起）+ 崩溃指数退避重启（≤3 次）
 - **权限映射**：静态声明（manifest）+ 运行时申请走现有 ask 通道；sandbox.ts 扩展应用权限维度
 - `process-manager.ts` + agent-loop 登记 AgentProcess + **预算优先级**（前台会话 > 后台任务 > 应用）
 - plugin-manager 兼容包装（现有插件照常加载，展示为 tool 类应用）
 - CLI `/app list|start|stop|destroy|install` + Web「应用」「进程」Tab
-- 验证：安装手写示例 tool 应用（子进程运行）→ 运行 → 权限拒绝路径 → 销毁 → 确认进程/工具/文件/权限全清；单测覆盖状态机、destroy 幂等、能力桥越权拒绝
+- 验证：安装手写示例 tool 应用（子进程运行）→ 运行 → 权限拒绝路径 → 杀进程触发崩溃重启 → 销毁 → 确认进程/工具/文件/权限全清；单测覆盖状态机、destroy 幂等、能力桥越权拒绝、恢复逻辑
 
 ### Sprint 35（0.8.0）— AppFactory：即时生成应用
 **目标**：一句话生成应用，留存/销毁闭环。
-- `app-factory.ts` + 五模板（webapp/tool/agent/skill/service）+ 校验器 + **产出类型分流**（交互型→webapp / 文档型→文档工作台）
-- **Web 窗口体系**：`AppHostLayer` / `AppHost` + 三容器形态（panel/float/widget）+ z-index 分层 + 位置持久化 + postMessage 通信
+- `app-factory.ts` + 五模板 + 校验器 + **产出类型分流**（交互型→webapp / 文档型→文档工作台）
+- **webapp 多文件模板 + 分块生成**：index.html/app.js/style.css 三步独立生成、引用完整性校验、复杂度上限（≤1000 行）、update 只重生成变更块
+- **生成期安全**：权限上限模板硬编码（LLM 输出不决定权限）+ 独立最小化生成提示（防注入）+ 权限声明审查 + 生成 token 预算（≤8k）
+- **Web 窗口体系**：`AppHostLayer` / `AppHost` + 三容器形态（panel/float/widget）+ z-index 分层 + 位置持久化 + postMessage 通信 + **单实例单窗口**
 - **iframe 安全**：sandbox 属性集（allow-scripts、无 allow-same-origin）+ postMessage origin 校验 + 路由路径穿越防护 + 懒挂载
 - **webapp 能力桥**（postMessage 协议：storage/notify/llm/fs/http）+ **应用升级 update**（迭代生成不丢数据，版本管理）
 - Web `/apps/<id>/` 静态路由 + 生成向导 UI
-- **内置「文档工作台」系统应用**（文档型产出统一渲染：目录树/图表/导出）
+- **内置「文档工作台」系统应用**（文档型产出统一渲染：目录树/图表/导出；数据落 `data/docs/<sessionId>/`，会话留查看入口）
 - CLI/TUI：`/app new|keep|destroy|focus|close|update` + 跨设备联动（广播 `app/started` → Web 自动弹窗）
 - `/app new <描述>|keep|destroy` 全命令
-- 验证：实机"帮我做一个番茄钟" → 生成→运行→使用→销毁，全程无手写代码；生成物非法时重试/报错路径单测；iframe 越权消息被拒
+- 验证：实机"帮我做一个番茄钟" → 生成→运行→使用→销毁，全程无手写代码；**mock 生成器单测**（注入固定模板输出测校验→安装→启动→销毁全管线，不真调 LLM）；生成物非法重试/报错路径；越权权限声明被拒（生成期安全）；iframe 越权消息被拒；update 数据保留验证
 
 ### Sprint 36（0.9.0）— 语音/视频交互
 **目标**：三模式交互齐备。
@@ -485,7 +525,7 @@ Promote/Rollback
 
 ### Sprint 38（1.0.0）— AI OS 1.0 整合
 **目标**：整合为可对外宣称的 AI OS 1.0。
-- 控制台统一（设备/进程/应用/进化视图打磨）、安全加固（应用权限审查、审计完整）
+- 控制台统一（设备/进程/应用/进化/**审计**视图打磨）、安全加固（应用权限审查、审计完整）
 - 性能（大上下文下多进程资源仪表）、示例应用包（.aw 打包番茄钟等 3 个示例）
 - 文档：`docs/ai-os-architecture.md` 正式版 + README 更新
 
@@ -495,13 +535,14 @@ Promote/Rollback
 
 | 风险 | 应对 |
 |------|------|
-| **即时生成应用 = 任意代码**（最大风险） | **tool/service 子进程隔离**（JSON-RPC + 白名单能力桥）+ iframe sandbox（无 allow-same-origin）+ 默认零授权 + 运行时权限走 ask 通道 + 子进程超时/内存上限 + destroy 干净移除 |
+| **即时生成应用 = 任意代码**（最大风险） | **生成期**：权限上限模板硬编码 + 独立最小化提示防注入 + 权限声明审查；**运行期**：tool/service 子进程隔离（JSON-RPC + 白名单能力桥）+ iframe sandbox（无 allow-same-origin）+ 默认零授权 + 运行时权限走 ask 通道 + 子进程超时/内存上限 + **禁外部依赖/无 terminal 权限** + destroy 干净移除 |
+| 应用崩溃 / OS 重启丢状态 | state.json 持久化 + autostart 恢复 + 崩溃指数退避重启（≤3 次）+ 告警 |
 | 多应用/多进程挤占上下文预算 | context-manager 每进程配额 + **优先级规则**（前台会话 > 后台任务 > 应用）+ 超限降级（压缩/终止） |
 | event-bus 全量广播放大 | 事件**按类型订阅过滤**（进程/应用/进化事件不推给无关客户端），前端只渲染可见窗口状态 |
 | TTS 离线失效 | edge-tts 在线 + **sherpa-onnx VITS 本地备选**，离线自动降级 |
 | 本地 ASR 效果 vs 云端隐私 | adapter 化，默认本地 sherpa-onnx，可一键切云端 |
 | 语音/视觉模型兼容 | 只依赖 openai-compatible 多模态消息格式，model-router 标记能力并降级 |
-| 自进化失控 | **分层**：低风险自动（技能/记忆）、高风险确认制（工具/应用/配置）+ 限频 + 快照回滚 + 全审计 |
+| 自进化失控 | **分层**：低风险自动（技能/记忆）、高风险确认制（工具/应用/配置）+ 限频 + 快照回滚 + 全审计 + 进化预算独立配额 |
 | 破坏现有生态 | 插件/.aw 包全兼容；plugin-manager 保留为 tool 类加载器 |
 | 范围过大（一次做太多） | 按 Sprint 拆分，每个 Sprint 独立可交付可验证 |
 
