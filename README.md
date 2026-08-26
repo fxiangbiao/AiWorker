@@ -1,15 +1,17 @@
 # AiWorker
 
-> 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
+> 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.6.4-blue)
+![version](https://img.shields.io/badge/version-0.6.6-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
 ![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP、技能库、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种界面。
+
+正在升级为 **AI OS**（个人 AI 操作系统）：AI 是大脑、Harness 是手脚、应用模型即插即用、自进化引擎闭环——规划见 [docs/AI OS - 架构升级方案.md](docs/AI OS - 架构升级方案.md)。
 
 ## 目录
 
@@ -184,7 +186,8 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 aiworker/
 ├── config/               # 配置文件（models/agents/mcp/permissions/hooks/plugins/schedule/sandbox）
 ├── skills/               # 技能库（SKILL.md，7 领域）
-├── plans/                # Sprint 设计文档
+├── docs/                 # 设计文档（基础方案 + AI OS 架构升级方案 + 截图/演示）
+├── plans/                # Sprint 实施计划
 ├── src/
 │   ├── core/             # agent-loop / model-router / context-manager / team-coordinator /
 │   │                     # tool-registry（作用域）/ plugin-manager / job-runner / scheduler /
@@ -265,13 +268,14 @@ npm run web:build   # Web UI 构建
 - **CLI/TUI**: Commander.js + 自研帧缓冲渲染引擎（零依赖）
 - **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
-- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》
+- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》《docs/AI OS - 架构升级方案.md》
 
 ## 相关文档
 
 - [AGENTS.md](AGENTS.md) — AI 辅助开发指南（模块速览 / 关键约定 / 测试）
 - [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
-- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档
+- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档（基础架构）
+- [docs/AI OS - 架构升级方案.md](docs/AI OS - 架构升级方案.md) — AI OS 架构规划（应用模型 / 进程 / 即时生成 / 语音视频 / 进化引擎）
 - [docs/comparison-report.md](docs/comparison-report.md) — 与 DeepSeek Harness 的源码对比报告
 
 ## 许可证
