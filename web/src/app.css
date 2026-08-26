@@ -21,18 +21,18 @@
   --sidebar-w: 300px;
 }
 
-/* 暗色模式（Sprint 34：顶栏开关 + localStorage 记忆，默认跟随系统） */
+/* 暗色模式（Sprint 34：顶栏开关 + localStorage 记忆，默认跟随系统；暗黑中性色调） */
 [data-theme="dark"] {
-  --bg: #12151F;
-  --surface: #1A1F2E;
-  --border: #2A3247;
-  --text: #E4E8F2;
-  --dim: #8A93A8;
+  --bg: #0E0F11;
+  --surface: #161719;
+  --border: #232528;
+  --text: #E7E9ED;
+  --dim: #878C94;
   --primary: #5B8DEF;
   --primary-hover: #4A7AE0;
   --primary-active: #3A64C4;
   --primary-light: rgba(91, 141, 239, .12);
-  --hover-bg: #222A3E;
+  --hover-bg: #1E2024;
   --success: #3FB8F0;
   --warn: #F5B16B;
   --error: #F06A80;
@@ -63,5 +63,29 @@ body {
 
 /* 键盘焦点可见性（Sprint 34） */
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; border-radius: var(--radius-sm); }
+
+/* 统一按钮样式（Sprint 34 起：主色实心 / 幽灵描边） */
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-primary:disabled { opacity: .4; cursor: default; }
+.btn-ghost {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: all .15s;
+}
+.btn-ghost:hover { background: var(--hover-bg); color: var(--primary); }
 
 @media (max-width: 768px) { .sidebar { display: none; } }

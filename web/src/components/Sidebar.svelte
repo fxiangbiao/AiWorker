@@ -262,7 +262,7 @@
   .new-btn {
     flex: 1;
     padding: 9px;
-    background: var(--text);
+    background: var(--primary);
     color: #fff;
     border: none;
     border-radius: var(--radius-sm);
@@ -271,6 +271,7 @@
     font-weight: 600;
     cursor: pointer;
   }
+  .new-btn:hover { background: var(--primary-hover); }
   .s-list { flex: 1; overflow-y: auto; padding: 0 8px; }
   .s-group {
     font-size: 11px;

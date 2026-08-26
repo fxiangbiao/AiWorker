@@ -121,7 +121,7 @@
     width: 34px;
     height: 34px;
     border-radius: 50%;
-    background: var(--text);
+    background: var(--primary);
     color: #fff;
     border: none;
     font-size: 15px;
