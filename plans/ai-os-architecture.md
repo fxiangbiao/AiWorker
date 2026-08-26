@@ -1,8 +1,16 @@
 # AiWorker → AI OS 架构规划
 
-> 版本：v0.2（已确认核心决策）
+> 版本：v0.3（已补审核修订：能力桥/隔离强度/iframe 安全/权限映射/进化分层）
 > 目标版本：0.7.0 → 1.0.0
 > 一句话愿景：把 AiWorker 从"多智能体个人助手"升级为**个人 AI 操作系统**——AI 是大脑、Harness 是手脚、应用是进程、一切皆可即时生成、用完即毁。
+
+### 修订记录
+
+| 版本 | 内容 |
+|------|------|
+| v0.1 | 初始架构规划（应用/进程/即时生成/语音视频/进化五层） |
+| v0.2 | 固化已确认决策（HTML 单文件/sherpa-onnx/仅建议/iframe/窗口体系/文档工作台/TUI 原则） |
+| v0.3 | **审核修订**：补应用运行时能力桥、tool/service 子进程隔离、iframe 安全细节、app 权限与三模式审批映射；明确预算调度/事件订阅/TTS 离线/模型下载/应用升级/destroy 数据边界/多设备窗口状态；进化引擎补 5 层自进化与闭环细化 |
 
 ### 已确认决策（用户拍板）
 
@@ -156,6 +164,24 @@
 - `src/core/app-manager.ts` — 状态机 + 沙箱 + 权限 + 生命周期钩子，`appManager.getInstance()`
 - `src/core/app-sandbox.ts` — 应用沙箱目录隔离 + 路径穿越防护（复用 fs 工具防护模式）
 
+**应用运行时 API（能力桥）**——应用访问系统能力的唯一通道（无它则生成应用只能是"刷新即失的玩具"）：
+
+```
+webapp 类（iframe ⇄ 宿主，postMessage 协议）:
+  storage.get/set    应用数据持久化（仅沙箱内 data/apps/<id>/data/）
+  notify             系统通知（番茄钟到点）
+  llm.call           应用内调用 LLM（可选）
+  fs.read/write      沙箱目录内文件（需权限）
+  http.fetch         需 network 权限
+
+tool/service 类（子进程 ⇄ 主进程，stdin/stdout JSON-RPC）:
+  ctx.storage / ctx.notify / ctx.llm / ctx.fs / ctx.http  同语义白名单 API
+```
+
+- 能力桥消息**统一带 appId + 权限校验**，未授权的能力直接拒绝并记审计
+- 请求-响应带超时（默认 10s）与结果大小上限（复用 spillOrTruncate 思路）
+- 协议版本化（`cap: 1`），宿主升级向后兼容
+
 ### 4.2 进程模型 — 一切皆进程
 
 现在每次对话/任务都是"隐式进程"，显式化后 OS 可统一管理、可视化、限流：
@@ -189,6 +215,8 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
   ▼
 校验器: manifest schema 合法 + 代码语法检查（tsx/esbuild transform）
   │  失败 → 反馈 LLM 重试（≤2 次）或报错给用户
+  │  注: 语法检查只保证"能解析"，不保证"行为安全"——
+  │      运行时隔离见下方"隔离与资源限制"
   ▼
 安装: 写入 data/apps/<id>/ → appManager.install → start
   │
@@ -225,7 +253,11 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
 
 **新增文件**：`src/core/app-factory.ts` + `src/core/app-templates/*.ts`（模板字符串）
 **命令**：`/app new|list|start|stop|keep|destroy|install <路径>`
-**安全**：生成应用默认 `permissions: []`（零授权），用到再申请；高危权限（network/terminal）需用户确认。
+**安全（v0.3 强化）**：
+- **隔离**：tool/service 类应用**不进程内加载**——`child_process` 子进程 + stdin/stdout JSON-RPC + 白名单 API（见 4.1 能力桥）；webapp 类天然在 iframe 内
+- **运行时限制**：子进程超时（工具调用 60s）、内存上限（`resourceLimits`）、stdout 截断——防死循环/内存炸弹
+- **权限**：生成应用默认 `permissions: []`（零授权），**运行时按需申请**（能力桥请求 → 现有 ask 通道确认：Web ConfirmModal / TUI stdin / 无确认通道默认拒绝）；高危（network/terminal）需用户确认；sandbox.ts 强制层扩展"应用权限"维度（先于权限层检查）
+- 应用权限分**静态声明**（manifest 预授权，安装时展示给用户）+ **运行时申请**（动态补权，走 ask 通道）两种，均记审计
 
 ### 4.4 应用 UI 与窗口体系（AppWindow）
 
@@ -247,7 +279,15 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
 - **与现有布局完全解耦**：应用不进 Sidebar/ChatPanel/右侧栏的 flex 流，挂独立窗口层 `AppHostLayer`（App.svelte 末尾追加，`{#each}` 遍历运行中的应用），现有组件零改动
 - **widget 锚定浏览器视口（非 StatusBar）**：StatusBar 是 30px 底部信息行（model/tokens/cost/目录），widget 不进它的布局流、不挤占内容；默认初始位置 = 内容区右下角（距状态栏 12px），四角可配置，拖到状态栏上方也只是 fixed 层视觉覆盖
 - 通信：iframe ⇄ 宿主走 postMessage（应用请求权限/通知/展开收起；宿主同步状态）
-- 服务端：`/apps/<id>/index.html` 静态路由
+- 服务端：`/apps/<id>/index.html` 静态路由（路径穿越防护，复用 server.ts 静态托管模式）
+- **懒挂载**：窗口关闭/应用停止即销毁 iframe（释放内存），恢复时重建——避免多窗口常驻 iframe 拖垮浏览器
+
+**iframe 安全细节（v0.3 补充）**：
+- `sandbox` 属性集：`allow-scripts`（必给）+ 按需 `allow-forms`/`allow-modals`；**不给 `allow-same-origin`**（防同源读取父页面 localStorage/状态）
+- postMessage **必须校验 `event.origin`**（只接受宿主自身 origin），防第三方页面伪造消息；消息体带 appId 绑定
+- 宿主不向 iframe 暴露任何敏感上下文（token/key/工作目录绝对路径），应用所需信息经能力桥按需下发
+
+**多设备窗口状态边界（v0.3 明确）**：窗口位置/尺寸持久化 localStorage（单浏览器本地记忆）；跨设备一致性由**服务端进程注册表**驱动（窗口 open/focus/close 事件广播，各端按事件同步，位置不做跨端强一致——MVP 允许各端各自布局）。
 
 **窗口可被大脑调度**（窗口是 OS 资源）：
 ```
@@ -271,8 +311,8 @@ app/destroy   销毁应用（代码+进程+权限全清）
 视觉输入:  Web 截图/摄像头帧 → base64 图片 → 多模态消息 → model-router
 ```
 
-- `src/media/asr-provider.ts` — adapter 化：默认本地 **sherpa-onnx**（离线、隐私、中文好，模型 ~100MB），可选云端（Whisper API）
-- `src/media/tts-provider.ts` — adapter 化：默认 `edge-tts`（免费、无需 key），可换本地
+- `src/media/asr-provider.ts` — adapter 化：默认本地 **sherpa-onnx**（离线、隐私、中文好，模型 ~100MB），可选云端（Whisper API）；模型首次使用需下载 → **下载管理器**（进度/断点续传/离线包，放 `data/media/models/`）
+- `src/media/tts-provider.ts` — adapter 化：默认 `edge-tts`（免费、无需 key，**走微软在线接口**，断网/内网失效）；**本地备选 sherpa-onnx TTS（VITS 中文模型）**——与"本地优先"原则对齐，离线时自动降级
 - `src/media/media-server.ts` — WS 音频通道（复用 event-bus 所在 server，新增 `/api/v1/audio`）
 - model-router 增加多模态能力标记：消息支持 `content: [{type:"text"|"image_url"}]`（openai-compatible 天然支持，改动集中在消息组装层）
 - Web 端：`VoiceBar.svelte`（按住说话 / 语音会话模式开关）+ `ImageInput`（粘贴/截图上传）
@@ -295,18 +335,57 @@ Web：SystemPanel → **AI OS 控制台**（见 4.7）
 
 ### 4.6 进化引擎 — 自进化闭环
 
-把现在的"技能自动沉淀"升级为**系统级进化**，四阶段闭环：
+**自进化体现在 5 个层次**（2 层已有，3 层由进化引擎新增）：
+
+| 层次 | 内容 | 风险 | 进化方式 |
+|------|------|------|---------|
+| ① 技能自沉淀 | onTaskComplete → skill-evolution 把成功做法沉淀 SKILL.md | 低 | **自动**（已有，无需确认） |
+| ② 记忆自组织 | 三层记忆 + 情景衰减 + FTS5 + MEMORY.md 有界维护 | 低 | **自动**（已有） |
+| ③ 工具使用自优化 | 观察工具成功率/耗时/失败原因 → 提案改进工具描述/实现 | 中 | **用户确认** |
+| ④ 能力自生长 | 发现重复性任务 → **调用 AppFactory 自己生成新工具/新应用** → 试用 → 留存或销毁 | 高 | **用户确认** |
+| ⑤ 配置自调优 | 按任务类型调模型路由权重/temperature/预算 | 中 | **用户确认** |
+
+**进化分层原则**：低风险（技能/记忆）自动进化不打断用户；高影响（工具/应用/配置）提案制、用户确认（已拍板"仅建议"）——一条原则贯穿，而不是笼统的"系统级进化"。
+
+**④ 能力自生长是核心闭环**（自进化 × 即时生成的结合点，方案 v0.3 明确）：
 
 ```
-Observe 观察      telemetry + 会话/工具日志 + 三层记忆 + 成功率/耗时/预算指标
+Observe 发现: 同类任务本周出现 ≥3 次（如"每周整理会议纪要"）
    │
-Propose 提议      meta-agent 定期分析 → 输出提案 proposal.json
-                  （类型: new-tool / new-skill / new-app / config-change / prompt-fix）
+Propose: meta-agent 提案 "生成一个会议纪要整理工具"
    │
-Test 测试         隔离环境验证：新工具跑冒烟用例、配置变更在临时实例试跑 → 评分
+Test: AppFactory 生成 → 隔离子进程跑评测集 → 评分达标
    │
-Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置快照可回滚
-                  失败 → 记录原因丢弃；运行后表现下滑 → 自动回滚上一快照
+Promote: 用户确认采纳 → 留存为 tool 应用；拒绝则销毁
+```
+
+**四阶段闭环细化**：
+
+```
+Observe 观察（具体指标清单）
+  - 工具调用成功率 / 耗时 / 失败原因分布
+  - 上下文压缩率（压缩频繁 = 上下文结构问题）
+  - 任务完成率（会话无结论即结束的比例）
+  - 用户干预频率（ask/confirm 次数高 = 权限过严或意图不清）
+  - 重复任务模式（同类任务重复出现次数）
+  数据源: telemetry JSONL + 会话/工具日志 + 三层记忆 + TracePanel 轨迹
+  触发: 定时（每日/每周）+ 事件（某工具连续 N 次失败、任务完成率跌破阈值）
+
+Propose 提议
+  meta-agent 分析观察数据 → 输出 proposal.json
+  （类型: new-tool / new-skill / new-app / config-change / prompt-fix / tool-fix）
+
+Test 测试
+  - 评测集来源: 成功的会话轨迹沉淀为黄金用例（data/evolution/cases/）
+  - 新工具/新应用: 隔离子进程跑评测用例 + 预算内试运行 → 评分
+  - 配置变更: 临时实例试跑对比
+  - 新应用额外要求: 通过 AppFactory 校验器（语法 + 沙箱）
+
+Promote/Rollback
+  - 通过 → 应用 + 记入 data/evolution/ledger.json + 配置快照可回滚
+  - 推广后验证: A/B 对比（新旧并行跑 N 次，比成功率/token 效率/耗时）
+  - 回滚: 表现下滑超阈值（如成功率 -20% 或耗时 ×2）→ 自动回滚上一快照
+  - 失败 → 记录原因丢弃
 ```
 
 **护栏（fail-safe，已确认：提案默认仅建议、用户确认）**：
@@ -315,8 +394,8 @@ Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置
 - 所有进化动作走审计 + 广播 `evolution/*` 事件
 - 回滚是硬能力：`/evo rollback <id>` 一键还原
 
-**新增文件**：`src/core/evolution-engine.ts` + `data/evolution/{proposals,ledger,snapshots}/`
-**Web**：进化 Tab（提案列表：采纳 / 拒绝 / 回滚按钮 + 台账时间线）
+**新增文件**：`src/core/evolution-engine.ts` + `data/evolution/{proposals,ledger,snapshots,cases}/`
+**Web**：进化 Tab（提案列表：采纳 / 拒绝 / 回滚按钮 + 台账时间线 + 观察指标仪表）
 
 ### 4.7 AI OS 控制台（Web SystemPanel 升级）
 
@@ -343,31 +422,38 @@ Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置
 ### Sprint 34（0.7.0）— 内核：应用模型 + 进程模型
 **目标**：插件升级为应用生命周期；进程显式化。
 - `app-manifest.ts` / `app-manager.ts` / `app-sandbox.ts`（四类应用：tool/skill/agent/service，webapp 留到 35）
-- `process-manager.ts` + agent-loop 登记 AgentProcess
+- **能力桥 v1**：tool/service 子进程隔离（child_process + stdin/stdout JSON-RPC + 白名单 ctx API）+ 运行时限制（超时/内存上限）
+- **权限映射**：静态声明（manifest）+ 运行时申请走现有 ask 通道；sandbox.ts 扩展应用权限维度
+- `process-manager.ts` + agent-loop 登记 AgentProcess + **预算优先级**（前台会话 > 后台任务 > 应用）
 - plugin-manager 兼容包装（现有插件照常加载，展示为 tool 类应用）
 - CLI `/app list|start|stop|destroy|install` + Web「应用」「进程」Tab
-- 验证：安装一个手写示例 tool 应用 → 运行 → 销毁 → 确认工具/文件/权限全清；单测覆盖状态机与 destroy 幂等
+- 验证：安装手写示例 tool 应用（子进程运行）→ 运行 → 权限拒绝路径 → 销毁 → 确认进程/工具/文件/权限全清；单测覆盖状态机、destroy 幂等、能力桥越权拒绝
 
 ### Sprint 35（0.8.0）— AppFactory：即时生成应用
 **目标**：一句话生成应用，留存/销毁闭环。
 - `app-factory.ts` + 五模板（webapp/tool/agent/skill/service）+ 校验器 + **产出类型分流**（交互型→webapp / 文档型→文档工作台）
 - **Web 窗口体系**：`AppHostLayer` / `AppHost` + 三容器形态（panel/float/widget）+ z-index 分层 + 位置持久化 + postMessage 通信
+- **iframe 安全**：sandbox 属性集（allow-scripts、无 allow-same-origin）+ postMessage origin 校验 + 路由路径穿越防护 + 懒挂载
+- **webapp 能力桥**（postMessage 协议：storage/notify/llm/fs/http）+ **应用升级 update**（迭代生成不丢数据，版本管理）
 - Web `/apps/<id>/` 静态路由 + 生成向导 UI
 - **内置「文档工作台」系统应用**（文档型产出统一渲染：目录树/图表/导出）
-- CLI/TUI：`/app new|keep|destroy|focus|close` + 跨设备联动（广播 `app/started` → Web 自动弹窗）
+- CLI/TUI：`/app new|keep|destroy|focus|close|update` + 跨设备联动（广播 `app/started` → Web 自动弹窗）
 - `/app new <描述>|keep|destroy` 全命令
-- 验证：实机"帮我做一个番茄钟" → 生成→运行→使用→销毁，全程无手写代码；生成物非法时重试/报错路径单测
+- 验证：实机"帮我做一个番茄钟" → 生成→运行→使用→销毁，全程无手写代码；生成物非法时重试/报错路径单测；iframe 越权消息被拒
 
 ### Sprint 36（0.9.0）— 语音/视频交互
 **目标**：三模式交互齐备。
-- `media/` 三模块（asr/tts/media-server）+ WS 音频通道
+- `media/` 三模块（asr/tts/media-server）+ WS 音频通道 + **ASR 模型下载管理器**（进度/断点续传/离线包）
+- **TTS 双实现**：edge-tts 在线 + sherpa-onnx VITS 本地备选（离线自动降级）
 - Web `VoiceBar` + 截图/图片提问；model-router 多模态消息
-- 验证：Web 语音对话闭环（说→识别→回答→朗读）；截图提问走视觉模型
+- 验证：Web 语音对话闭环（说→识别→回答→朗读，含断网降级路径）；截图提问走视觉模型
 
 ### Sprint 37（0.10.0）— 进化引擎
 **目标**：自进化闭环。
-- `evolution-engine.ts` 四阶段 + 台账 + 快照回滚 + 护栏
-- Web「进化」Tab + `/evo` 命令
+- `evolution-engine.ts` 四阶段 + 观察指标采集 + 提案 → 黄金用例评测（`data/evolution/cases/`）→ A/B 推广对比 → 快照回滚 + 护栏
+- **能力自生长**：进化 × AppFactory 闭环（发现重复任务 → 生成新工具/新应用提案）
+- **进化分层**：低风险自动（技能/记忆）+ 高风险确认制（工具/应用/配置）
+- Web「进化」Tab（提案/台账/回滚/观察指标仪表）+ `/evo` 命令
 - 验证：注入模拟观察数据 → 提案 → 采纳 → 回滚全链路单测 + 实机观察一次真实进化
 
 ### Sprint 38（1.0.0）— AI OS 1.0 整合
@@ -382,11 +468,13 @@ Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置
 
 | 风险 | 应对 |
 |------|------|
-| **即时生成应用 = 任意代码**（最大风险） | 权限声明制（默认零授权）+ 沙箱目录 + 高危权限需确认 + destroy 保证干净移除；MVP 进程内运行，后续可升级 worker 隔离 |
-| 多应用/多进程挤占上下文预算 | context-manager 每进程配额 + 控制台可视化 + 超限自动降级（压缩/终止） |
+| **即时生成应用 = 任意代码**（最大风险） | **tool/service 子进程隔离**（JSON-RPC + 白名单能力桥）+ iframe sandbox（无 allow-same-origin）+ 默认零授权 + 运行时权限走 ask 通道 + 子进程超时/内存上限 + destroy 干净移除 |
+| 多应用/多进程挤占上下文预算 | context-manager 每进程配额 + **优先级规则**（前台会话 > 后台任务 > 应用）+ 超限降级（压缩/终止） |
+| event-bus 全量广播放大 | 事件**按类型订阅过滤**（进程/应用/进化事件不推给无关客户端），前端只渲染可见窗口状态 |
+| TTS 离线失效 | edge-tts 在线 + **sherpa-onnx VITS 本地备选**，离线自动降级 |
 | 本地 ASR 效果 vs 云端隐私 | adapter 化，默认本地 sherpa-onnx，可一键切云端 |
 | 语音/视觉模型兼容 | 只依赖 openai-compatible 多模态消息格式，model-router 标记能力并降级 |
-| 自进化失控 | 提案默认需确认、限频、快照回滚、全审计 |
+| 自进化失控 | **分层**：低风险自动（技能/记忆）、高风险确认制（工具/应用/配置）+ 限频 + 快照回滚 + 全审计 |
 | 破坏现有生态 | 插件/.aw 包全兼容；plugin-manager 保留为 tool 类加载器 |
 | 范围过大（一次做太多） | 按 Sprint 拆分，每个 Sprint 独立可交付可验证 |
 
