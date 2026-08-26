@@ -11,7 +11,7 @@
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP、技能库、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种界面。
 
-正在升级为 **AI OS**（个人 AI 操作系统）：AI 是大脑、Harness 是手脚、应用模型即插即用、自进化引擎闭环——规划见 [docs/AI OS - 架构升级方案.md](docs/AI OS - 架构升级方案.md)。
+正在升级为 **AI OS**（个人 AI 操作系统）：AI 是大脑、Harness 是手脚、应用模型即插即用、自进化引擎闭环——规划见 [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md)。
 
 ## 目录
 
@@ -268,14 +268,14 @@ npm run web:build   # Web UI 构建
 - **CLI/TUI**: Commander.js + 自研帧缓冲渲染引擎（零依赖）
 - **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
-- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》《docs/AI OS - 架构升级方案.md》
+- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》《docs/AIOS-架构升级方案.md》
 
 ## 相关文档
 
 - [AGENTS.md](AGENTS.md) — AI 辅助开发指南（模块速览 / 关键约定 / 测试）
 - [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
 - [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档（基础架构）
-- [docs/AI OS - 架构升级方案.md](docs/AI OS - 架构升级方案.md) — AI OS 架构规划（应用模型 / 进程 / 即时生成 / 语音视频 / 进化引擎）
+- [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md) — AI OS 架构规划（应用模型 / 进程 / 即时生成 / 语音视频 / 进化引擎）
 - [docs/comparison-report.md](docs/comparison-report.md) — 与 DeepSeek Harness 的源码对比报告
 
 ## 许可证

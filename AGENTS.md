@@ -28,7 +28,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - **不添加注释**，除非绝对必要
 - `coerceToolArgs`：数字字符串转换前校验合法数字，排除 NaN/Infinity；`"true"/"false"` 优先于数字判断
 - 版本单一来源：`package.json`（经 `src/core/version.ts` 读取），改动同步更新 `CHANGELOG.md`
-- 设计文档：`docs/个人AI-Agent助手设计方案.md`、`docs/AI OS - 架构升级方案.md`（AI OS 规划，实施按 `plans/` 下 sprint 计划推进）
+- 设计文档：`docs/个人AI-Agent助手设计方案.md`、`docs/AIOS-架构升级方案.md`（AI OS 规划，实施按 `plans/` 下 sprint 计划推进）
 
 ## CLI 命令系统（`src/commands/`）
 
