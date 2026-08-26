@@ -23,8 +23,10 @@ import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
 import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
 import { renderSessionMarkdown } from "./memory/session-export.js";
+import { processManager } from "./core/process-manager.js";
 import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
 import type { SessionStore } from "./memory/session-store.js";
+import type { AppManager, AppActionResult } from "./core/app-manager.js";
 
 interface DelegateAgent {
   runStream(
@@ -59,6 +61,8 @@ interface ServerDeps {
     { name: string; transport: string; connected: boolean; toolCount: number; state?: string; error?: string; tools?: { name: string; description: string }[] }
   >;
   getPlugins?: () => PluginInfo[];
+  /** 应用管理器（AI OS：/apps 端点，Sprint 34） */
+  appManager?: AppManager;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
@@ -575,6 +579,72 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/plugins") && req.method === "GET") {
       const plugins = deps.getPlugins?.() ?? [];
       sendJSON(res, 200, { plugins });
+      return;
+    }
+
+    // ─── AI OS 应用与进程（Sprint 34） ───
+    if (url === apiUrl("/apps") && req.method === "GET") {
+      const apps = deps.appManager ? deps.appManager.list() : [];
+      sendJSON(res, 200, { apps });
+      return;
+    }
+    if (url === apiUrl("/apps/install") && req.method === "POST") {
+      if (!deps.appManager) {
+        sendJSON(res, 503, { error: "App manager not available" });
+        return;
+      }
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: { path?: string; force?: boolean; originSessionId?: string };
+      try {
+        payload = JSON.parse(body) as { path?: string; force?: boolean; originSessionId?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!payload.path || typeof payload.path !== "string") {
+        sendJSON(res, 400, { error: "Missing 'path'" });
+        return;
+      }
+      const abs = isAbsolute(payload.path) ? payload.path : resolve(deps.workingDir, payload.path);
+      const result = deps.appManager.installFromDir(abs, {
+        force: payload.force === true,
+        originSessionId: payload.originSessionId,
+      });
+      sendJSON(res, result.ok ? 200 : 400, result.ok ? { ok: true, app: result.app } : { error: result.error });
+      return;
+    }
+    if (url.startsWith(apiUrl("/apps/")) && req.method === "POST") {
+      if (!deps.appManager) {
+        sendJSON(res, 503, { error: "App manager not available" });
+        return;
+      }
+      const rest = url.slice(apiUrl("/apps/").length);
+      const slash = rest.lastIndexOf("/");
+      if (slash <= 0) {
+        sendJSON(res, 400, { error: "Invalid path" });
+        return;
+      }
+      const id = decodeURIComponent(rest.slice(0, slash));
+      const action = rest.slice(slash + 1);
+      let result: AppActionResult;
+      if (action === "start") result = await deps.appManager.start(id);
+      else if (action === "stop") result = await deps.appManager.stop(id);
+      else if (action === "destroy") result = await deps.appManager.destroy(id);
+      else {
+        sendJSON(res, 400, { error: `Unknown action: ${action}` });
+        return;
+      }
+      sendJSON(res, result.ok ? 200 : 400, result.ok ? { ok: true, app: result.app } : { error: result.error });
+      return;
+    }
+    if (url === apiUrl("/processes") && req.method === "GET") {
+      sendJSON(res, 200, { processes: processManager.list(), stats: processManager.stats() });
       return;
     }
 

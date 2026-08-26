@@ -40,6 +40,9 @@ import { routeToExpert } from "./agents/router.js";
 import { skillRegistry } from "./core/skill-registry.js";
 import { TeamCoordinator } from "./core/team-coordinator.js";
 import { pluginManager } from "./core/plugin-manager.js";
+import { AppManager } from "./core/app-manager.js";
+import { appRuntime } from "./core/app-runtime.js";
+import { processManager } from "./core/process-manager.js";
 import { getAppVersion } from "./core/version.js";
 import { mcpManager } from "./mcp/mcp-manager.js";
 import { renderer } from "./terminal/renderer.js";
@@ -49,7 +52,7 @@ import { buildCliCommands } from "./commands/registry.js";
 import { renderCommandHelp, hasRequiredArgs } from "./commands/misc.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
-import { setAskProvider, isAskWaiting } from "./tools/ask-channel.js";
+import { setAskProvider, isAskWaiting, requestAsk } from "./tools/ask-channel.js";
 import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider } from "./types.js";
 
 const program = new Command();
@@ -254,7 +257,7 @@ program
       stdout.write(chalk.green(`✓ 已加载 ${hooksCount} 个 Hook\n`));
     }
 
-    const deps = { modelRouter, contextManager, sessionStore, dataDir };
+    const deps = { modelRouter, contextManager, sessionStore, dataDir, processManager };
     const agents: Record<
       string,
       DefaultAgent | ResearchAgent | CodingAgent | DataAnalysisAgent | ProductOpsAgent | FinancialAgent | GameDevAgent
@@ -272,6 +275,16 @@ program
     for (const [id, n] of Object.entries(savedIterations)) {
       agents[id]?.setMaxIterations(n);
     }
+
+    // ─── AI OS 应用管理器（Sprint 34：应用生命周期 + 子进程能力桥） ───
+    const appManager = new AppManager(dataDir, appRuntime);
+    appRuntime.init({
+      dataDir,
+      modelRouter,
+      requestAsk: (question, options) => requestAsk(question, options ?? [], false),
+      onCrashed: (id, crashCount) => appManager.onCrashed(id, crashCount),
+    });
+    await appManager.init();
 
     // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───
     jobRunner.init({
@@ -325,6 +338,8 @@ program
     }
     stat("工具", toolParts.length > 0 ? toolParts.join(" · ") : "内置工具就绪");
     stat("技能", `${skillCount}`);
+    const appCount = appManager.list().length;
+    if (appCount > 0) stat("应用", `${appCount}`);
     if (projectProfile) {
       const typeLabel = projectProfile.type === "unknown" ? "未识别" : projectProfile.type;
       const pkgPart = projectProfile.pkgManager ? ` · ${projectProfile.pkgManager}` : "";
@@ -383,6 +398,7 @@ program
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
           getMcpStatuses: () => mcpManager.getStatuses(),
           getPlugins: () => pluginManager.getPlugins(),
+          appManager,
           getConfigState: () => ({
             model: modelRouter.getDisplayModel(),
             availableModels: modelRouter.getAvailableModels().map((m) => ({ key: m.key, model: m.model, provider: m.provider })),
@@ -543,6 +559,7 @@ program
         return contextManager.getContextBreakdown(agent.getConfig().systemPrompt, currentSessionId ?? "", query);
       },
       listCommands: () => cliCommands,
+      appManager,
       write: (text) => stdout.write(text),
       writeLine: (line) => renderer.writeLine(line),
       ask: (q) => (tui.isActive() ? tui.ask(q, [], 60000, false) : Promise.resolve(null)),

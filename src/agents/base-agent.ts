@@ -8,6 +8,7 @@ import { runAgentLoop, runAgentLoopStream } from "../core/agent-loop.js";
 import type { ModelRouter } from "../core/model-router.js";
 import type { ContextManager } from "../core/context-manager.js";
 import type { SessionStore } from "../memory/session-store.js";
+import type { ProcessManager } from "../core/process-manager.js";
 import { hookManager } from "../hooks/hook-manager.js";
 import { auditLogger } from "../core/audit-logger.js";
 
@@ -17,6 +18,7 @@ export abstract class BaseAgent {
   protected contextManager: ContextManager;
   protected sessionStore: SessionStore;
   protected dataDir?: string;
+  protected processManager?: ProcessManager;
 
   constructor(
     config: AgentConfig,
@@ -25,6 +27,7 @@ export abstract class BaseAgent {
       contextManager: ContextManager;
       sessionStore: SessionStore;
       dataDir?: string;
+      processManager?: ProcessManager;
     },
   ) {
     this.config = config;
@@ -32,6 +35,7 @@ export abstract class BaseAgent {
     this.contextManager = deps.contextManager;
     this.sessionStore = deps.sessionStore;
     this.dataDir = deps.dataDir;
+    this.processManager = deps.processManager;
   }
 
   getId(): string {
@@ -96,6 +100,7 @@ export abstract class BaseAgent {
       workingDir: task.workingDir ?? workingDir,
       dataDir: this.dataDir,
       toolScope: this.config.id,
+      processManager: this.processManager,
     });
 
     // 持久化助手回复（携带本轮主请求 usage，供轨迹/遥测；来自 loop 显式返回，避免被压缩请求覆盖）
@@ -174,6 +179,7 @@ export abstract class BaseAgent {
         workingDir: task.workingDir ?? workingDir,
         dataDir: this.dataDir,
         toolScope: this.config.id,
+        processManager: this.processManager,
       },
       callbacks,
       signal,

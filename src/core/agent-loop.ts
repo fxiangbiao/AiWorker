@@ -24,6 +24,7 @@ import type { SessionStore } from "../memory/session-store.js";
 import { toolRegistry, type ToolScopeView } from "./tool-registry.js";
 import { hookManager } from "../hooks/hook-manager.js";
 import { auditLogger } from "./audit-logger.js";
+import type { ProcessManager } from "./process-manager.js";
 
 export interface AgentLoopDeps {
   modelRouter: ModelRouter;
@@ -37,9 +38,11 @@ export interface AgentLoopDeps {
   toolTimeoutMs?: number;
   /** 工具作用域（agent id）：scope 注册 + 全局回退，同名遮蔽全局（对齐 DSH scoped registry） */
   toolScope?: string;
+  /** 进程管理器（Sprint 34）：注入则登记 AgentProcess（未注入行为不变） */
+  processManager?: ProcessManager;
 }
 
-export async function runAgentLoop(
+async function runAgentLoopInner(
   config: AgentConfig,
   userMessage: string,
   deps: AgentLoopDeps,
@@ -264,7 +267,7 @@ export async function runAgentLoop(
 /**
  * 流式 Agent 循环 — 逐 token 输出 + AbortSignal 中断 + 工具调用回调
  */
-export async function runAgentLoopStream(
+async function runAgentLoopStreamInner(
   config: AgentConfig,
   userMessage: string,
   deps: AgentLoopDeps,
@@ -847,4 +850,57 @@ function coerceToolArgs(args: Record<string, unknown>): Record<string, unknown> 
     }
   }
   return coerced;
+}
+
+// ===== 进程登记 wrapper（Sprint 34） =====
+
+/** 运行期间登记 AgentProcess，结束注销；未注入 processManager 行为不变 */
+function trackAgentProcess(
+  config: AgentConfig,
+  deps: AgentLoopDeps,
+  fn: () => Promise<AgentRunResult>,
+): Promise<AgentRunResult> {
+  const pm = deps.processManager;
+  if (!pm) return fn();
+  const pid = pm.nextPid("agent");
+  pm.register({
+    kind: "agent",
+    pid,
+    agentId: config.id,
+    sessionId: deps.sessionId,
+    status: "running",
+    priority: "front",
+    startedAt: Date.now(),
+  });
+  return fn()
+    .then((result) => {
+      pm.update(pid, { status: result.truncated ? "failed" : "done" });
+      pm.unregister(pid);
+      return result;
+    })
+    .catch((err) => {
+      pm.update(pid, { status: "failed" });
+      pm.unregister(pid);
+      throw err;
+    });
+}
+
+export function runAgentLoop(
+  config: AgentConfig,
+  userMessage: string,
+  deps: AgentLoopDeps,
+): Promise<AgentRunResult> {
+  return trackAgentProcess(config, deps, () => runAgentLoopInner(config, userMessage, deps));
+}
+
+export function runAgentLoopStream(
+  config: AgentConfig,
+  userMessage: string,
+  deps: AgentLoopDeps,
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+): Promise<AgentRunResult> {
+  return trackAgentProcess(config, deps, () =>
+    runAgentLoopStreamInner(config, userMessage, deps, callbacks, signal),
+  );
 }

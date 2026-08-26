@@ -487,3 +487,92 @@ export interface SessionTelemetryRecord {
   attributes: Record<string, string | number>;
   body: unknown;
 }
+
+// ===== AI OS 应用模型（Sprint 34） =====
+
+/** 应用类型：Sprint 34 支持 tool/skill/agent/service；app（webapp）Sprint 35 */
+export type AppType = "tool" | "skill" | "agent" | "service" | "app";
+
+/** 应用权限（terminal 被禁用，manifest schema 拒绝） */
+export type AppPermission = "network" | "notify" | "llm" | `fs:${string}`;
+
+/** 能力桥能力（子进程/iframe 可请求的系统能力） */
+export type AppCapability = "storage" | "notify" | "llm" | "fs" | "http";
+
+export interface AppToolDecl {
+  name: string;
+  description: string;
+  parameters: ToolParameter;
+}
+
+export interface AppManifest {
+  id: string;
+  type: AppType;
+  name: string;
+  version: string;
+  description: string;
+  /** 相对沙箱目录的入口文件（webapp 为 index.html） */
+  entry: string;
+  /** 静态声明权限（运行时未声明能力走 ask 通道申请） */
+  permissions?: AppPermission[];
+  /** tool 类型：注册的工具声明 */
+  tools?: AppToolDecl[];
+  lifecycle?: { onStart?: string; onStop?: string; onDestroy?: string };
+  /** 生成来源会话（审计回溯） */
+  originSessionId?: string;
+  /** service 类型：OS 启动自动拉起 */
+  autostart?: boolean;
+}
+
+export type AppStatus = "installed" | "starting" | "running" | "stopping" | "stopped" | "failed" | "destroyed";
+
+export interface AppInfo {
+  id: string;
+  type: AppType;
+  name: string;
+  version: string;
+  description: string;
+  entry: string;
+  permissions: string[];
+  tools: string[];
+  status: AppStatus;
+  autostart: boolean;
+  originSessionId?: string;
+  lastError?: string;
+  crashCount?: number;
+  /** 来源插件（config/plugins/ 兼容视图） */
+  plugin?: boolean;
+}
+
+// ===== 进程模型（Sprint 34） =====
+
+export type AgentProcessStatus = "running" | "done" | "failed" | "killed";
+export type AppProcessStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
+
+export type OsProcess =
+  | {
+      kind: "agent";
+      pid: string;
+      agentId: string;
+      sessionId: string;
+      status: AgentProcessStatus;
+      priority: "front" | "bg";
+      startedAt: number;
+      endedAt?: number;
+    }
+  | {
+      kind: "app";
+      pid: string;
+      appId: string;
+      status: AppProcessStatus;
+      startedAt: number;
+      endedAt?: number;
+    }
+  | {
+      kind: "job";
+      pid: string;
+      jobId: string;
+      status: "queued" | "running" | "done" | "failed";
+      startedAt?: number;
+      endedAt?: number;
+    };

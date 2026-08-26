@@ -87,3 +87,16 @@ export function checkDeniedCommand(command: string, policy: SandboxPolicy): Sand
   }
   return { allowed: true };
 }
+
+/**
+ * 应用能力强制层（Sprint 34，先于权限层检查）
+ * storage 自动允许（沙箱 data/ 内）；其余能力须静态声明命中，未命中由调用方走 ask 通道
+ */
+export function checkAppCapability(appId: string, capability: string, declared: string[]): SandboxCheckResult {
+  if (capability === "storage") return { allowed: true };
+  const perm = capability === "http" ? "network" : capability === "fs" ? "fs:data" : capability;
+  const hit = declared.some((p) => (perm === "fs:data" ? p.startsWith("fs:") : p === perm));
+  return hit
+    ? { allowed: true }
+    : { allowed: false, reason: `应用 ${appId} 未声明权限: ${perm}` };
+}

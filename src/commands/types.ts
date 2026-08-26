@@ -8,6 +8,7 @@ import type { ModelRouter } from "../core/model-router.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { TeamCoordinator } from "../core/team-coordinator.js";
 import type { BaseAgent } from "../agents/base-agent.js";
+import type { AppManager } from "../core/app-manager.js";
 
 export type CommandAction = "continue" | "exit";
 
@@ -42,6 +43,8 @@ export interface CommandContext {
   getContextBreakdown: (query: string) => ContextBreakdown;
   /** 全部已注册命令（/help 生成表格用；index.ts 组装后注入） */
   listCommands: () => CliCommand[];
+  /** 应用管理器（/app 命令用；未注入则该命令提示不可用） */
+  appManager?: AppManager;
   // 输出抽象（测试可捕获）
   write: (text: string) => void;
   writeLine: (line: string) => void;

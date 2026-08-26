@@ -9,6 +9,7 @@ import type { BaseAgent } from "../agents/base-agent.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { StreamCallbacks, PermissionMode } from "../types.js";
 import { auditLogger } from "./audit-logger.js";
+import { processManager } from "./process-manager.js";
 
 export interface BackgroundJob {
   id: string;
@@ -37,6 +38,7 @@ export class JobRunner {
   private jobs = new Map<string, BackgroundJob>();
   private queue: string[] = [];
   private running = 0;
+  private jobPids = new Map<string, string>();
 
   init(deps: JobRunnerDeps): void {
     this.deps = deps;
@@ -51,6 +53,9 @@ export class JobRunner {
     const id = `job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     this.jobs.set(id, { id, agentId, prompt, status: "queued", summary: "" });
     this.queue.push(id);
+    const pid = processManager.nextPid("job");
+    this.jobPids.set(id, pid);
+    processManager.register({ kind: "job", pid, jobId: id, status: "queued" });
     this.drain();
     return id;
   }
@@ -96,6 +101,8 @@ export class JobRunner {
     this.running++;
     job.status = "running";
     job.startedAt = Date.now();
+    const pid = this.jobPids.get(job.id);
+    if (pid) processManager.update(pid, { status: "running", startedAt: job.startedAt } as never);
 
     try {
       const agent = deps.createAgent(job.agentId);
@@ -146,6 +153,11 @@ export class JobRunner {
     } finally {
       job.finishedAt = Date.now();
       this.running--;
+      const pid = this.jobPids.get(job.id);
+      if (pid) {
+        processManager.update(pid, { status: job.status, endedAt: job.finishedAt } as never);
+        processManager.unregister(pid);
+      }
       eventBus.broadcast({
         type: "job/done",
         jobId: job.id,
