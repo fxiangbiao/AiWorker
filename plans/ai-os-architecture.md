@@ -1,8 +1,18 @@
 # AiWorker → AI OS 架构规划
 
-> 版本：v0.1（规划草案，待审核）
+> 版本：v0.2（已确认核心决策）
 > 目标版本：0.7.0 → 1.0.0
 > 一句话愿景：把 AiWorker 从"多智能体个人助手"升级为**个人 AI 操作系统**——AI 是大脑、Harness 是手脚、应用是进程、一切皆可即时生成、用完即毁。
+
+### 已确认决策（用户拍板）
+
+| # | 决策项 | 结论 |
+|---|--------|------|
+| 1 | webapp 应用技术栈 | **纯 HTML/JS 单文件**，零构建，直接静态服务 |
+| 2 | 语音 ASR 实现 | **本地 sherpa-onnx**（离线、隐私），adapter 化可切云端 |
+| 3 | 进化引擎应用粒度 | **仅建议、用户确认**（保守可控） |
+| 4 | 生成应用渲染方式 | **iframe 沙箱**（隔离优先） |
+| 5 | 桌面端 Tauri 壳 | 留到 1.0 之后评估（暂不做） |
 
 ---
 
@@ -188,10 +198,10 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
           不满意: /app destroy <id>（干净销毁，代码进程权限全清）
 ```
 
-**模板类型（MVP 五个）**：
+**模板类型（MVP 五个，webapp 已确认为纯 HTML/JS 单文件）**：
 | 模板 | 生成物 | 运行方式 |
 |------|--------|---------|
-| `webapp` | 单文件 HTML/JS + manifest | 静态服务 `/apps/<id>/`，Web 面板 iframe 渲染（**零构建**，不引 Svelte 编译链） |
+| `webapp` | 单文件 HTML/JS + manifest | 静态服务 `/apps/<id>/`，Web 面板 **iframe 沙箱**渲染（零构建） |
 | `tool` | Node 脚本 + 工具定义 | 注册进 toolRegistry |
 | `agent` | 人设 YAML（prompt+工具+技能引用） | 注册进 agent 路由 |
 | `skill` | SKILL.md | 注册进 skillRegistry |
@@ -213,7 +223,7 @@ LLM 按模板生成: app.json + 入口代码 + README（一次生成，可迭代
 视觉输入:  Web 截图/摄像头帧 → base64 图片 → 多模态消息 → model-router
 ```
 
-- `src/media/asr-provider.ts` — adapter 化：默认本地 `sherpa-onnx`（离线、隐私、中文好），可选云端（Whisper API）
+- `src/media/asr-provider.ts` — adapter 化：默认本地 **sherpa-onnx**（离线、隐私、中文好，模型 ~100MB），可选云端（Whisper API）
 - `src/media/tts-provider.ts` — adapter 化：默认 `edge-tts`（免费、无需 key），可换本地
 - `src/media/media-server.ts` — WS 音频通道（复用 event-bus 所在 server，新增 `/api/v1/audio`）
 - model-router 增加多模态能力标记：消息支持 `content: [{type:"text"|"image_url"}]`（openai-compatible 天然支持，改动集中在消息组装层）
@@ -241,8 +251,8 @@ Promote/Rollback  通过 → 应用 + 记入 data/evolution/ledger.json + 配置
                   失败 → 记录原因丢弃；运行后表现下滑 → 自动回滚上一快照
 ```
 
-**护栏（fail-safe）**：
-- 提案默认只"建议"，用户确认才应用（或 auto 模式 + 类型白名单自动应用）
+**护栏（fail-safe，已确认：提案默认仅建议、用户确认）**：
+- 提案默认只"建议"，用户点采纳才应用（auto 模式也不自动应用——保持保守可控）
 - 每类变更限频（如每天 ≤3 条）、配置快照保留最近 N 份
 - 所有进化动作走审计 + 广播 `evolution/*` 事件
 - 回滚是硬能力：`/evo rollback <id>` 一键还原
