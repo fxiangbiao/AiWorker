@@ -49,6 +49,11 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `tool-registry.ts` — 工具注册 + 可用性；**作用域视图** `getScope(scopeId)`（scope 注册+全局回退，同名遮蔽；agent-loop 传 `toolScope: agentId`）；白名单（`config.tools` 非空时仅保留；`mcp_` 前缀与插件工具豁免）
 - `plugin-manager.ts` — `config/plugins/<name>/` 默认导出 `setup(ctx)`；fail-soft + 幂等；同名冲突警告（`PluginInfo.warnings`）；插件工具默认全局可见，`{scope}` 限定
 - `zip.ts` / `package-installer.ts` — 零依赖 zip 读写；**.aw 资产包**（manifest 校验/路径穿越防护/回滚）三类型路由 plugin→config/plugins/、skill→skills/、mcp→config/mcp.json；**`installAny` 裸格式**（.md 技能 / .json MCP（文件名作服务器名）/ 插件目录）；`exportPackage`（.aw）/`exportRaw`（.md/.json）/`copyPluginDir`；`listInstalled`/`listExportable`；导出 `parseSkillMeta`
+- `app-manifest.ts` — 应用 manifest schema 校验（**terminal 权限 schema 级拒绝**、fs 权限限 `data/apps/<id>/` 内、entry 防穿越、工具声明校验、BOM 兼容）
+- `app-manager.ts` — 应用生命周期状态机（installed→running→stopped→destroyed）+ `data/apps/state.json` 持久化 + **autostart 启动恢复** + destroy 幂等 + **插件兼容视图**（list() 合并 pluginManager，插件展示为 tool 类应用）
+- `app-runtime.ts` — 子进程能力桥：tool/service 应用 `child_process` 隔离（`--max-old-space-size=256` + 行分隔 JSON-RPC）；能力 API（storage/notify/llm/fs/http，**无 terminal**）；60s 工具超时、输出截断、15s 心跳、**崩溃指数退避重启**（1s/2s/4s ≤3 次）；`init(deps)` 由 index.ts 注入（modelRouter/requestAsk/onCrashed）
+- `app-sandbox.ts` / `process-manager.ts` — 沙箱路径防护（safeResolve/isInsideDir）；Agent/App/Job 统一进程注册表 + `process/*` 事件广播（agent-loop/job-runner/app-manager 登记）
+- `security/sandbox.ts` — 含 `checkAppCapability(appId, capability, declared)`：应用能力强制层（storage 自动允许，其余静态声明命中，未命中走 ask 通道 fail-closed）
 - `job-runner.ts` — 后台任务：submit 即返 jobId；queued→running→done/failed；并发 2 排队；不注册 ask/confirm（fail-closed 拒高危）、不写 TUI；完成写会话+审计+`eventBus.broadcast(job/done)`；`init(deps)` 由 index.ts 调用
 - `scheduler.ts` — `config/schedule.json` cron 任务；**cron-parser v5 为 6 字段（秒 分 时 日 月 周），5 字段自动补秒前缀**；到点 submit+重排；超长延时分段 setTimeout
 - `nl-schedule.ts` — 自然语言→cron（每N分钟/小时、每天/每晚、每周X、每月X号、时间词+12h）；无时间无频率返回 null；描述按原始索引区间剥离
@@ -99,7 +104,8 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `/plan` SSE：plan → step_start → step_end → done；`/debate`：debate_start → done；经 `deps.coordinator`
 - `/config` 端点：`getConfigState`/`setConfigField` 由 index.ts 注入（model/temperature/maxTokens/iterations/addModel/thinking/skillEvo/reset，持久化 runtime-config.json + models.json）
 - `web/` — Svelte 5 + Vite 6；API 常量 `chat.svelte.ts` 的 `API`；vite proxy `/api → :3000`（`ws: true`）
-- 组件：`SystemPanel.svelte`（context/logs/skills/mcp/plugins/schedule/config/trace 八 Tab）、`TracePanel`、`PlanStepsBlock`、`ConfirmCard`、`AskCard`、`FileDiffPanel`
+- 组件：`SystemPanel.svelte`（context/logs/skills/mcp/plugins/apps/processes/schedule/config/trace 十 Tab）、`TracePanel`、`PlanStepsBlock`、`ConfirmCard`、`AskCard`、`FileDiffPanel`、`AppsPanel`（应用生命周期 + 销毁确认）、`ProcessesPanel`（Agent/App/Job 进程视图）、`JobsPanel`（后台任务）
+- 前端 store：`apps.svelte.ts`（应用/进程列表 + WS `app/*` `process/*` 订阅）、`theme.svelte.ts`（暗色模式 localStorage + 跟随系统）
 - `ChatPanel.handleSSE()` 直接 mutate `store.messages`；DOMPurify 消毒 marked 输出防 XSS
 
 ## 测试
@@ -107,7 +113,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 - `test/helpers.ts`：`makeTestDir(name)` 独立 `data-test/<name>/`（防并行冲突）、`setupEnv`、`clearTools`
 - **测试隔离**：读真实 `config/*.json` 一律注入 fixture（`test/fixtures/models.json`）；`terminal-session.test.ts` 用 `describe.skipIf(非 win32)`
 - 端点测试 mock coordinator/agent + `listen(0)` 随机端口 + fetch；**WS 测试用 `ws` 客户端**（值导入 `WebSocket as WsClient`，Node 22 全局 WebSocket 无 `.on`）
-- 关键文件：`agent-loop.test.ts`（超时/防循环/白名单/toolScope/迭代预算）、`tool-registry.test.ts`（作用域）、`server.test.ts`（端点+WS）、`plugin-manager.test.ts`、`sandbox.test.ts`、`approval-service.test.ts`、`package-installer.test.ts`（zip/.aw/裸格式/mcp）、`scheduler.test.ts`、`nl-schedule.test.ts`、`job-runner.test.ts`、`env-loader.test.ts`、`onboarding.test.ts`、`screen.test.ts`、`cli-commands.test.ts`
+- 关键文件：`agent-loop.test.ts`（超时/防循环/白名单/toolScope/迭代预算）、`tool-registry.test.ts`（作用域）、`server.test.ts`（端点+WS）、`plugin-manager.test.ts`、`sandbox.test.ts`、`approval-service.test.ts`、`package-installer.test.ts`（zip/.aw/裸格式/mcp）、`scheduler.test.ts`、`nl-schedule.test.ts`、`job-runner.test.ts`、`env-loader.test.ts`、`onboarding.test.ts`、`screen.test.ts`、`cli-commands.test.ts`、`app-manifest.test.ts`、`app-manager.test.ts`、`app-runtime.test.ts`（子进程能力桥/崩溃重启）、`process-manager.test.ts`、`apps-api.test.ts`（/apps /processes 端点）
 
 ## CLI 交互命令
 
@@ -115,6 +121,7 @@ npm run web:build      # Web UI 构建 → web/dist/
 /mode <ask|plan|auto>  切换权限模式
 /plan <任务>             多专家 DAG 协作
 /debate <话题>           双专家辩论
+/app <list|info|install|start|stop|destroy>  AI OS 应用生命周期管理
 /bg <任务>               提交后台任务（不阻塞交互）
 /jobs [cancel <id>]     查看/取消后台任务
 /schedule               定时任务（add 支持自然语言/remove/list，cron 5 字段）

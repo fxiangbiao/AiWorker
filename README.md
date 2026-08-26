@@ -37,7 +37,8 @@
 - **记忆与上下文**：三层记忆（工作 / 情景 FTS5 / 语义 MEMORY.md）+ 会话事件溯源（replay + `/trace`）+ 超长结果 spill 落盘 + 自动标题 + 上下文压缩
 - **后台与调度**：`/bg` 后台任务（不阻塞交互，完成 WS 推送）；`/schedule` 定时任务（**支持自然语言添加**，如"每天早上8点生成早报"）
 - **资产分发**：技能/MCP/插件统一 `.aw` 包（zip+manifest，`scripts/pack-aw.mjs` 打包）及**裸格式**（SKILL.md / MCP .json / 插件目录）导入导出；`/install`、`/pkg export`、Web 三 Tab 支持
-- **界面**：TUI 自研帧缓冲渲染引擎；Web（Svelte 5 + SSE + WebSocket 实时总线）；HTTP Server 托管；CI 双平台
+- **AI OS 应用模型**（0.7.0）：`data/apps/<id>/app.json` manifest（tool/skill/agent/service）+ 生命周期状态机 + 子进程能力桥（JSON-RPC 隔离，无 terminal 权限）+ 崩溃自动重启 + `/app` 命令 + Web 应用/进程视图
+- **界面**：TUI 自研帧缓冲渲染引擎；Web（Svelte 5 + SSE + WebSocket 实时总线 + lucide 图标 + 暗色模式）；HTTP Server 托管
 
 ## 界面预览
 
@@ -116,6 +117,7 @@ npm run dev -- [选项]
 | `/mode <ask\|plan\|auto>` | 切换权限模式 |
 | `/plan <任务>` | 多专家 DAG 协作 |
 | `/debate <话题>` | 双专家辩论 |
+| `/app <list\|info\|install\|start\|stop\|destroy>` | AI OS 应用生命周期管理 |
 | `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
 | `/jobs [cancel <id>]` | 查看/取消后台任务 |
 | `/schedule` | 定时任务管理：`add "<cron>\|自然语言>" "<任务>" [agentId]` / `remove <id>` |
@@ -174,6 +176,9 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/skills` | GET | 技能列表（含描述与分组） |
 | `/api/v1/diffs` | GET | 会话文件变更（快照 diff） |
 | `/api/v1/plugins` | GET | 插件列表 |
+| `/api/v1/apps` | GET/POST | 应用列表 / 安装（body: path） |
+| `/api/v1/apps/:id/start\|stop\|destroy` | POST | 应用生命周期操作 |
+| `/api/v1/processes` | GET | 进程列表（Agent/App/Job）+ 统计 |
 | `/api/v1/packages/export\|peek\|import\|list` | GET/POST | .aw 资产包导出/预览/导入/列表（支持裸格式） |
 | `/api/v1/jobs` | GET/POST/DELETE | 后台任务列表/提交/取消 |
 | `/api/v1/schedule` | GET/POST/DELETE | 定时任务（支持自然语言） |
@@ -266,7 +271,7 @@ npm run web:build   # Web UI 构建
 - **存储**: better-sqlite3 + WAL + FTS5 + Intl.Segmenter 中文分词
 - **模型**: DeepSeek API（默认）+ OpenAI 兼容格式（多 provider）
 - **CLI/TUI**: Commander.js + 自研帧缓冲渲染引擎（零依赖）
-- **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
+- **Web UI**: Svelte 5 + Vite 6 + lucide-svelte + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
 - **设计依据**: 《docs/个人AI-Agent助手设计方案.md》《docs/AIOS-架构升级方案.md》
 
