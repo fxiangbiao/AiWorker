@@ -108,9 +108,14 @@
     return `${h}:${m}`;
   }
 
+  /** 正常交互会话（agentId ≠ appgen） */
+  const chatSessions = $derived(store.chats.filter((c) => c.agentId !== "appgen"));
+  /** 应用生成会话（agentId === "appgen"，独立分组展示在下栏） */
+  const appSessions = $derived(store.chats.filter((c) => c.agentId === "appgen"));
+
   const groups = $derived(() => {
     const map = new Map<string, typeof store.chats>();
-    for (const c of [...store.chats].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))) {
+    for (const c of [...chatSessions].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))) {
       const k = dayKey(c.createdAt || 0);
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(c);
@@ -139,43 +144,79 @@
     <div class="s-top">
       <button class="new-btn" onclick={onNewChat}>+ 新对话</button>
     </div>
-    <div class="s-list">
-      {#each groups() as [key, chats]}
-        <div class="s-group">{dayLabel(chats[0].createdAt || 0)}</div>
-        {#each chats as c}
-          <div
-            class="s-item"
-            class:active={c.id === store.activeChatId}
-            onclick={() => handleClick(c.id)}
-            onkeydown={(e) => e.key === "Enter" && handleClick(c.id)}
-            onmouseenter={() => (menuFor = c.id)}
-            onmouseleave={() => (menuFor = null)}
-            role="button"
-            tabindex="0"
-          >
-            <div class="s-title">{c.title}</div>
-            <div class="s-meta">
-              <span class="s-time">{fmtTime(c.createdAt)}</span>
-              <span>{c.turns || 0} 轮 &middot; {c.agentId || "default"}</span>
-              {#if statsMap[c.id]}
-                <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
-                  {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
-                  {#if (statsMap[c.id].toolCallsFailed ?? 0) > 0}· 失败 {statsMap[c.id].toolCallsFailed}{/if}
-                </span>
+    <div class="s-chats">
+      <!-- 上栏：正常交互会话（独立滚动） -->
+      <div class="s-list">
+        {#each groups() as [key, chats]}
+          <div class="s-group">{dayLabel(chats[0].createdAt || 0)}</div>
+          {#each chats as c}
+            <div
+              class="s-item"
+              class:active={c.id === store.activeChatId}
+              onclick={() => handleClick(c.id)}
+              onkeydown={(e) => e.key === "Enter" && handleClick(c.id)}
+              onmouseenter={() => (menuFor = c.id)}
+              onmouseleave={() => (menuFor = null)}
+              role="button"
+              tabindex="0"
+            >
+              <div class="s-title">{c.title}</div>
+              <div class="s-meta">
+                <span class="s-time">{fmtTime(c.createdAt)}</span>
+                <span>{c.turns || 0} 轮 &middot; {c.agentId || "default"}</span>
+                {#if statsMap[c.id]}
+                  <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
+                    {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
+                    {#if (statsMap[c.id].toolCallsFailed ?? 0) > 0}· 失败 {statsMap[c.id].toolCallsFailed}{/if}
+                  </span>
+                {/if}
+              </div>
+              {#if menuFor === c.id}
+                <div class="s-actions" onclick={(e) => e.stopPropagation()}>
+                  <button class="sa-btn" title="重命名" onclick={() => handleRename(c.id)}>&#9998;</button>
+                  <button class="sa-btn" title="导出 Markdown" onclick={() => handleExport(c.id)}>&#11015;</button>
+                  <button class="sa-btn danger" title="删除" onclick={() => handleDelete(c.id)}>&#10005;</button>
+                </div>
               {/if}
             </div>
-            {#if menuFor === c.id}
-              <div class="s-actions" onclick={(e) => e.stopPropagation()}>
-                <button class="sa-btn" title="重命名" onclick={() => handleRename(c.id)}>&#9998;</button>
-                <button class="sa-btn" title="导出 Markdown" onclick={() => handleExport(c.id)}>&#11015;</button>
-                <button class="sa-btn danger" title="删除" onclick={() => handleDelete(c.id)}>&#10005;</button>
-              </div>
-            {/if}
-          </div>
+          {/each}
         {/each}
-      {/each}
-      {#if store.chats.length === 0}
-        <div class="s-empty">暂无会话</div>
+        {#if chatSessions.length === 0}
+          <div class="s-empty">暂无会话</div>
+        {/if}
+      </div>
+
+      <!-- 下栏：应用生成会话（独立滚动，与上栏 1:1） -->
+      {#if appSessions.length > 0}
+        <div class="s-appdivider"></div>
+        <div class="s-list s-applist">
+          <div class="s-group s-appgroup">应用生成 <span class="s-appcount">{appSessions.length}</span></div>
+          {#each [...appSessions].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)) as c}
+            <div
+              class="s-item s-appitem"
+              class:active={c.id === store.activeChatId}
+              onclick={() => handleClick(c.id)}
+              onkeydown={(e) => e.key === "Enter" && handleClick(c.id)}
+              onmouseenter={() => (menuFor = c.id)}
+              onmouseleave={() => (menuFor = null)}
+              role="button"
+              tabindex="0"
+            >
+              <div class="s-title"><span class="s-appbadge">&#9889;</span>{c.title}</div>
+              <div class="s-meta">
+                <span class="s-time">{fmtTime(c.createdAt)}</span>
+                <span>{c.turns || 0} 次工具调用</span>
+              </div>
+              {#if menuFor === c.id}
+                <div class="s-actions" onclick={(e) => e.stopPropagation()}>
+                  <button class="sa-btn" title="重命名" onclick={() => handleRename(c.id)}>&#9998;</button>
+                  <button class="sa-btn" title="导出 Markdown" onclick={() => handleExport(c.id)}>&#11015;</button>
+                  <button class="sa-btn danger" title="删除" onclick={() => handleDelete(c.id)}>&#10005;</button>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
   {:else if nav === "apps"}
@@ -272,7 +313,11 @@
     cursor: pointer;
   }
   .new-btn:hover { background: var(--primary-hover); }
-  .s-list { flex: 1; overflow-y: auto; padding: 0 8px; }
+  .s-list { overflow-y: auto; padding: 0; }
+  /* 会话列表上下分栏（1:1）：上栏正常会话 / 下栏应用生成，各自独立滚动 */
+  .s-chats { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 8px; }
+  .s-list.s-applist { flex: 1; min-height: 0; }
+  .s-list:not(.s-applist) { flex: 1; min-height: 0; }
   .s-group {
     font-size: 11px;
     font-weight: 600;
@@ -282,6 +327,15 @@
     letter-spacing: .5px;
   }
   .s-empty { font-size: 12px; color: var(--dim); padding: 24px; text-align: center; }
+  .s-appdivider { border-top: 1px dashed var(--border); margin: 8px 4px 2px; }
+  .s-appgroup { display: flex; align-items: center; gap: 6px; }
+  .s-appcount {
+    font-size: 10px; font-weight: 600; color: var(--primary);
+    background: var(--primary-light); border-radius: 8px; padding: 1px 6px;
+  }
+  .s-appitem .s-title { color: var(--dim); }
+  .s-appitem.active .s-title { color: var(--primary); }
+  .s-appbadge { margin-right: 5px; font-size: 11px; }
   .s-item {
     padding: 10px 12px;
     border-radius: var(--radius-sm);

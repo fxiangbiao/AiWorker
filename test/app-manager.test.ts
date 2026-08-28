@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { AppManager } from "../src/core/app-manager.js";
 import { AppRuntime } from "../src/core/app-runtime.js";
 import { toolRegistry } from "../src/core/tool-registry.js";
+import { processManager } from "../src/core/process-manager.js";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 
 const testDir = makeTestDir("app-manager");
@@ -143,5 +144,43 @@ describe("app-manager 生命周期", () => {
     const app = manager2.get("auto-tool");
     expect(app?.status).toBe("running");
     await manager2.destroy("auto-tool");
+  });
+
+  it("恢复 running 的 webapp 后进程已注册（进程列表不漏报）", async () => {
+    // webapp（type: "app"）上次 running，服务器重启恢复时走 start() 幂等短路路径
+    const dir = resolve(fixturesDir, "web-app");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      resolve(dir, "app.json"),
+      JSON.stringify({ id: "web-app", type: "app", name: "Web", version: "1.0.0", description: "d", entry: "index.html", permissions: [] }, null, 2),
+      "utf-8",
+    );
+    writeFileSync(resolve(dir, "index.html"), "<html>app</html>", "utf-8");
+    manager.installFromDir(dir);
+    await manager.start("web-app");
+
+    const manager2 = new AppManager(testDir, runtime);
+    await manager2.init();
+    expect(manager2.get("web-app")?.status).toBe("running");
+    const procs = processManager.list().filter((p) => p.kind === "app" && p.appId === "web-app");
+    expect(procs.length).toBeGreaterThan(0);
+    expect(procs[0]!.status).toBe("running");
+    await manager2.destroy("web-app");
+  });
+
+  it("handleBridge：storage 自动允许 / 未授权 http 拒绝（Sprint 35）", async () => {
+    const src = writeFixture("bridge-tool", { ...helloManifest, id: "bridge-tool", permissions: [] }, toolEntry);
+    manager.installFromDir(src);
+    await manager.start("bridge-tool");
+
+    const ok = await manager.handleBridge("bridge-tool", "storage.set", { key: "k", value: 1 });
+    expect(ok).toEqual({});
+
+    await expect(manager.handleBridge("bridge-tool", "http.fetch", { url: "https://example.com" })).rejects.toMatchObject({
+      code: "ERR_PERMISSION",
+    });
+
+    await expect(manager.handleBridge("nope", "storage.get", {})).rejects.toMatchObject({ code: "ERR_NOT_FOUND" });
+    await manager.destroy("bridge-tool");
   });
 });

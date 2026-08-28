@@ -7,6 +7,9 @@
   import SystemPanel from "./components/SystemPanel.svelte";
   import FileDiffPanel from "./components/FileDiffPanel.svelte";
   import StatusBar from "./components/StatusBar.svelte";
+  import AppHostLayer from "./components/AppHostLayer.svelte";
+  import AppPreviewPanel from "./components/AppPreviewPanel.svelte";
+  import { rightTab, rightPanelVisible } from "./lib/stores/apps.svelte";
   import { skills } from "./lib/stores/status";
   import {
     store,
@@ -18,16 +21,15 @@
     loadRemoteMessages,
     API,
   } from "./lib/stores/chat.svelte";
-  import { serverOnline, currentModel, totalTokens, workingDir } from "./lib/stores/status";
+  import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, workingDir } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
-  import { PanelRightClose, FileText } from "lucide-svelte";
+  import { PanelRightClose, FileText, Box } from "lucide-svelte";
   import { get } from "svelte/store";
   import { theme, applyTheme } from "./lib/stores/theme.svelte";
   import { fmtN } from "./lib/utils/format";
 
   let agents: { id: string; name: string }[] = $state([]);
   let leftHidden = $state(false);
-  let rightHidden = $state(false);
   let rightWidth = $state<number | null>(null); // null = 默认 40%
   let systemOpen = $state(false);
 
@@ -53,6 +55,8 @@
       .then((r) => r.json())
       .then((d) => {
         totalTokens.set(d.tokenUsage?.total || 0);
+        promptTokens.set(d.tokenUsage?.prompt || 0);
+        completionTokens.set(d.tokenUsage?.completion || 0);
         currentModel.set(d.model || "--");
         workingDir.set(d.workingDir || "");
         skills.set(d.skills || []);
@@ -106,10 +110,11 @@
     }
     pollStatus();
     initWs();
-    // 服务器会话合并（排序最新在前）后，若出现了新的最新会话（如 TUI 中产生的新对话），切到最新
+    // 服务器会话合并（排序最新在前）后，若出现了新的最新会话（如 TUI 中产生的新对话），切到最新；
+    // 应用生成会话（agentId=appgen）不自动切入，避免打断当前对话
     syncServerSessions().then((hadNew) => {
       if (hadNew) {
-        const newest = store.chats[0];
+        const newest = store.chats.find((c) => c.agentId !== "appgen") ?? store.chats[0];
         if (newest && newest.id !== store.activeChatId) {
           void handleSwitch(newest.id);
         }
@@ -124,10 +129,10 @@
   <TopBar
     {agents}
     {leftHidden}
-    {rightHidden}
+    rightHidden={!$rightPanelVisible}
     onOpenSystem={() => (systemOpen = true)}
     onExpandLeft={() => (leftHidden = false)}
-    onExpandRight={() => (rightHidden = false)}
+    onExpandRight={() => rightPanelVisible.set(true)}
   />
 </div>
 <div id="main">
@@ -135,16 +140,23 @@
     <Sidebar onNewChat={handleNewChat} onSwitch={handleSwitch} onHide={() => (leftHidden = true)} onOpenSystem={() => (systemOpen = true)} />
   {/if}
   <ChatPanel />
-  {#if !rightHidden}
-    <div class="resizer" onpointerdown={startDrag}></div>
+  {#if $rightPanelVisible}
+    <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={startDrag}></div>
     <div class="right-panel" id="right-panel" style:width={rightWidth ? `${rightWidth}px` : "40%"}>
       <div class="rp-tabs">
-        <button class="rp-tab active" onclick={() => {}}>
+        <button class="rp-tab" class:active={$rightTab === "files"} onclick={() => rightTab.set("files")}>
           <span class="rp-ico"><FileText size={13} /></span>文件变更
         </button>
-        <button class="rp-hide" title="隐藏右侧栏" onclick={() => (rightHidden = true)}><PanelRightClose size={14} /></button>
+        <button class="rp-tab" class:active={$rightTab === "apps"} onclick={() => rightTab.set("apps")}>
+          <span class="rp-ico"><Box size={13} /></span>应用预览
+        </button>
+        <button class="rp-hide" title="隐藏右侧栏" onclick={() => rightPanelVisible.set(false)}><PanelRightClose size={14} /></button>
       </div>
-      <FileDiffPanel />
+      {#if $rightTab === "files"}
+        <FileDiffPanel />
+      {:else}
+        <AppPreviewPanel />
+      {/if}
     </div>
   {/if}
 </div>
@@ -160,6 +172,7 @@
     </div>
   </div>
 {/if}
+<AppHostLayer />
 <StatusBar />
 
 <style>

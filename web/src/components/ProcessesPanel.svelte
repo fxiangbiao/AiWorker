@@ -1,9 +1,10 @@
 <script lang="ts">
   /**
    * 进程视图面板（Sprint 34）
-   * Agent/App/Job 三类进程实时列表（WS 事件驱动）
+   * Agent/App/Job 三类进程实时列表（WS 事件驱动）；打开时拉取最新
    */
-  import { processes, processStats, loadProcesses } from "$lib/stores/apps.svelte";
+  import { onMount } from "svelte";
+  import { processes, processStats, loadProcesses, apps } from "$lib/stores/apps.svelte";
   import { Brain, Box, ListChecks, RefreshCw } from "lucide-svelte";
 
   function fmtTime(ts: number): string {
@@ -35,6 +36,17 @@
     const parts = pid.split("-");
     return parts.slice(0, 2).join("-");
   }
+
+  /** 应用进程：优先展示应用名（appId 为 gen-xxx 不易识别），附带短 id */
+  function appLabel(appId: string): string {
+    const app = $apps.find((a) => a.id === appId);
+    if (app?.name) return `${app.name}（${appId.slice(0, 12)}）`;
+    return appId;
+  }
+
+  onMount(() => {
+    void loadProcesses();
+  });
 </script>
 
 <div class="pp">
@@ -61,7 +73,7 @@
             <div class="pp-name">
               {KIND_LABEL[p.kind] ?? p.kind}
               {#if p.kind === "agent" && p.agentId}<span class="pp-sub">{p.agentId}</span>{/if}
-              {#if p.kind === "app" && p.appId}<span class="pp-sub">{p.appId}</span>{/if}
+              {#if p.kind === "app" && p.appId}<span class="pp-sub app-name">{appLabel(p.appId)}</span>{/if}
               {#if p.kind === "job" && p.jobId}<span class="pp-sub">{String(p.jobId).slice(0, 18)}</span>{/if}
             </div>
             <div class="pp-meta">
@@ -99,6 +111,7 @@
   .pp-body { flex: 1; min-width: 0; }
   .pp-name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
   .pp-sub { font-size: 11px; color: var(--dim); font-weight: 400; }
+  .pp-sub.app-name { color: var(--text); font-weight: 500; }
   .pp-meta { font-size: 11px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
   .pp-pid { color: var(--primary); font-weight: 500; }
 </style>

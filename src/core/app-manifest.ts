@@ -65,9 +65,6 @@ export function validateAppManifest(raw: unknown): AppManifest {
   if (typeof type !== "string" || !APP_TYPES.includes(type as AppType)) {
     throw new AppManifestError(`type 非法: ${String(type)}（${APP_TYPES.join("/")}）`);
   }
-  if (type === "app") {
-    throw new AppManifestError("app（webapp）类型 Sprint 35 启用，当前仅支持 tool/skill/agent/service");
-  }
 
   const name = m.name;
   if (typeof name !== "string" || name.trim().length === 0) throw new AppManifestError("缺少 name");
@@ -119,6 +116,17 @@ export function validateAppManifest(raw: unknown): AppManifest {
   const autostart = m.autostart === undefined ? false : m.autostart;
   if (typeof autostart !== "boolean") throw new AppManifestError("autostart 必须是布尔值");
 
+  // ui（webapp 窗口形态：panel/float/widget）
+  let ui: { surface?: string } | undefined;
+  if (m.ui !== undefined) {
+    if (typeof m.ui !== "object" || m.ui === null || Array.isArray(m.ui)) throw new AppManifestError("ui 必须是对象");
+    const s = (m.ui as Record<string, unknown>).surface;
+    if (s !== undefined && s !== "panel" && s !== "float" && s !== "widget") {
+      throw new AppManifestError(`ui.surface 非法: ${String(s)}（panel/float/widget）`);
+    }
+    ui = s === undefined ? {} : { surface: s as string };
+  }
+
   return {
     id: id as string,
     type: type as AppType,
@@ -131,5 +139,6 @@ export function validateAppManifest(raw: unknown): AppManifest {
     lifecycle: lifecycle as AppManifest["lifecycle"],
     originSessionId: originSessionId as string | undefined,
     autostart,
+    ui: ui as AppManifest["ui"],
   };
 }

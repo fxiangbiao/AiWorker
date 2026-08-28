@@ -1,13 +1,15 @@
 /**
- * 应用命令组 — /app（AI OS 应用生命周期，Sprint 34）
- * list / info / install / start / stop / destroy
+ * 应用命令组 — /app（AI OS 应用生命周期 + 即时生成，Sprint 34/35）
+ * list / info / install / start / stop / destroy / new / update / focus / close
  */
 
 import chalk from "chalk";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { eventBus } from "../server/event-bus.js";
 import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
+import type { AppSpec } from "../types.js";
 
 const TYPE_LABEL: Record<string, string> = {
   tool: "工具",
@@ -42,11 +44,12 @@ function permLabel(perms: string[]): string {
 export const appsCommands: CliCommand[] = [
   {
     name: "app",
-    usage: "app <list|info|install|start|stop|destroy> [参数]",
-    description: "AI OS 应用生命周期管理",
-    detail: "list 列表 / info <id> 详情 / install <路径> 安装目录 / start|stop <id> / destroy <id> 销毁（含数据，需确认）",
+    usage: "app <list|info|install|start|stop|destroy|new|update|focus|close> [参数]",
+    description: "AI OS 应用生命周期管理 + 即时生成",
+    detail: "list 列表 / info <id> 详情 / install <路径> 安装目录 / start|stop <id> / destroy <id> 销毁 / new <描述> 即时生成（自动识别类型，文档型产出到 data/docs/）/ update <id> <变更> 迭代生成（数据保留）/ focus|close <id> 窗口指令",
     handler: async (ctx, arg) => {
       const mgr = ctx.appManager;
+      const factory = ctx.appFactory;
       if (!mgr) {
         ctx.writeLine(chalk.yellow("⚠ 应用管理器未初始化"));
         ctx.printStatus();
@@ -57,6 +60,69 @@ export const appsCommands: CliCommand[] = [
       const rest = parts.slice(1).join(" ");
 
       switch (sub) {
+        case "new": {
+          if (!factory) {
+            ctx.writeLine(chalk.yellow("⚠ 应用工厂未初始化"));
+            break;
+          }
+          if (!rest) {
+            ctx.writeLine(chalk.gray("用法: /app new <描述>  例: /app new 番茄钟 | /app new 一份项目周报（文档型）"));
+            break;
+          }
+          ctx.writeLine(chalk.cyan(`\n✨ 生成中: ${rest}（自动识别类型，生成后 Web 端自动打开）`));
+          const spec: AppSpec = { description: rest, type: "app", sessionId: ctx.currentSessionId() };
+          const result = await factory.generate(spec);
+          if (result.ok && result.docPath) {
+            ctx.writeLine(chalk.green(`✓ 文档已生成: ${result.docPath}`));
+            ctx.writeLine(chalk.dim("  Web 端文档工作台可查看"));
+          } else if (result.ok && result.app) {
+            ctx.writeLine(chalk.green(`✓ 应用已生成并启动: ${result.app.id} v${result.app.version}`));
+            ctx.writeLine(chalk.dim("  Web 端已弹出窗口；/app destroy 可销毁"));
+          } else {
+            ctx.writeLine(chalk.red(`✗ 生成失败: ${result.error}`));
+          }
+          break;
+        }
+        case "update": {
+          if (!factory) {
+            ctx.writeLine(chalk.yellow("⚠ 应用工厂未初始化"));
+            break;
+          }
+          const id = parts[1] ?? "";
+          const desc = parts.slice(2).join(" ").trim();
+          if (!id || !desc) {
+            ctx.writeLine(chalk.gray("用法: /app update <id> <变更描述>  例: /app update pomodoro 加暂停按钮"));
+            break;
+          }
+          ctx.writeLine(chalk.cyan(`\n✨ 迭代更新: ${id}（只重生成逻辑文件，数据保留）`));
+          const result = await factory.update(id, desc, ctx.currentSessionId());
+          if (result.ok) {
+            ctx.writeLine(chalk.green(`✓ 已更新: ${id} v${result.app?.version}`));
+          } else {
+            ctx.writeLine(chalk.red(`✗ 更新失败: ${result.error}`));
+          }
+          break;
+        }
+        case "focus": {
+          const id = rest.trim();
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /app focus <id>"));
+            break;
+          }
+          eventBus.broadcast({ type: "app/window", action: "focus", appId: id });
+          ctx.writeLine(chalk.green(`✓ 已发送窗口置前指令: ${id}`));
+          break;
+        }
+        case "close": {
+          const id = rest.trim();
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /app close <id>"));
+            break;
+          }
+          eventBus.broadcast({ type: "app/window", action: "close", appId: id });
+          ctx.writeLine(chalk.green(`✓ 已发送关闭窗口指令: ${id}`));
+          break;
+        }
         case "list": {
           const apps = mgr.list();
           if (apps.length === 0) {

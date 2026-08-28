@@ -16,6 +16,7 @@ import { toolRegistry } from "./tool-registry.js";
 import { skillRegistry } from "./skill-registry.js";
 import { pluginManager } from "./plugin-manager.js";
 import type { AppRuntime } from "./app-runtime.js";
+import { AppError } from "./app-runtime.js";
 import type { AppInfo, AppManifest, AppStatus } from "../types.js";
 
 export interface AppActionResult {
@@ -65,14 +66,18 @@ export class AppManager {
         /* 损坏 manifest 跳过 */
       }
     }
-    // 恢复：autostart 的 tool/service 无论上次状态一律拉起（开机自启语义），其余回到 stopped
+    // 恢复：autostart 的 tool/service 一律拉起；webapp（app 类型）上次 running 也恢复
+    //（窗口应用 start 无副作用，重启后保持可用）
     for (const [id, state] of [...this.states]) {
       const manifest = this.manifests.get(id);
       if (!manifest) {
         this.states.delete(id);
         continue;
       }
-      if (state.autostart && (manifest.type === "tool" || manifest.type === "service")) {
+      const shouldStart =
+        (state.autostart && (manifest.type === "tool" || manifest.type === "service")) ||
+        (state.status === "running" && manifest.type === "app");
+      if (shouldStart) {
         await this.start(id).catch(() => {});
       } else {
         state.status = "stopped";
@@ -160,7 +165,11 @@ export class AppManager {
     const manifest = this.manifests.get(id);
     if (!manifest) return { ok: false, error: `应用不存在: ${id}` };
     const state = this.states.get(id) ?? { status: "installed" as AppStatus, autostart: false, crashCount: 0 };
-    if (state.status === "running") return { ok: true, app: this.toInfo(id) }; // 幂等
+    if (state.status === "running") {
+      // 幂等：确保进程已注册（服务器重启恢复的 running 应用走不到下方注册分支，否则进程列表漏报）
+      this.registerAppProcess(id);
+      return { ok: true, app: this.toInfo(id) };
+    }
 
     const dir = resolve(this.appsDir, id);
     const app = this.toInfo(id);
@@ -171,22 +180,18 @@ export class AppManager {
         await this.runtime.start({ ...app, dir });
         this.registerTools(manifest);
         state.status = "running";
-        processManager.register({
-          kind: "app",
-          pid: `app:${id}`,
-          appId: id,
-          status: "running",
-          startedAt: Date.now(),
-        });
+        this.registerAppProcess(id);
       } else if (manifest.type === "skill") {
         const skillPath = resolve(dir, "SKILL.md");
         if (existsSync(skillPath)) {
           skillRegistry.reloadSkill(skillPath);
         }
         state.status = "running";
+        this.registerAppProcess(id);
       } else {
-        // agent：Sprint 34 仅状态机（运行时 agent 注册 Sprint 35 与 AppFactory 一起）
+        // webapp/agent：无子进程（iframe 渲染 / 状态机），仍注册进程视图
         state.status = "running";
+        this.registerAppProcess(id);
       }
       state.lastError = undefined;
     } catch (err) {
@@ -228,8 +233,8 @@ export class AppManager {
     }
     if (manifest.type === "tool" || manifest.type === "service") {
       await this.runtime.stop(id);
-      processManager.unregister(`app:${id}`);
     }
+    processManager.unregister(`app:${id}`);
     this.unregisterTools(manifest);
     state.status = "stopped";
     this.saveState();
@@ -296,6 +301,38 @@ export class AppManager {
     this.emit("app/failed", appId);
   }
 
+  /** 注册 AppProcess（统一入口：tool/service 子进程 + webapp/skill/agent 视图） */
+  private registerAppProcess(id: string): void {
+    processManager.register({
+      kind: "app",
+      pid: `app:${id}`,
+      appId: id,
+      status: "running",
+      startedAt: Date.now(),
+    });
+  }
+
+  /** 能力桥统一入口（webapp iframe / 子进程共用；Sprint 35 bridge 端点） */
+  async handleBridge(id: string, method: string, params: Record<string, unknown>): Promise<unknown> {
+    const app = this.get(id);
+    if (!app) throw new AppError("ERR_NOT_FOUND", `应用不存在: ${id}`);
+    const dir = resolve(this.appsDir, id);
+    return this.runtime.handleCapability({ ...app, dir }, method, params);
+  }
+
+  /** 重载应用 manifest（update 后同步内存；Sprint 35） */
+  reload(id: string): boolean {
+    const manifestPath = resolve(this.appsDir, id, "app.json");
+    if (!existsSync(manifestPath)) return false;
+    try {
+      const manifest = validateAppManifest(JSON.parse(readFileSync(manifestPath, "utf-8").replace(/^\uFEFF/, "")));
+      this.manifests.set(id, manifest);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // ===== 内部 =====
 
   private loadState(): void {
@@ -359,6 +396,7 @@ export class AppManager {
       originSessionId: manifest.originSessionId,
       lastError: state.lastError,
       crashCount: state.crashCount,
+      ui: manifest.ui,
     };
   }
 

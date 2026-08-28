@@ -32,9 +32,9 @@ describe("app-manifest schema 校验", () => {
     expect(() => validateAppManifest({ ...valid, id: "Bad ID" })).toThrow(/id 非法/);
   });
 
-  it("非法 type 拒绝；app（webapp）类型 Sprint 35 启用", () => {
+  it("非法 type 拒绝；app（webapp）类型 Sprint 35 起可用", () => {
     expect(() => validateAppManifest({ ...valid, type: "nope" })).toThrow(/type 非法/);
-    expect(() => validateAppManifest({ ...valid, type: "app" })).toThrow(/Sprint 35/);
+    expect(() => validateAppManifest({ ...valid, type: "app" })).not.toThrow();
   });
 
   it("terminal 权限被禁用（schema 硬约束）", () => {

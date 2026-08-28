@@ -158,8 +158,11 @@ export class ModelRouter {
   /** 共享执行：适配器路由 + 计量 */
   private async dispatch(profile: ModelProfile, options: ModelCompleteOptions): Promise<ModelResponse> {
     const adapter = adapterRegistry.resolve(profile.adapter);
+    const conn = this.toConnection(profile);
+    // 按调用覆盖思考模式（生成器等场景传 thinking:false 省 token）
+    if (options.thinking !== undefined) conn.thinking = options.thinking;
 
-    const response = await adapter.complete(this.toConnection(profile), {
+    const response = await adapter.complete(conn, {
       model: options.model || profile.model,
       messages: options.messages,
       tools: options.tools,

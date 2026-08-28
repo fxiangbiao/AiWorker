@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.0 (2026-08-27)
+
+### AI OS 应用工厂 v2 + 窗口体系 + 应用预览面板（Sprint 35）
+- **应用工厂 v2（生成管线重构）**：复用 agent-loop + fs_write/fs_edit 工具生成应用（与智能体对话写文件无区别）——构造临时「生成 agent」（tools 白名单 fs 四件套、modelPreference coding、迭代上限 30），多轮工具调用写文件，彻底删除 v1 的分块续写/拼接逻辑；校验器最终把关（app.js 语法/引用/manifest 白名单/入口存在）+ 反馈 LLM 自查再修（≤2 轮）
+- **新工具 `fs_edit`**：局部修改（文本唯一匹配 或 行号区间 startLine/endLine 替换/删除），`fs_read` 支持 `lineNumbers:true` 输出行号；变更面板因此能显示**删除行**（之前仅新增）
+- **窗口体系**：三形态（panel 停靠预览 / float 浮窗 / widget 透明小部件）+ 拖拽（pointer capture）/缩放/置顶 + 形态互切（停靠↔浮窗↔小部件）+ widget 透明背景框架级保证（宿主注入 `background:transparent!important`）+ 位置/状态持久化
+- **右侧面板「应用预览」Tab**：新生成应用/文档默认停靠展示（自动展开面板），应用名 + 版本 + 浮窗/小部件/关闭按钮；文档 Markdown 渲染（标题目录点击定位 + 滚动跟随 + 图表）；文档浮层随时可重新打开历史文档
+- **能力桥**（宿主注入 C 方案）：`window.__AIWORKER_BRIDGE__`（storage/notify/llm/fs/http）+ `/apps/:id/bridge` 端点；沙箱 iframe 消息按 `ev.source` 身份校验（origin 为 "null" 无法用 origin 校验）+ 请求 30s 超时；webapp manifest 按模板白名单写入权限（能力桥"直接用"契约成立）
+- **异步生成队列**：`generator-queue`（jobId 即返、状态流转、取消排队任务、gen/* 事件、完成态保留 20 条）+ GenWizard 进度条 + 轨迹时间线（agent-loop 工具事件驱动）+ 生成中可随时关闭（后台继续）
+- **会话展示**：左侧会话列表上下分栏（上栏正常会话 / 下栏「应用生成」独立分区）；appgen 会话可读标题（`应用生成: xxx`）；自动切换跳过 appgen 会话
+- **文件变更面板**：指纹监控「新增文件」快照展开为全新增行（行号 + 绿色标识）；「当前内容」视图补行号；自动刷新后按 path 重映射选中
+- **update() 健壮性**：同应用并发互斥（串行化）、agent 运行后存在性复核、reload 先于重启（新工具声明生效）、start 失败清理、semver 版本递增、style.css-only 变更检测
+- **进程列表修复**：服务器重启恢复的 running 应用补注册进程（幂等短路补 `registerAppProcess`）；进程展示应用名；状态栏 Cpu 计数含 app 进程、cost 按 prompt/completion 分价
+- 测试 +33；全量 524 全绿（含 v2 生成全链路 mock、fs_edit 双模式、恢复进程注册、widget 透明注入、新增文件展开）
+
 ## 0.7.0 (2026-08-26)
 
 ### AI OS 内核：应用模型 + 进程模型（Sprint 34）

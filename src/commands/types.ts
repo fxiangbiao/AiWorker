@@ -9,6 +9,7 @@ import type { SessionStore } from "../memory/session-store.js";
 import type { TeamCoordinator } from "../core/team-coordinator.js";
 import type { BaseAgent } from "../agents/base-agent.js";
 import type { AppManager } from "../core/app-manager.js";
+import type { AppFactory } from "../core/app-factory.js";
 
 export type CommandAction = "continue" | "exit";
 
@@ -45,6 +46,8 @@ export interface CommandContext {
   listCommands: () => CliCommand[];
   /** 应用管理器（/app 命令用；未注入则该命令提示不可用） */
   appManager?: AppManager;
+  /** 应用工厂（/app new|update 用；未注入则提示不可用） */
+  appFactory?: AppFactory;
   // 输出抽象（测试可捕获）
   write: (text: string) => void;
   writeLine: (line: string) => void;

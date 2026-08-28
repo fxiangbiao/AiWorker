@@ -41,6 +41,8 @@ import { skillRegistry } from "./core/skill-registry.js";
 import { TeamCoordinator } from "./core/team-coordinator.js";
 import { pluginManager } from "./core/plugin-manager.js";
 import { AppManager } from "./core/app-manager.js";
+import { AppFactory } from "./core/app-factory.js";
+import { generatorQueue } from "./core/generator-queue.js";
 import { appRuntime } from "./core/app-runtime.js";
 import { processManager } from "./core/process-manager.js";
 import { getAppVersion } from "./core/version.js";
@@ -286,6 +288,10 @@ program
     });
     await appManager.init();
 
+    // ─── 应用工厂（Sprint 35 v2：agent-loop + fs_write 生成） ───
+    const appFactory = new AppFactory(deps, appManager);
+    generatorQueue.init(appFactory);
+
     // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───
     jobRunner.init({
       createAgent: (agentId) => agents[agentId] ?? agents["default"],
@@ -399,6 +405,8 @@ program
           getMcpStatuses: () => mcpManager.getStatuses(),
           getPlugins: () => pluginManager.getPlugins(),
           appManager,
+          appFactory,
+          generatorQueue,
           getConfigState: () => ({
             model: modelRouter.getDisplayModel(),
             availableModels: modelRouter.getAvailableModels().map((m) => ({ key: m.key, model: m.model, provider: m.provider })),
@@ -560,6 +568,7 @@ program
       },
       listCommands: () => cliCommands,
       appManager,
+      appFactory,
       write: (text) => stdout.write(text),
       writeLine: (line) => renderer.writeLine(line),
       ask: (q) => (tui.isActive() ? tui.ask(q, [], 60000, false) : Promise.resolve(null)),

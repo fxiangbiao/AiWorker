@@ -3,13 +3,17 @@
    * 应用管理面板（Sprint 34）
    * 应用列表（类型/状态/权限）+ 生命周期操作（start/stop/destroy）+ 销毁确认
    */
-  import { apps, loadApps, appAction, type AppInfo } from "$lib/stores/apps.svelte";
-  import { Play, Square, Trash2, Box, Wrench, BookOpen, UserRound, Server, RefreshCw } from "lucide-svelte";
+  import { apps, loadApps, appAction, updateApp, openAppInPreview, type AppInfo } from "$lib/stores/apps.svelte";
+  import { Play, Square, Trash2, Box, Wrench, BookOpen, UserRound, Server, RefreshCw, Sparkles, PenLine } from "lucide-svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
+  import GenWizard from "./GenWizard.svelte";
 
   let destroyTarget = $state<AppInfo | null>(null);
+  let updateTarget = $state<AppInfo | null>(null);
   let busy = $state<string | null>(null);
   let error = $state<string | null>(null);
+  let notice = $state("");
+  let showWizard = $state(false);
 
   const TYPE_ICON = {
     tool: Wrench,
@@ -62,16 +66,40 @@
     await loadApps();
     busy = null;
   }
+
+  /** 迭代更新：agent-loop 重写逻辑文件，保留应用数据（变更描述由输入框提供） */
+  async function confirmUpdate(target: AppInfo, desc?: string) {
+    updateTarget = null;
+    if (!desc || !desc.trim()) return;
+    busy = target.id;
+    error = null;
+    notice = "";
+    const r = await updateApp(target.id, desc.trim());
+    if (!r.ok) {
+      error = r.error ?? "更新失败";
+    } else {
+      notice = `✓ 已更新: ${target.name} v${r.app?.version ?? ""}`;
+      setTimeout(() => (notice = ""), 4000);
+    }
+    await loadApps();
+    busy = null;
+  }
 </script>
 
 <div class="ap">
   <div class="ap-head">
     <span class="ap-title">应用</span>
-    <button class="ap-refresh" title="刷新" onclick={() => void loadApps()}><RefreshCw size={13} /></button>
+    <div class="ap-head-right">
+      <button class="ap-gen" title="一句话即时生成应用" onclick={() => (showWizard = true)}><Sparkles size={13} /> 生成</button>
+      <button class="ap-refresh" title="刷新" onclick={() => void loadApps()}><RefreshCw size={13} /></button>
+    </div>
   </div>
 
   {#if error}
     <div class="ap-error">{error}</div>
+  {/if}
+  {#if notice}
+    <div class="ap-notice">{notice}</div>
   {/if}
 
   {#if $apps.length === 0}
@@ -80,7 +108,17 @@
     <div class="ap-list">
       {#each $apps as a (a.id)}
         {@const Icon = TYPE_ICON[a.type] ?? Box}
-        <div class="ap-item">
+        {@const isWebapp = a.type === "app"}
+        <div
+          class="ap-item"
+          class:clickable={isWebapp && a.status === "running"}
+          role={isWebapp && a.status === "running" ? "button" : undefined}
+          title={isWebapp && a.status === "running" ? "在右侧应用预览面板展示" : undefined}
+          onclick={() => {
+            // 打开 = 停靠右侧「应用预览」面板（浮窗/小部件在预览面板内切换）
+            if (isWebapp && a.status === "running") openAppInPreview(a.id);
+          }}
+        >
           <span class="ap-ico" style:color={statusColor(a.status)}><Icon size={15} /></span>
           <div class="ap-body">
             <div class="ap-name">
@@ -95,13 +133,16 @@
             </div>
             {#if a.lastError}<div class="ap-lasterr">{a.lastError}</div>{/if}
           </div>
-          <div class="ap-actions">
+          <div class="ap-actions" onclick={(e) => e.stopPropagation()}>
             {#if a.plugin}
               <span class="ap-plugin-tag" title="系统插件由 config/plugins/ 加载，用 /plugins 管理">系统插件</span>
             {:else if a.status === "running" || a.status === "starting"}
               <button class="ap-btn" title="停止" disabled={busy === a.id} onclick={() => void doAction(a, "stop")}><Square size={13} /></button>
             {:else}
               <button class="ap-btn" title="启动" disabled={busy === a.id} onclick={() => void doAction(a, "start")}><Play size={13} /></button>
+            {/if}
+            {#if !a.plugin && (a.type === "app" || a.type === "tool" || a.type === "service")}
+              <button class="ap-btn" title="迭代更新（重写逻辑文件，保留数据）" disabled={busy === a.id} onclick={() => (updateTarget = a)}><PenLine size={13} /></button>
             {/if}
             {#if !a.plugin}
               <button class="ap-btn danger" title="销毁（含数据）" disabled={busy === a.id} onclick={() => (destroyTarget = a)}><Trash2 size={13} /></button>
@@ -112,6 +153,10 @@
     </div>
   {/if}
 </div>
+
+{#if showWizard}
+  <GenWizard onClose={() => (showWizard = false)} />
+{/if}
 
 {#if destroyTarget}
   <ConfirmModal
@@ -124,10 +169,30 @@
   />
 {/if}
 
+{#if updateTarget}
+  <ConfirmModal
+    title={`更新应用「${updateTarget.name}」`}
+    message="描述本次变更（模型将重写逻辑文件，应用数据保留）。"
+    mode="input"
+    inputLabel="变更描述（例：加暂停按钮 / 让宠物自适应窗口）"
+    confirmText="更新"
+    onConfirm={(v) => void confirmUpdate(updateTarget, v)}
+    onCancel={() => (updateTarget = null)}
+  />
+{/if}
+
 <style>
   .ap { display: flex; flex-direction: column; height: 100%; padding: 10px 12px; gap: 8px; overflow-y: auto; }
   .ap-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 6px; }
+  .ap-head-right { display: flex; align-items: center; gap: 2px; }
   .ap-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); }
+  .ap-gen {
+    display: flex; align-items: center; gap: 4px; padding: 3px 8px;
+    border: 1px solid var(--primary); border-radius: var(--radius-sm);
+    background: var(--primary-light); color: var(--primary);
+    font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+  .ap-gen:hover { background: var(--primary); color: #fff; }
   .ap-refresh {
     border: none; background: transparent; color: var(--dim); cursor: pointer;
     display: flex; align-items: center; padding: 3px; border-radius: var(--radius-sm);
@@ -140,6 +205,8 @@
     padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
     background: var(--surface);
   }
+  .ap-item.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
+  .ap-item.clickable:hover { border-color: var(--primary); background: var(--primary-light); }
   .ap-ico { display: flex; align-items: center; padding-top: 1px; }
   .ap-body { flex: 1; min-width: 0; }
   .ap-name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
@@ -165,4 +232,5 @@
     border-radius: 4px; padding: 3px 6px; white-space: nowrap;
   }
   .ap-error { font-size: 11px; color: var(--error); padding: 4px 8px; background: var(--primary-light); border-radius: var(--radius-sm); }
+  .ap-notice { font-size: 11px; color: var(--success); padding: 4px 8px; background: rgba(45, 200, 120, .08); border-radius: var(--radius-sm); }
 </style>

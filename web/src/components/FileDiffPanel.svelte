@@ -106,10 +106,26 @@
         }
         if (sessions.length > 0 && sessions[0].files.length > 0 && !selected) {
           selected = sessions[0].files[0];
+        } else if (selected) {
+          // 自动刷新后按路径重新映射选中文件（sessions 已是新对象，避免渲染过期行级 diff）
+          let found: DiffFile | null = null;
+          for (const s of sessions) {
+            const f = s.files.find((f2) => f2.path === selected!.path);
+            if (f) {
+              found = f;
+              break;
+            }
+          }
+          selected = found;
         }
       })
-      .catch(() => { sessions = []; })
-      .finally(() => { loading = false; });
+      .catch(() => {
+        sessions = [];
+        selected = null;
+      })
+      .finally(() => {
+        loading = false;
+      });
   }
 
   function basename(p: string): string {
@@ -336,7 +352,14 @@
         </div>
       {:else if selected.currentContent && selected.lines.every((l) => l.type === "ctx")}
         <div class="dd-current-label">当前内容（外部修改，无行级 diff）</div>
-        <div class="dd-current"><pre>{selected.currentContent}</pre></div>
+        <div class="dd-current">
+          {#each selected.currentContent.split("\n") as line, i (i)}
+            <div class="dd-curline">
+              <span class="dd-no">{i + 1}</span>
+              <span class="dd-curtext">{line}</span>
+            </div>
+          {/each}
+        </div>
       {:else if selected.binary}
         <div class="dd-binary">
           <div class="dd-binary-icon">📦</div>
@@ -490,5 +513,6 @@
     border-radius: var(--radius-sm);
     background: var(--bg);
   }
-  .dd-current pre { font-family: var(--font-mono); font-size: 11px; margin: 0; padding: 8px; white-space: pre-wrap; word-break: break-all; color: var(--text); }
+  .dd-curline { display: flex; gap: 8px; padding: 1px 8px; white-space: pre-wrap; word-break: break-all; font-family: var(--font-mono); font-size: 11px; color: var(--text); }
+  .dd-curtext { flex: 1; }
 </style>

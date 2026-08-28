@@ -81,6 +81,8 @@ export interface ModelCompleteOptions {
   tools?: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  /** 思考模式覆盖（缺省用 profile；生成器传 false 省 token 防空输出） */
+  thinking?: boolean;
   signal?: AbortSignal;
 }
 
@@ -522,6 +524,8 @@ export interface AppManifest {
   originSessionId?: string;
   /** service 类型：OS 启动自动拉起 */
   autostart?: boolean;
+  /** app（webapp）类型：窗口形态 */
+  ui?: { surface?: AppSurface };
 }
 
 export type AppStatus = "installed" | "starting" | "running" | "stopping" | "stopped" | "failed" | "destroyed";
@@ -542,6 +546,8 @@ export interface AppInfo {
   crashCount?: number;
   /** 来源插件（config/plugins/ 兼容视图） */
   plugin?: boolean;
+  /** app（webapp）类型：窗口形态（panel/float/widget） */
+  ui?: { surface?: AppSurface };
 }
 
 // ===== 进程模型（Sprint 34） =====
@@ -576,3 +582,47 @@ export type OsProcess =
       startedAt?: number;
       endedAt?: number;
     };
+
+// ===== AppFactory 即时生成（Sprint 35） =====
+
+/** 生成产出的一个文件 */
+export interface GenFile {
+  path: string;
+  content: string;
+}
+
+/** 应用窗口形态 */
+export type AppSurface = "panel" | "float" | "widget";
+
+/** 生成规格（用户描述 + 模板 id/形态；type 缺省 "app" 表示自动识别） */
+export interface AppSpec {
+  description: string;
+  type: string;
+  surface?: AppSurface;
+  sessionId?: string;
+}
+
+/** 生成模板（契约：结构/行数上限/权限白名单/提示词） */
+export interface AppTemplate {
+  id: string;
+  type: AppType;
+  name: string;
+  description: string;
+  /** 文件职责约定（提示词注入） */
+  structure: string;
+  /** 权限白名单（生成期安全：LLM 只能从中选择，不能新增） */
+  allowedPermissions: string[];
+  /** 生成步骤说明（webapp 分块：逻辑→样式） */
+  steps: { id: string; label: string }[];
+}
+
+/** 生成器抽象（Sprint 35 v2：生成走 agent-loop + fs_write 工具，无独立生成器类） */
+
+export interface GenerateResult {
+  ok: boolean;
+  app?: AppInfo;
+  error?: string;
+  files?: GenFile[];
+  /** 文档型产出路径（data/docs/...） */
+  docPath?: string;
+}

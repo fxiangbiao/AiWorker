@@ -24,9 +24,12 @@ afterAll(() => {
 });
 
 describe("1. 工具注册表", () => {
-  it("注册 8 个内置工具（含 ask_user / terminal_session）", () => {
+  it("注册 9 个内置工具（含 ask_user / terminal_session / fs_edit）", () => {
     const tools = toolRegistry.getAll();
-    expect(tools.length).toBe(8);
+    expect(tools.length).toBe(9);
+  });
+  it("fs_edit 可用（局部修改工具）", () => {
+    expect(toolRegistry.isAvailable("fs_edit")).toBe(true);
   });
   it("fs_read 可用", () => {
     expect(toolRegistry.isAvailable("fs_read")).toBe(true);
