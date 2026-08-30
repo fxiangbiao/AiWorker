@@ -11,6 +11,7 @@ import type { SessionStore } from "../memory/session-store.js";
 import type { ProcessManager } from "../core/process-manager.js";
 import { hookManager } from "../hooks/hook-manager.js";
 import { auditLogger } from "../core/audit-logger.js";
+import { skillRegistry } from "../core/skill-registry.js";
 
 export abstract class BaseAgent {
   protected config: AgentConfig;
@@ -30,12 +31,49 @@ export abstract class BaseAgent {
       processManager?: ProcessManager;
     },
   ) {
-    this.config = config;
+    // 拷贝配置：避免修改共享默认（如内置 agent 的模块级 config）与污染后续实例
+    this.config = {
+      ...config,
+      tools: [...config.tools],
+      mcpServers: [...config.mcpServers],
+      skills: config.skills ? [...config.skills] : [],
+      plugins: config.plugins ? [...config.plugins] : [],
+      permissions: {
+        defaultMode: config.permissions.defaultMode,
+        allowedTools: [...config.permissions.allowedTools],
+        deniedTools: [...config.permissions.deniedTools],
+      },
+    };
     this.modelRouter = deps.modelRouter;
     this.contextManager = deps.contextManager;
     this.sessionStore = deps.sessionStore;
     this.dataDir = deps.dataDir;
     this.processManager = deps.processManager;
+  }
+
+  /** 绑定技能注入：按 config.skills 声明查技能，拼段进 systemPrompt（每次执行前调用，技能更新即时生效）。
+   * 用 marker 定位替换：即使配置被持久化过（systemPrompt 已含技能段），也替换而非追加，避免重复 */
+  protected applyDeclaredSkills(): void {
+    const declared = this.config.skills ?? [];
+    if (declared.length === 0) return;
+    const list = declared
+      .map((name) => skillRegistry.getAll().find((s) => s.name.toLowerCase() === name.toLowerCase()))
+      .filter((s): s is NonNullable<typeof s> => Boolean(s));
+    if (list.length === 0) return;
+    const MARKER_START = "-- 绑定技能 --";
+    const MARKER_END = "-- 绑定技能结束 --";
+    const section =
+      `\n\n${MARKER_START}\n` +
+      list.map((s) => `### ${s.name}\n${s.body.slice(0, 1200)}`).join("\n\n") +
+      `\n${MARKER_END}`;
+    const startIdx = this.config.systemPrompt.indexOf(MARKER_START);
+    const endIdx = startIdx >= 0 ? this.config.systemPrompt.indexOf(MARKER_END, startIdx) : -1;
+    if (startIdx >= 0 && endIdx >= 0) {
+      this.config.systemPrompt =
+        this.config.systemPrompt.slice(0, Math.max(0, startIdx - 2)) + section + this.config.systemPrompt.slice(endIdx + MARKER_END.length);
+    } else {
+      this.config.systemPrompt += section;
+    }
   }
 
   getId(): string {
@@ -70,6 +108,7 @@ export abstract class BaseAgent {
    * 执行任务
    */
   async run(task: Task, workingDir: string): Promise<AgentRunResult> {
+    this.applyDeclaredSkills();
     const sessionId =
       task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
 
@@ -88,7 +127,7 @@ export abstract class BaseAgent {
       this.setMode(task.mode);
     }
 
-    // 持久化用户消息
+    // 持久化用户消息（图片仅当轮上下文，历史存文本）
     this.sessionStore.appendMessage(sessionId, { role: "user", content: task.instruction });
 
     // 运行循环
@@ -101,6 +140,7 @@ export abstract class BaseAgent {
       dataDir: this.dataDir,
       toolScope: this.config.id,
       processManager: this.processManager,
+      images: task.images,
     });
 
     // 持久化助手回复（携带本轮主请求 usage，供轨迹/遥测；来自 loop 显式返回，避免被压缩请求覆盖）
@@ -149,6 +189,7 @@ export abstract class BaseAgent {
     callbacks: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<AgentRunResult> {
+    this.applyDeclaredSkills();
     const sessionId =
       task.sessionId ?? this.sessionStore.createSession(this.config.id).id;
 
@@ -180,6 +221,7 @@ export abstract class BaseAgent {
         dataDir: this.dataDir,
         toolScope: this.config.id,
         processManager: this.processManager,
+        images: task.images,
       },
       callbacks,
       signal,

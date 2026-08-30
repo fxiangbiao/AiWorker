@@ -50,6 +50,12 @@
 
 ![Web UI — 演示 2](docs/screenshots/web_ui_demo2.png)
 
+![Web UI — 演示 3](docs/screenshots/web_ui_demo3.png)
+
+![Web UI — 演示 4](docs/screenshots/web_ui_demo4.png)
+
+![Web UI — 演示 5](docs/screenshots/web_ui_demo5.png)
+
 ## 作品展示
 
 用 AiWorker 生成的 Web 小作品（HTML 单文件，浏览器直接打开；`docs/demos/`）：

@@ -9,6 +9,7 @@
   import StatusBar from "./components/StatusBar.svelte";
   import AppHostLayer from "./components/AppHostLayer.svelte";
   import AppPreviewPanel from "./components/AppPreviewPanel.svelte";
+  import DocPreviewPanel from "./components/DocPreviewPanel.svelte";
   import { rightTab, rightPanelVisible } from "./lib/stores/apps.svelte";
   import { skills } from "./lib/stores/status";
   import {
@@ -127,7 +128,6 @@
 
 <div id="topbar">
   <TopBar
-    {agents}
     {leftHidden}
     rightHidden={!$rightPanelVisible}
     onOpenSystem={() => (systemOpen = true)}
@@ -139,13 +139,16 @@
   {#if !leftHidden}
     <Sidebar onNewChat={handleNewChat} onSwitch={handleSwitch} onHide={() => (leftHidden = true)} onOpenSystem={() => (systemOpen = true)} />
   {/if}
-  <ChatPanel />
+  <ChatPanel {agents} />
   {#if $rightPanelVisible}
     <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={startDrag}></div>
     <div class="right-panel" id="right-panel" style:width={rightWidth ? `${rightWidth}px` : "40%"}>
       <div class="rp-tabs">
         <button class="rp-tab" class:active={$rightTab === "files"} onclick={() => rightTab.set("files")}>
           <span class="rp-ico"><FileText size={13} /></span>文件变更
+        </button>
+        <button class="rp-tab" class:active={$rightTab === "docs"} onclick={() => rightTab.set("docs")}>
+          <span class="rp-ico"><FileText size={13} /></span>文档预览
         </button>
         <button class="rp-tab" class:active={$rightTab === "apps"} onclick={() => rightTab.set("apps")}>
           <span class="rp-ico"><Box size={13} /></span>应用预览
@@ -154,6 +157,8 @@
       </div>
       {#if $rightTab === "files"}
         <FileDiffPanel />
+      {:else if $rightTab === "docs"}
+        <DocPreviewPanel />
       {:else}
         <AppPreviewPanel />
       {/if}

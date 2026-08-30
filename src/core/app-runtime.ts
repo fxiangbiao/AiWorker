@@ -610,7 +610,18 @@ export class AppRuntime {
     const url = String(params.url ?? "");
     if (!/^https?:\/\//.test(url)) throw new AppError("ERR_INTERNAL", `http.fetch url 非法: ${url}`);
     const opts = (params.opts ?? {}) as RequestInit;
-    const resp = await fetch(url, opts);
+    // 第三方 API 不可达/慢时快速失败，避免宿主桥接 30s 超时被误报为"宿主无响应"
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 10_000);
+    let resp: Response;
+    try {
+      resp = await fetch(url, { ...opts, signal: ac.signal });
+    } catch (err) {
+      const reason = (err as Error).name === "AbortError" ? "超时（10s）" : (err as Error).message;
+      throw new AppError("ERR_NETWORK", `http.fetch 网络请求失败: ${reason}`);
+    } finally {
+      clearTimeout(timer);
+    }
     const text = await resp.text();
     return {
       status: resp.status,

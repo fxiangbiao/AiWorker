@@ -31,6 +31,8 @@ interface ModelProfile {
   thinking?: boolean;
   /** 供应商适配器 id（缺省 openai-compatible），见 src/core/llm/ */
   adapter?: string;
+  /** 视觉能力（Sprint 36）：true=支持图片输入（多模态消息），缺省 false */
+  vision?: boolean;
 }
 
 interface ModelsConfig {
@@ -226,6 +228,12 @@ export class ModelRouter {
       return `${model} (${this.runtimeProfileKey})`;
     }
     return model;
+  }
+
+  /** 指定模型偏好是否支持视觉（多模态图片输入；Sprint 36） */
+  supportsVision(preference?: string): boolean {
+    const profile = this.getProfile(preference);
+    return profile.vision === true;
   }
 
   // ── 运行时配置（/config 命令支持）──

@@ -16,8 +16,18 @@ export interface UIMessage {
   content: string;
   agentId?: string;
   timeline?: TimelineItem[];
+  /** 多模态图片（data URL；Sprint 36）：用户消息附带的图片缩略图 */
+  images?: string[];
   _thinkingActive?: boolean;
-  _kind?: "chat" | "plan" | "debate" | "error";
+  _kind?: "chat" | "plan" | "debate" | "gen" | "error";
+  /** 生成任务卡片：关联的后台生成 jobId（_kind === "gen"） */
+  _genJobId?: string;
+  /** 生成卡片所属会话 id（终态持久化时定位消息用；刷新后随消息恢复） */
+  _genSessionId?: string;
+  /** 生成终态（gen/done|failed|canceled 事件写入消息本身，刷新/重开会话后仍可展示） */
+  _genStatus?: "done" | "failed" | "canceled";
+  _genResult?: { app?: import("./apps.svelte.js").AppInfo; docPath?: string };
+  _genError?: string;
   _steps?: PlanStep[];
   _meta?: { agentA?: string; agentB?: string; failedSteps?: string[] };
   _activeStep?: string;
@@ -85,7 +95,7 @@ export function toolArgsDisplay(name: string, args: unknown): string {
 export const store = $state({
   mode: "auto" as string,
   agentId: "default" as string,
-  inputMode: "chat" as "chat" | "plan" | "debate",
+  inputMode: "chat" as "chat" | "plan" | "debate" | "forge",
   chats: [] as ChatItem[],
   activeChatId: null as string | null,
   messages: [] as UIMessage[],
@@ -134,13 +144,39 @@ export function saveMessages(id: string, msgs: UIMessage[]) {
   if (id) save(MSGS_PREFIX + id, msgs);
 }
 
+/** 生成/协作等非对话入口的会话兜底：无活动会话时新建一个（逻辑与 ChatPanel.newChat 一致） */
+export function ensureActiveChat(): string {
+  if (!store.activeChatId) {
+    const id = "c" + Date.now().toString(36);
+    store.chats.unshift({ id, title: "新对话", agentId: store.agentId, turns: 0, createdAt: Date.now() });
+    store.activeChatId = id;
+    store.messages = [];
+    saveChats(store.chats);
+  }
+  return store.activeChatId;
+}
+
+/** 会话轮数 +1，首条消息作标题（与 ChatPanel 发送逻辑一致，供非对话入口复用） */
+export function bumpChatTurn(text: string): void {
+  const chat = store.chats.find((c) => c.id === store.activeChatId);
+  if (chat && (!chat.turns || chat.turns === 0)) {
+    chat.title = text.slice(0, 50);
+    chat.turns = 1;
+  } else if (chat) {
+    chat.turns = (chat.turns || 0) + 1;
+  }
+  saveChats(store.chats);
+}
+
 /** 从服务器 /sessions 合并会话列表（服务器为轮数/标题事实源；本地无的补进来，按创建时间最新在前） */
 export async function syncServerSessions(): Promise<boolean> {
   try {
     const resp = await fetch(`${API}/sessions`);
     if (!resp.ok) return false;
     const data = await resp.json();
-    const remote: ChatItem[] = (data.sessions || []).map((s: {
+    const remote: ChatItem[] = (data.sessions || [])
+      .filter((s: { agentId?: string; agent_id?: string }) => (s.agentId || s.agent_id || "default") !== "appgen") // 应用生成后台会话不展示（过程已在对话流卡片）
+      .map((s: {
       id: string;
       agent_id?: string;
       agentId?: string;

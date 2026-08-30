@@ -9,6 +9,7 @@ import { resolve, dirname, relative, isAbsolute, basename, join } from "node:pat
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
+import { createAudioWs } from "./media/media-server.js";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
@@ -25,7 +26,8 @@ import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
 import { renderSessionMarkdown } from "./memory/session-export.js";
 import { processManager } from "./core/process-manager.js";
 import { APP_BRIDGE_SNIPPET } from "./core/app-bridge.js";
-import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
+import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo, AgentConfig } from "./types.js";
+import { VALID_MODELS } from "./core/agent-config-loader.js";
 import type { SessionStore } from "./memory/session-store.js";
 import type { AppManager, AppActionResult } from "./core/app-manager.js";
 import type { AppFactory } from "./core/app-factory.js";
@@ -45,7 +47,35 @@ interface ServerDeps {
   workingDir: string;
   coordinator: TeamCoordinator;
   createAgent: (agentId: string) => DelegateAgent | undefined;
-  getAgentList: () => { id: string; name: string }[];
+  getAgentList: () => {
+    id: string;
+    name: string;
+    displayName: string;
+    type: string;
+    modelPreference: string;
+    maxIterations: number;
+    tools: string[];
+    skills: string[];
+    mcpServers: string[];
+    plugins: string[];
+    strictTools: boolean;
+    permissions: { defaultMode: string; allowedTools: string[]; deniedTools: string[] };
+    systemPrompt: string;
+    isCustom: boolean;
+    hasConfig: boolean;
+  }[];
+  /** 保存智能体配置（写 YAML + 热重载；index.ts 注入） */
+  saveAgentConfig?: (id: string, cfg: AgentConfig) => { ok: boolean; error?: string };
+  /** 删除智能体配置（内置回默认 / 自定义移除；index.ts 注入） */
+  deleteAgentConfig?: (id: string) => { ok: boolean };
+  isBuiltinAgent?: (id: string) => boolean;
+  /** 智能体表单选项（工具/技能/MCP/插件） */
+  getAgentMeta?: () => {
+    tools: { name: string; description: string }[];
+    skills: { name: string; expert: string; description: string }[];
+    mcp: { name: string; connected: boolean; toolCount: number }[];
+    plugins: { name: string; tools: string[]; status: string }[];
+  };
   skillNames: string[];
   sessionStore?: SessionStore;
   getSkills?: () => {
@@ -91,6 +121,8 @@ interface ChatRequest {
   agentId?: string;
   mode?: string;
   sessionId?: string;
+  /** 多模态图片（data URL/https；Sprint 36），需当前模型支持视觉 */
+  images?: string[];
 }
 
 interface PlanRequest {
@@ -122,6 +154,64 @@ function sendJSON(res: ServerResponse, status: number, data: unknown) {
     "Access-Control-Allow-Origin": "*",
   });
   res.end(JSON.stringify(data));
+}
+
+/** 智能体配置校验（POST /agents/<id>/config；type 内置沿用 id，自定义默认 custom） */
+function validateAgentPayload(
+  id: string,
+  body: Record<string, unknown>,
+  isBuiltin: boolean,
+): { ok: true; cfg: AgentConfig } | { ok: false; error: string } {
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) {
+    return { ok: false, error: "id 需为小写字母/数字/连字符，且不超过 32 字符" };
+  }
+  const displayName = String(body.displayName ?? "").trim();
+  if (!displayName || displayName.length > 32) {
+    return { ok: false, error: "显示名必填（≤32 字符）" };
+  }
+  const systemPrompt = String(body.systemPrompt ?? "").trim();
+  if (!systemPrompt) {
+    return { ok: false, error: "systemPrompt 必填" };
+  }
+  if (systemPrompt.length > 20_000) {
+    return { ok: false, error: "systemPrompt 过长（≤20000 字符）" };
+  }
+  const modelPreference = String(body.modelPreference ?? "default");
+  if (!VALID_MODELS.has(modelPreference)) {
+    return { ok: false, error: `modelPreference 非法（可选: ${[...VALID_MODELS].join(" / ")}）` };
+  }
+  const maxIterations = Number(body.maxIterations ?? 30);
+  if (!Number.isFinite(maxIterations) || maxIterations < 1 || maxIterations > 200) {
+    return { ok: false, error: "maxIterations 需在 1-200 之间" };
+  }
+  const strArr = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : []);
+  const mode = String((body.permissions as Record<string, unknown> | undefined)?.defaultMode ?? "ask");
+  if (mode !== "ask" && mode !== "plan" && mode !== "auto") {
+    return { ok: false, error: "defaultMode 非法（ask / plan / auto）" };
+  }
+  return {
+    ok: true,
+    cfg: {
+      id,
+      name: id,
+      displayName,
+      type: isBuiltin ? id : "custom",
+      systemPrompt,
+      modelPreference,
+      maxIterations,
+      sandbox: false,
+      tools: strArr(body.tools),
+      mcpServers: strArr(body.mcpServers),
+      skills: strArr(body.skills),
+      plugins: strArr(body.plugins),
+      strictTools: body.strictTools === true,
+      permissions: {
+        defaultMode: mode as PermissionMode,
+        allowedTools: strArr(body.allowedTools),
+        deniedTools: strArr(body.deniedTools),
+      },
+    },
+  };
 }
 
 function sendSSE(res: ServerResponse) {
@@ -503,6 +593,74 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    if (url === apiUrl("/agents/meta") && req.method === "GET") {
+      if (!deps.getAgentMeta) {
+        sendJSON(res, 503, { error: "Agent meta not available" });
+        return;
+      }
+      sendJSON(res, 200, deps.getAgentMeta());
+      return;
+    }
+
+    if (url.startsWith(apiUrl("/agents/")) && req.method === "POST") {
+      if (!deps.saveAgentConfig || !deps.deleteAgentConfig || !deps.isBuiltinAgent) {
+        sendJSON(res, 503, { error: "Agent config not available" });
+        return;
+      }
+      const rest = decodeURIComponent(url.slice(apiUrl("/agents/").length));
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(body) as Record<string, unknown>;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (rest.endsWith("/reset")) {
+        const id = rest.slice(0, -"/reset".length);
+        if (!deps.isBuiltinAgent(id)) {
+          sendJSON(res, 400, { error: "仅内置智能体可恢复默认" });
+          return;
+        }
+        deps.deleteAgentConfig(id);
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
+      if (rest.endsWith("/delete")) {
+        const id = rest.slice(0, -"/delete".length);
+        if (deps.isBuiltinAgent(id)) {
+          sendJSON(res, 400, { error: "内置智能体不可删除（可恢复默认）" });
+          return;
+        }
+        deps.deleteAgentConfig(id);
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
+      if (rest.endsWith("/config")) {
+        const id = rest.slice(0, -"/config".length);
+        const v = validateAgentPayload(id, payload, deps.isBuiltinAgent(id));
+        if (!v.ok) {
+          sendJSON(res, 400, { error: v.error });
+          return;
+        }
+        const r = deps.saveAgentConfig(id, v.cfg);
+        if (!r.ok) {
+          sendJSON(res, 400, { error: r.error ?? "保存失败" });
+          return;
+        }
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
+      sendJSON(res, 404, { error: "Unknown agent action" });
+      return;
+    }
+
     if (url === apiUrl("/status") && req.method === "GET") {
       sendJSON(res, 200, {
         status: "ok",
@@ -699,6 +857,15 @@ export function startServer(deps: ServerDeps, port: number) {
         sessionId: payload.sessionId,
       });
       sendJSON(res, 200, { ok: true, jobId });
+      return;
+    }
+    if (url === apiUrl("/apps/gen") && req.method === "GET") {
+      const q = deps.generatorQueue;
+      if (!q) {
+        sendJSON(res, 503, { error: "Generator not available" });
+        return;
+      }
+      sendJSON(res, 200, { jobs: q.list() });
       return;
     }
     if (url.startsWith(apiUrl("/apps/gen/")) && req.method === "GET") {
@@ -1387,6 +1554,15 @@ export function startServer(deps: ServerDeps, port: number) {
         return;
       }
 
+      // 多模态：图片请求需当前模型支持视觉（models.json 当前 profile 配 vision:true）
+      const images = Array.isArray(chatReq.images) ? chatReq.images.filter((u) => typeof u === "string") : undefined;
+      if (images && images.length > 0 && !deps.modelRouter.supportsVision()) {
+        sendJSON(res, 400, {
+          error: "当前模型不支持视觉输入（图片）。请在 config/models.json 的模型 profile（default 或当前使用）配置 vision:true（如 deepseek-vl 等视觉模型）后重试。",
+        });
+        return;
+      }
+
       const agentId = chatReq.agentId ?? "default";
       const agent = deps.createAgent(agentId);
       if (!agent) {
@@ -1440,6 +1616,7 @@ export function startServer(deps: ServerDeps, port: number) {
             instruction: chatReq.message,
             sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
             mode: chatReq.mode as PermissionMode | undefined,
+            images,
           };
 
           await agent.runStream(task, deps.workingDir, callbacks, abort.signal);
@@ -1472,10 +1649,16 @@ export function startServer(deps: ServerDeps, port: number) {
   // SSE 是单次任务（chat/plan/debate）的请求-响应事件流；WS 是全局下行通道，
   // 服务端主动推送（会话元数据变更 / 任务事件广播），支持多端同步。
   const wss = new WebSocketServer({ noServer: true });
+  // 音频通道（Sprint 36：/api/v1/audio，TTS 请求/响应）
+  const audioWs = createAudioWs(deps.dataDir ?? resolve(process.cwd(), "data"));
   server.on("upgrade", (req, socket, head) => {
     if (req.url === apiUrl("/ws")) {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
+      });
+    } else if (req.url === audioWs.path) {
+      audioWs.wss.handleUpgrade(req, socket, head, (ws) => {
+        audioWs.wss.emit("connection", ws, req);
       });
     } else {
       socket.destroy();

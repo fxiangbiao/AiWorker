@@ -45,7 +45,7 @@ const BRIDGE_USAGE = `宿主已注入标准能力桥：全局变量 window.__AIW
   - __AIWORKER_BRIDGE__.notify(title, body)               — 系统通知
   - __AIWORKER_BRIDGE__.llm.call({messages})              — 调用 LLM
   - __AIWORKER_BRIDGE__.fs.read(path)/write(path, content) — 沙箱内文件
-  - __AIWORKER_BRIDGE__.http.fetch(url, opts)             — 网络请求`;
+  - __AIWORKER_BRIDGE__.http.fetch(url, opts)             — 网络请求（返回 {status, ok, text}：text 为响应体字符串，JSON 响应需自行 JSON.parse(text)）`;
 
 /** 生成 agent 系统提示（v2：描述应用 + 目录约定 + 桥接用法 + fs_write 用法 + 完成条件） */
 export function webappSystemPrompt(spec: AppSpec): string {

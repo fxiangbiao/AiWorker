@@ -4,7 +4,7 @@
  * 窗口体系（Sprint 35）：openWindows 打开集合 + winStates 位置持久化（localStorage）
  */
 import { writable, get } from "svelte/store";
-import { API } from "./chat.svelte";
+import { API, store, saveMessages, loadMessages, ensureActiveChat, bumpChatTurn, type UIMessage } from "./chat.svelte";
 import { onWsEvent } from "./ws.svelte";
 
 export type AppSurface = "panel" | "float" | "widget";
@@ -52,14 +52,16 @@ export const processStats = writable<{ agent: number; app: number; job: number }
 export const openWindows = writable<Record<string, boolean>>({});
 /** 窗口状态（位置/尺寸/形态/置顶），localStorage 持久化 appwin-<id> */
 export const winStates = writable<Record<string, AppWinState>>({});
-/** 右侧面板当前 Tab（文件变更 / 应用预览） */
-export const rightTab = writable<"files" | "apps">("files");
+/** 右侧面板当前 Tab（文件变更 / 文档预览 / 应用预览） */
+export const rightTab = writable<"files" | "docs" | "apps">("files");
 /** 右侧面板可见性（默认关闭；新生成应用/文档时自动展开到「应用预览」Tab） */
 export const rightPanelVisible = writable(false);
 /** 文档工作台：待打开的文档相对路径（data/docs/ 内） */
 export const docViewer = writable<string | null>(null);
 /** 右侧「应用预览」面板当前选中的应用 id（左侧应用列表点击/启动时联动切换） */
 export const previewAppId = writable("");
+/** 左侧导航当前 Tab（对话/应用/进程/任务；供启动台等跨组件切换） */
+export const sidebarNav = writable<"chat" | "apps" | "processes" | "jobs">("chat");
 
 function loadWinState(id: string): AppWinState {
   const def: AppWinState = { surface: "float", x: 120, y: 90, w: 420, h: 320, pinned: false };
@@ -252,10 +254,43 @@ export async function cancelGenerate(jobId: string): Promise<boolean> {
   }
 }
 
+/** 聊天流生成卡片（统一入口）：插入用户消息 + 生成状态卡片并提交后台任务。
+ * GenWizard 按钮与应用工坊模式共用，保证生成过程统一以聊天流实时状态卡片呈现；
+ * 进度经 genJobs store（WS gen/* 事件）驱动，由 GenCard 组件渲染。
+ */
+export async function spawnGenCard(
+  description: string,
+  opts: { type?: string; surface?: AppSurface; sessionId?: string; userText?: string } = {},
+): Promise<{ ok: boolean; jobId?: string; error?: string }> {
+  const sessionId = ensureActiveChat();
+  const userText = opts.userText ?? description;
+  store.messages.push({ role: "user", content: userText });
+  // 注意：必须经 store.messages 代理引用回写（Svelte 5 深响应），直接改局部对象不触发更新
+  const cardIdx = store.messages.push({
+    role: "assistant",
+    content: "已提交生成任务，正在创建…",
+    _kind: "gen",
+    _genSessionId: sessionId,
+  }) - 1;
+  bumpChatTurn(userText);
+  saveMessages(sessionId, store.messages);
+  const r = await generateApp(description, opts.type, opts.surface, opts.sessionId ?? sessionId);
+  if (store.activeChatId !== sessionId) return r; // 期间已切走会话：放弃回写
+  const card = store.messages[cardIdx];
+  if (card && card._kind === "gen") {
+    if (r.ok && r.jobId) {
+      card._genJobId = r.jobId;
+    } else {
+      card.content = `生成提交失败：${r.error ?? "未知错误"}`;
+    }
+  }
+  saveMessages(sessionId, store.messages);
+  return r;
+}
+
 /** WS 订阅：应用/进程事件实时刷新 + 窗口自动打开 */
 export function initAppsWs(): void {
-  onWsEvent((data) => {
-    const type = data.type;
+  onWsEvent((data) => {    const type = data.type;
     if (typeof type !== "string") return;
     if (type === "app/generated") {
       void loadApps();
@@ -299,6 +334,8 @@ export function initAppsWs(): void {
       void loadProcesses();
     }
   });
+  // 初始拉取生成任务列表：刷新后恢复进行中任务的进度与已完成卡片的终态
+  void loadGenJobs();
 }
 
 /** 生成任务进度事件（gen/*）→ genJobs store + 完成后处理 */
@@ -332,7 +369,7 @@ function handleGenEvent(type: string, data: Record<string, unknown>): void {
         const rel = next.result.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? next.result.docPath;
         docViewer.set(rel);
         rightPanelVisible.set(true);
-        rightTab.set("apps");
+        rightTab.set("docs");
       }
       void loadApps();
     } else if (type === "gen/failed") {
@@ -343,4 +380,73 @@ function handleGenEvent(type: string, data: Record<string, unknown>): void {
     }
     return { ...m, [jobId]: next };
   });
+  // 终态持久化到卡片消息（刷新/重开会话后仍展示），并保持 ws 订阅可用
+  if (type === "gen/done" || type === "gen/failed" || type === "gen/canceled") {
+    syncGenCard(jobId);
+  }
+}
+
+/** 生成终态 → 写回卡片消息并持久化（按 _genSessionId 定位消息，跨会话也可恢复） */
+function syncGenCard(jobId: string): void {
+  const job = get(genJobs)[jobId];
+  if (!job || (job.status !== "done" && job.status !== "failed" && job.status !== "canceled")) return;
+  let card: UIMessage | undefined = store.messages.find((m) => m._genJobId === jobId);
+  let msgs: UIMessage[] = store.messages;
+  let sid = store.activeChatId ?? "";
+  if (!card) {
+    // 卡片不在当前会话：按全部本地会话定位（loadMessages 返回副本，改后整体存回）
+    for (const c of store.chats) {
+      const list = loadMessages(c.id);
+      const hit = list.find((m) => m._genJobId === jobId);
+      if (hit) {
+        card = hit;
+        msgs = list;
+        sid = c.id;
+        break;
+      }
+    }
+  }
+  if (!card || card._genStatus) return;
+  card._genStatus = job.status;
+  card._genResult = job.result
+    ? { app: job.result.app ?? undefined, docPath: job.result.docPath }
+    : undefined;
+  card._genError = job.error;
+  if (job.status === "done") {
+    card.content = job.result?.app
+      ? `✓ 应用已生成：${job.result.app.name}`
+      : job.result?.docPath
+        ? "✓ 文档已生成"
+        : card.content;
+  } else if (job.status === "failed") {
+    card.content = `✗ 生成失败：${job.error ?? "未知错误"}`;
+  } else {
+    card.content = "已取消";
+  }
+  if (sid) saveMessages(sid, msgs);
+}
+
+/** 拉取服务端生成任务列表（刷新后恢复 genJobs：进行中继续显示进度，终态补全卡片） */
+export async function loadGenJobs(): Promise<void> {
+  try {
+    const r = await fetch(`${API}/apps/gen`);
+    if (!r.ok) return;
+    const d = (await r.json()) as {
+      jobs?: Array<{ id: string; status: string; step?: string; progressPct?: number; result?: GenerateResult; error?: string }>;
+    };
+    const map: Record<string, GenJobState> = {};
+    for (const j of d.jobs ?? []) {
+      map[j.id] = {
+        status: (j.status as GenJobState["status"]) ?? "queued",
+        step: j.step,
+        pct: j.status === "done" ? 100 : j.progressPct,
+        result: j.result,
+        error: j.error,
+        trace: [],
+      };
+    }
+    genJobs.set(map);
+  } catch {
+    /* 服务离线时静默 */
+  }
 }

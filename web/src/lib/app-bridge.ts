@@ -23,11 +23,12 @@ export function setupBridgeHandler(iframeEl: HTMLIFrameElement | null, appId: st
       .then((resp) => {
         iframeEl.contentWindow?.postMessage(
           { id: d.id, type: "bridge:res", result: (resp as { result?: unknown }).result, error: (resp as { error?: string }).error },
-          location.origin,
+          // 沙箱 iframe origin 为 "null"：targetOrigin 必须用 "*"（或 "null"），用宿主 origin 会被浏览器静默丢弃
+          "*",
         );
       })
       .catch((err) => {
-        iframeEl.contentWindow?.postMessage({ id: d.id, type: "bridge:res", error: (err as Error).message }, location.origin);
+        iframeEl.contentWindow?.postMessage({ id: d.id, type: "bridge:res", error: (err as Error).message }, "*");
       });
   };
   window.addEventListener("message", onMessage);

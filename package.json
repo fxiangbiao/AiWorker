@@ -1,6 +1,6 @@
 {
   "name": "aiworker",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "AiWorker - 娑擃亙姹?AI Agent 閸斺晜澧滈敍灞筋樋閺呴缚鍏樻担鎾冲礂娴?+ MCP + Skills + Hooks",
   "type": "module",
   "main": "dist/index.js",

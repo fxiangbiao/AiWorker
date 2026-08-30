@@ -1,27 +1,14 @@
 <script lang="ts">
-  import ModeTabs from "./ModeTabs.svelte";
-  import AgentSelect from "./AgentSelect.svelte";
   import { Settings, PanelLeftOpen, PanelRightOpen, Moon, Sun } from "lucide-svelte";
-  import { store, saveSettings } from "$lib/stores/chat.svelte";
   import { theme, toggleTheme } from "$lib/stores/theme.svelte";
 
-  let { agents = [] as { id: string; name: string }[], onOpenSystem, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
-    agents?: { id: string; name: string }[];
+  let { onOpenSystem, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
     onOpenSystem: () => void;
     onExpandLeft: () => void;
     onExpandRight: () => void;
     leftHidden: boolean;
     rightHidden: boolean;
   }>();
-
-  function selectMode(m: string) {
-    store.mode = m;
-    saveSettings();
-  }
-  function selectAgent(id: string) {
-    store.agentId = id;
-    saveSettings();
-  }
 </script>
 
 <div class="topbar">
@@ -29,8 +16,6 @@
     <button class="side-btn" title="展开左侧栏" onclick={onExpandLeft}><PanelLeftOpen size={15} /></button>
   {/if}
   <div class="logo"><img src="/logo.svg" alt="AiWorker" class="logo-img" />AiWorker</div>
-  <ModeTabs mode={store.mode} onSelect={selectMode} />
-  <AgentSelect agentId={store.agentId} {agents} onchange={selectAgent} />
   <div class="spacer"></div>
   <button class="side-btn" title={$theme === "dark" ? "切换到浅色模式" : "切换到暗色模式"} onclick={toggleTheme}>
     {#if $theme === "dark"}<Sun size={15} />{:else}<Moon size={15} />{/if}

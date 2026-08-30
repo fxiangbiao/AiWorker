@@ -8,6 +8,7 @@ import type { Database as DBType } from "better-sqlite3";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent } from "../types.js";
+import { messageText } from "../types.js";
 
 const segmenter =
   typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter("zh-CN", { granularity: "word" }) : null;
@@ -221,7 +222,7 @@ export class SessionStore {
       if (message.role === "user") {
         this.appendEvent(sessionId, "user/message", message as unknown as Record<string, unknown>, "session-store");
         // 自动标题：首条用户消息且未设置标题时（模板生成，不调 LLM）
-        this.maybeAutoTitle(sessionId, message.content);
+        this.maybeAutoTitle(sessionId, messageText(message));
       } else if (message.role === "assistant") {
         this.appendEvent(
           sessionId,

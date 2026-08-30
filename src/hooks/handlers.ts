@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import chalk from "chalk";
 import type { HookHandler, PermissionMode } from "../types.js";
 import type { Message } from "../types.js";
+import { messageText } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
 import { ApprovalService, type ConfirmRequestLike } from "../security/approval-service.js";
@@ -831,7 +832,7 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
 
     const messages = ctx.data.messages as Message[] | undefined;
     // 取本轮最后一条 user 消息（assembleContext 含历史，find 会取到最早一条）
-    const userInput = messages?.filter((m) => m.role === "user").at(-1)?.content.slice(0, 500) ?? "";
+    const userInput = messages?.filter((m) => m.role === "user").at(-1) ? messageText(messages.filter((m) => m.role === "user").at(-1)!).slice(0, 500) : "";
 
     // 结束原因：截断 → length；错误轮 → error；否则 stop
     const finishReason: string = ctx.data.truncated ? "length" : hadError ? "error" : "stop";
@@ -843,7 +844,7 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     if (messages) {
       for (const m of messages) {
         if (m.role === "tool") {
-          const isError = m.content.startsWith("Error:");
+          const isError = messageText(m).startsWith("Error:");
           if (isError) toolCallsFailed++;
           else toolCallsSuccess++;
         }

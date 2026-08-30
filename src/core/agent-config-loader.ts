@@ -1,14 +1,14 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { AgentConfig, PermissionMode } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configDir = resolve(__dirname, "../../config/agents");
 
-const VALID_MODELS = new Set(["default", "coding", "reasoning", "writing", "creative", "lite"]);
+export const VALID_MODELS = new Set(["default", "coding", "reasoning", "writing", "creative", "lite"]);
 
 interface YamlAgentConfig {
   id?: string;
@@ -21,6 +21,9 @@ interface YamlAgentConfig {
   sandbox?: boolean;
   tools?: string[];
   mcpServers?: string[];
+  skills?: string[];
+  plugins?: string[];
+  strictTools?: boolean;
   permissions?: {
     defaultMode?: string;
     allowedTools?: string[];
@@ -41,6 +44,9 @@ function normalizeAgentConfig(yaml: YamlAgentConfig): AgentConfig {
     sandbox: yaml.sandbox ?? false,
     tools: yaml.tools ?? [],
     mcpServers: yaml.mcpServers ?? [],
+    skills: yaml.skills ?? [],
+    plugins: yaml.plugins ?? [],
+    strictTools: yaml.strictTools ?? false,
     permissions: {
       defaultMode: (yaml.permissions?.defaultMode ?? "ask") as PermissionMode,
       allowedTools: yaml.permissions?.allowedTools ?? [],
@@ -49,15 +55,64 @@ function normalizeAgentConfig(yaml: YamlAgentConfig): AgentConfig {
   };
 }
 
-export function loadAgentConfig(id: string): AgentConfig | null {
+function toYamlConfig(config: AgentConfig): YamlAgentConfig {
+  return {
+    id: config.id,
+    name: config.name,
+    displayName: config.displayName,
+    type: config.type,
+    systemPrompt: config.systemPrompt,
+    modelPreference: config.modelPreference,
+    maxIterations: config.maxIterations,
+    sandbox: config.sandbox,
+    tools: config.tools,
+    mcpServers: config.mcpServers,
+    skills: config.skills,
+    plugins: config.plugins,
+    strictTools: config.strictTools,
+    permissions: {
+      defaultMode: config.permissions.defaultMode,
+      allowedTools: config.permissions.allowedTools,
+      deniedTools: config.permissions.deniedTools,
+    },
+  };
+}
+
+/** 从指定目录加载（测试隔离用；生产用默认 config/agents） */
+export function loadAgentConfigFromDir(id: string, dir: string): AgentConfig | null {
   try {
-    const filePath = resolve(configDir, `${id}.yaml`);
+    const filePath = resolve(dir, `${id}.yaml`);
     const raw = readFileSync(filePath, "utf-8");
     const yaml = parseYaml(raw) as YamlAgentConfig;
     return normalizeAgentConfig(yaml);
   } catch {
     return null;
   }
+}
+
+export function loadAgentConfig(id: string): AgentConfig | null {
+  return loadAgentConfigFromDir(id, configDir);
+}
+
+/** 是否存在 YAML 覆盖（内置智能体"已自定义"徽标；自定义智能体即存在） */
+export function hasAgentConfig(id: string, dir?: string): boolean {
+  return existsSync(resolve(dir ?? configDir, `${id}.yaml`));
+}
+
+/** 保存智能体配置（整体快照；目录不存在自动创建） */
+export function saveAgentConfig(config: AgentConfig, dir?: string): void {
+  const target = dir ?? configDir;
+  mkdirSync(target, { recursive: true });
+  writeFileSync(resolve(target, `${config.id}.yaml`), stringifyYaml(toYamlConfig(config)), "utf-8");
+}
+
+/** 删除智能体配置（恢复内置默认 / 删除自定义） */
+export function deleteAgentConfig(id: string, dir?: string): boolean {
+  const target = dir ?? configDir;
+  const filePath = resolve(target, `${id}.yaml`);
+  if (!existsSync(filePath)) return false;
+  unlinkSync(filePath);
+  return true;
 }
 
 export function loadAllAgentConfigs(): Record<string, AgentConfig> {

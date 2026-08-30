@@ -199,6 +199,8 @@ export class ContextManager {
     sessionId: string,
     userMessage: string,
     agentId?: string,
+    /** 多模态图片（data URL/https；Sprint 36）：随当前用户消息组装 content 数组 */
+    images?: string[],
   ): Promise<Message[]> {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -256,8 +258,15 @@ export class ContextManager {
     const history = this.sessionStore.replayEvents(sessionId);
     messages.push(...history);
 
-    // 6. 当前用户消息
-    messages.push({ role: "user", content: userMessage });
+    // 6. 当前用户消息（多模态：带图片时组装 content 数组）
+    const userContent: Message["content"] =
+      images && images.length > 0
+        ? [
+            { type: "text", text: userMessage },
+            ...images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+          ]
+        : userMessage;
+    messages.push({ role: "user", content: userContent });
 
     return pruneOversizedToolMessages(messages);
   }

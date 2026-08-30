@@ -7,12 +7,25 @@
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
+/** 多模态消息内容块（Sprint 36 语音视频：文本 + 图片） */
+export type MessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface Message {
   role: Role;
-  content: string;
+  /** 纯文本或多模态内容块数组（图片消息走数组；OpenAI 兼容格式） */
+  content: string | MessageContentPart[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
+}
+
+/** 提取消息纯文本（多模态数组取全部 text 块拼接；供上下文组装/token 估算/审计等） */
+export function messageText(msg: { content: string | MessageContentPart[] }): string {
+  return typeof msg.content === "string"
+    ? msg.content
+    : msg.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
 }
 
 export interface ToolCall {
@@ -157,6 +170,12 @@ export interface AgentConfig {
   sandbox: boolean;
   tools: string[]; // tool names
   mcpServers: string[];
+  /** 绑定技能（按名称；运行时注入 systemPrompt，见 BaseAgent.applyDeclaredSkills） */
+  skills?: string[];
+  /** 绑定插件（按插件名；保存时展开其工具进 tools 白名单） */
+  plugins?: string[];
+  /** 严格工具模式：关闭 mcp_/插件工具的全局豁免，仅白名单可见（默认 false 宽松） */
+  strictTools?: boolean;
   permissions: {
     defaultMode: PermissionMode;
     allowedTools: string[];
@@ -182,6 +201,8 @@ export interface Task {
   sessionId?: string;
   mode?: PermissionMode;
   workingDir?: string;
+  /** 多模态：随本轮提问附带的图片（data URL 或 https URL；仅当轮上下文，不持久化） */
+  images?: string[];
 }
 
 // ===== 工作目录感知 =====

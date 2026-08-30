@@ -30,6 +30,8 @@ export interface CommandContext {
   agents: Record<string, BaseAgent>;
   /** 当前路由专家（/config iterations 用；index.ts 注入 routeToExpert("") 语义） */
   currentAgent: () => BaseAgent;
+  /** 保存智能体配置（写 config/agents/<id>.yaml + 热重载；注入后 /config iterations 持久化，否则仅内存生效） */
+  saveAgentConfig?: (cfg: import("../types.js").AgentConfig) => { ok: boolean; error?: string };
   coordinator: TeamCoordinator;
   modelRouter: ModelRouter;
   sessionStore: SessionStore;

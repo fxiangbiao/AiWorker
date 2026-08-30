@@ -40,6 +40,8 @@ export interface AgentLoopDeps {
   toolScope?: string;
   /** 进程管理器（Sprint 34）：注入则登记 AgentProcess（未注入行为不变） */
   processManager?: ProcessManager;
+  /** 多模态图片（data URL/https；Sprint 36）：随本轮用户消息组装 content 数组，仅当轮上下文 */
+  images?: string[];
 }
 
 async function runAgentLoopInner(
@@ -47,14 +49,14 @@ async function runAgentLoopInner(
   userMessage: string,
   deps: AgentLoopDeps,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope, images } = deps;
   const toolTimeoutMs = deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS;
   /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
   const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id);
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -274,14 +276,14 @@ async function runAgentLoopStreamInner(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope, images } = deps;
   const toolTimeoutMs = deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS;
   /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
   const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id);
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -810,7 +812,8 @@ async function executeToolInner(
 
 /**
  * agent 工具可见性白名单：config.tools 非空时仅保留白名单工具；
- * MCP 工具（mcp_ 前缀）与插件注册的工具豁免（即插即用，专家默认可见）
+ * 默认宽松：MCP 工具（mcp_ 前缀）与插件注册的工具豁免（即插即用，专家默认可见）；
+ * strictTools 开启后关闭豁免，仅白名单可见（白名单支持 "mcp_<server>_" 前缀条目）
  */
 function filterVisibleTools(
   available: ToolDefinition[],
@@ -818,11 +821,12 @@ function filterVisibleTools(
   isPluginRegistered: (name: string) => boolean,
 ): ToolDefinition[] {
   if (config.tools.length === 0) return available;
+  const strict = config.strictTools === true;
   return available.filter(
     (t) =>
       config.tools.includes(t.function.name) ||
-      t.function.name.startsWith("mcp_") ||
-      isPluginRegistered(t.function.name),
+      config.tools.some((x) => x.endsWith("_") && t.function.name.startsWith(x)) ||
+      (!strict && (t.function.name.startsWith("mcp_") || isPluginRegistered(t.function.name))),
   );
 }
 

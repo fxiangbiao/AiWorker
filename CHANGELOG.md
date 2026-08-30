@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.0 (2026-08-30)
+
+### 多模态 + 应用工坊 + 智能体管理（Sprint 36 及后续迭代）
+- **多模态图片**：对话支持粘贴/选择图片上传（`Message.content` 联合类型、`Task.images`、`/chat` vision 门控——当前模型不支持视觉时明确提示配置 `vision:true`）；后端 TTS 音频通道（`/api/v1/audio` WS，edge-tts 自研客户端；语音输入受网络限制放弃，保留图片能力）
+- **「应用工坊」任务模式**：输入区任务类型下拉新增第三项——对话直接触发应用生成（后台队列，不阻塞对话）；聊天流**实时状态卡片**（排队→生成中步骤/百分比/文件明细→完成+打开应用/查看文档→失败原因），与按钮生成（GenWizard 简化后）统一走聊天流卡片
+- **生成卡片持久化**：终态（done/failed/canceled）写入卡片消息（`_genStatus/_genResult/_genError`），刷新/重开会话仍可恢复展示；`GET /api/v1/apps/gen` 列表端点 + 前端拉取恢复进行中任务
+- **能力桥修复**：宿主回发 `bridge:res` 的 targetOrigin 改 `"*"`（沙箱 iframe origin 为 "null"，原传宿主 origin 被浏览器静默丢弃导致 30s「宿主无响应」）；`http.fetch` 加 10s 超时 + 明确错误；webapp 生成模板明确桥接返回契约（`{status, ok, text}`）；天气应用 httpGet 解析修复
+- **智能体管理（二期完整版）**：系统设置新增「智能体」Tab——内置 7 专家查看/编辑 System Prompt 与参数（写 `config/agents/*.yaml` **热生效**，恢复默认一键回 TS）；**自定义智能体**（GenericAgent + YAML，与内置同等待遇：执行专家下拉/对话/团队协作/jobRunner 均可用），支持自定义 prompt/模型/迭代/工具白名单 + **技能绑定**（运行时注入，更新即时生效）+ **MCP/插件绑定**（保存展开进白名单）+ **严格工具模式**（关闭 mcp/插件全局豁免）；`/agents/meta` 表单选项端点 + config/reset/delete 端点
+- **迭代上限收敛**：唯一事实源改为 `config/agents/*.yaml`（智能体 Tab / CLI `/config iterations` 同机制持久化），移除 runtime-config 运行时覆盖（消除两处配置冲突）
+- **日志并入轨迹 Tab**：上部「最近活动」（跨会话 turn 汇总，今天/昨天/日期分组，点击直达）→ 下部「会话轨迹」（默认跟随当前会话，可固定目标会话）；「日志」Tab 移除
+- **会话列表统一**：移除「应用生成」独立分区（生成过程已在对话流卡片），appgen 后台会话不再展示
+- **修复**：Svelte 5 深响应代理回写（生成卡片 `_genJobId` 原直接改局部对象不触发更新）、生成卡片跨会话终态定位、AgentsPanel 挂载漏加载、智能体保存丢失 allowedTools/deniedTools、技能段 marker 定位替换防重复/防 YAML 固化
+- **README**：界面预览补全 7 张截图（修复 web_ui_demo1 双后缀断链）
+- 测试 +15（agent-config-loader roundtrip、agents API CRUD、GenericAgent 技能注入、media 音频、CLI iterations 持久化）；全量 543 全绿
+
 ## 0.8.0 (2026-08-27)
 
 ### AI OS 应用工厂 v2 + 窗口体系 + 应用预览面板（Sprint 35）
