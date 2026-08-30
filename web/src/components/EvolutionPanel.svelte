@@ -380,7 +380,7 @@
   .evo-card-val {
     font-size: 20px;
     font-weight: 700;
-    color: var(--primary-light);
+    color: var(--primary);
   }
   .evo-card-label {
     font-size: 11px;
@@ -453,7 +453,7 @@
   }
   .evo-task-chip {
     font-size: 11px;
-    color: var(--primary-light);
+    color: var(--primary);
     border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
     border-radius: 4px;
     padding: 2px 8px;
@@ -486,7 +486,7 @@
   }
   .evo-type-new-tool {
     background: color-mix(in srgb, var(--primary) 18%, transparent);
-    color: var(--primary-light);
+    color: var(--primary);
   }
   .evo-type-new-app {
     background: color-mix(in srgb, #a855f7 18%, transparent);
@@ -526,7 +526,7 @@
     color: var(--warn);
   }
   .evo-status-confirmed {
-    color: var(--primary-light);
+    color: var(--primary);
   }
   .evo-status-applied {
     color: var(--success);
@@ -545,8 +545,9 @@
     background: color-mix(in srgb, var(--primary) 6%, transparent);
   }
   .evo-preview-title {
-    font-size: 11px;
-    color: var(--primary-light);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary);
     margin-bottom: 4px;
   }
   .evo-preview-body {
