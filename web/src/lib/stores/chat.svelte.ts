@@ -22,6 +22,8 @@ export interface UIMessage {
   _kind?: "chat" | "plan" | "debate" | "gen" | "error";
   /** 生成任务卡片：关联的后台生成 jobId（_kind === "gen"） */
   _genJobId?: string;
+  /** 生成卡片动作（generate/update；决定文案与结果展示） */
+  _genAction?: "generate" | "update";
   /** 生成卡片所属会话 id（终态持久化时定位消息用；刷新后随消息恢复） */
   _genSessionId?: string;
   /** 生成终态（gen/done|failed|canceled 事件写入消息本身，刷新/重开会话后仍可展示） */

@@ -938,8 +938,18 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 400, { error: "Missing 'description'" });
         return;
       }
-      const result = await deps.appFactory.update(appId, payload.description, payload.sessionId);
-      sendJSON(res, result.ok ? 200 : 400, result);
+      // 异步队列优先（立即返回 jobId，进度经 gen/* WS 事件推送）；队列不可用时回退同步执行
+      if (deps.generatorQueue && typeof deps.generatorQueue.submitUpdate === "function") {
+        const jobId = deps.generatorQueue.submitUpdate(appId, payload.description, payload.sessionId);
+        sendJSON(res, 200, { ok: true, jobId });
+        return;
+      }
+      try {
+        const result = await deps.appFactory.update(appId, payload.description, payload.sessionId);
+        sendJSON(res, result.ok ? 200 : 400, result);
+      } catch (err) {
+        sendJSON(res, 500, { error: (err as Error).message });
+      }
       return;
     }
     if (url.startsWith(apiUrl("/apps/")) && url.endsWith("/bridge") && req.method === "POST") {

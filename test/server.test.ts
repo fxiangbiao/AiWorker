@@ -639,6 +639,70 @@ describe("HTTP Server", () => {
     local.close();
   });
 
+  it("/apps/:id/update 异步入队返回 jobId（进度经 gen/* WS 推送）", async () => {
+    const deps = mockDeps();
+    deps.appFactory = {} as never;
+    let updatedAppId = "";
+    deps.generatorQueue = {
+      submitUpdate: (appId: string) => {
+        updatedAppId = appId;
+        return "genjob-upd-1";
+      },
+    } as never;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/apps/my-app/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "加暂停按钮" }),
+    });
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { ok?: boolean; jobId?: string };
+    expect(data).toEqual({ ok: true, jobId: "genjob-upd-1" });
+    expect(updatedAppId).toBe("my-app");
+    local.close();
+  });
+
+  it("/apps/:id/update 队列不可用时同步回退（直接返回结果）", async () => {
+    const deps = mockDeps();
+    deps.appFactory = {
+      update: async (id: string, desc: string) => ({
+        ok: true,
+        app: { id, name: "Mock", version: "1.0.1", type: "app", status: "running" },
+      }),
+    } as never;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/apps/my-app/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "换主题色" }),
+    });
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { ok?: boolean; app?: { version?: string } };
+    expect(data.ok).toBe(true);
+    expect(data.app?.version).toBe("1.0.1");
+    local.close();
+  });
+
+  it("/apps/:id/update 缺失 description 返回 400", async () => {
+    const deps = mockDeps();
+    deps.appFactory = {} as never;
+    deps.generatorQueue = { submitUpdate: () => "genjob-x" } as never;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/apps/my-app/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(resp.status).toBe(400);
+    local.close();
+  });
+
   it("/plan SSE 流式返回 plan + step + done", async () => {
     const resp = await fetch(`${base}${API}/plan`, {
       method: "POST",

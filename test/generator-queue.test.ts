@@ -82,4 +82,38 @@ describe("generator-queue 异步生成", () => {
     q.submit(spec);
     expect(q.list().length).toBe(1);
   });
+
+  it("submitUpdate 入队更新任务：task.kind=update 且走 factory.update（含进度）", async () => {
+    let captured: { appId: string; description: string; sessionId?: string } | undefined;
+    let progressSteps: string[] = [];
+    const q2 = new GeneratorQueue();
+    q2.init({
+      generate: async () => ({ ok: true, app: { id: "x", name: "x", version: "1.0.0", type: "app", status: "running" } }),
+      update: async (appId, description, sessionId, onProgress) => {
+        captured = { appId, description, sessionId };
+        onProgress?.("更新", 0, 30, "读取现有应用结构…");
+        onProgress?.("更新", 5, 30, "app.js 已更新");
+        return { ok: true, app: { id: appId, name: "x", version: "1.0.1", type: "app", status: "running" } };
+      },
+    } as unknown as AppFactory);
+    const id = q2.submitUpdate("gen-1", "加暂停按钮", "sess-1");
+    expect(id).toMatch(/^genjob-/);
+    const job = q2.get(id)!;
+    expect(job.task).toMatchObject({ kind: "update", appId: "gen-1", description: "加暂停按钮", sessionId: "sess-1" });
+    await wait(50);
+    expect(q2.get(id)?.status).toBe("done");
+    expect(captured).toMatchObject({ appId: "gen-1", description: "加暂停按钮", sessionId: "sess-1" });
+    expect(q2.get(id)?.result?.app?.version).toBe("1.0.1");
+  });
+
+  it("submitUpdate 更新失败 → failed + error", async () => {
+    const q3 = new GeneratorQueue();
+    q3.init({
+      update: async () => ({ ok: false, error: "未检测到文件变更（模型未写入文件）" }),
+    } as unknown as AppFactory);
+    const id = q3.submitUpdate("gen-2", "换个主题色");
+    await wait(50);
+    expect(q3.get(id)?.status).toBe("failed");
+    expect(q3.get(id)?.error).toMatch(/未检测到文件变更/);
+  });
 });
