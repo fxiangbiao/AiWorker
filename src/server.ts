@@ -1528,34 +1528,92 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    // ─── 文档工作台（Sprint 35：data/docs/ 会话资产） ───
+    // ─── 文档工作台（Sprint 35：data/docs/ 会话资产；Sprint 38：+ 工作目录项目文档） ───
     if (url === apiUrl("/docs") && req.method === "GET") {
-      const docsDir = deps.dataDir ? resolve(deps.dataDir, "docs") : resolve(process.cwd(), "data", "docs");
-      const list: { path: string; title: string; size: number }[] = [];
-      const walk = (dir: string, base: string): void => {
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const docsDir = resolve(dataDir, "docs");
+      const projectDir = deps.workingDir;
+      const docs: { root: string; path: string; title: string; size: number; mtime: number }[] = [];
+      // 会话资产：data/docs/ 全量递归（数量小，无上限）
+      const walkSession = (dir: string, base: string): void => {
         if (!existsSync(dir)) return;
         for (const e of readdirSync(dir, { withFileTypes: true })) {
           const full = resolve(dir, e.name);
-          if (e.isDirectory()) walk(full, join(base, e.name));
+          if (e.isDirectory()) walkSession(full, join(base, e.name));
           else if (e.name.endsWith(".md")) {
-            const rel = join(base, e.name);
-            list.push({ path: rel, title: e.name.replace(/\.md$/, ""), size: statSync(full).size });
+            const st = statSync(full);
+            docs.push({ root: "session", path: join(base, e.name).replace(/\\/g, "/"), title: e.name.replace(/\.md$/, ""), size: st.size, mtime: st.mtimeMs });
           }
         }
       };
-      walk(docsDir, "");
-      list.sort((a, b) => b.path.localeCompare(a.path));
-      sendJSON(res, 200, { docs: list });
+      walkSession(docsDir, "");
+      // 项目文档：workingDir 递归（排除系统目录 + 应用自身 dataDir；深度/数量/大小上限；mtime 降序）
+      const excludedDirNames = new Set([
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".next",
+        "coverage",
+        "out",
+      ]);
+      const projectAbs = resolve(projectDir);
+      const dataDirAbs = resolve(dataDir);
+      const relData = relative(projectAbs, dataDirAbs);
+      const excludeDataAbs =
+        projectAbs !== dataDirAbs && relData !== "" && !relData.startsWith("..") && !isAbsolute(relData) ? dataDirAbs : null;
+      const projectDocs: typeof docs = [];
+      let scanStopped = false;
+      const walkProject = (dir: string, base: string, depth: number): void => {
+        if (scanStopped || depth > 4 || !existsSync(dir)) return;
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          if (scanStopped) return;
+          const full = resolve(dir, e.name);
+          if (e.isDirectory()) {
+            if (excludedDirNames.has(e.name)) continue;
+            if (excludeDataAbs && full === excludeDataAbs) continue;
+            walkProject(full, join(base, e.name), depth + 1);
+          } else if (e.name.endsWith(".md")) {
+            let st;
+            try {
+              st = statSync(full);
+            } catch {
+              continue;
+            }
+            if (st.size > 1_000_000) continue;
+            projectDocs.push({ root: "project", path: join(base, e.name).replace(/\\/g, "/"), title: e.name.replace(/\.md$/, ""), size: st.size, mtime: st.mtimeMs });
+            if (projectDocs.length >= 200) {
+              scanStopped = true;
+              return;
+            }
+          }
+        }
+      };
+      walkProject(projectDir, "", 0);
+      projectDocs.sort((a, b) => b.mtime - a.mtime);
+      docs.push(...projectDocs);
+      sendJSON(res, 200, {
+        roots: [
+          { root: "session", dir: docsDir },
+          { root: "project", dir: projectDir },
+        ],
+        docs,
+      });
       return;
     }
     if (url.startsWith(apiUrl("/docs/content")) && req.method === "GET") {
-      const docsDir = deps.dataDir ? resolve(deps.dataDir, "docs") : resolve(process.cwd(), "data", "docs");
       const u = new URL(req.url ?? "", "http://localhost");
+      const root = u.searchParams.get("root") ?? "session";
       const rel = u.searchParams.get("path") ?? "";
-      const abs = resolve(docsDir, rel);
-      const relCheck = relative(docsDir, abs);
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const baseDir = root === "project" ? deps.workingDir : resolve(dataDir, "docs");
+      const abs = resolve(baseDir, rel);
+      const relCheck = relative(baseDir, abs);
       if (!relCheck.startsWith("..") && !isAbsolute(relCheck) && existsSync(abs) && statSync(abs).isFile()) {
-        sendJSON(res, 200, { path: rel, content: readFileSync(abs, "utf-8") });
+        sendJSON(res, 200, { root, path: rel, content: readFileSync(abs, "utf-8") });
       } else {
         sendJSON(res, 404, { error: "Doc not found" });
       }

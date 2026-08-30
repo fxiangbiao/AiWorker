@@ -39,7 +39,7 @@
       openAppInPreview(res.app.id, res.app);
     } else if (res?.docPath) {
       const rel = res.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? res.docPath;
-      docViewer.set(rel);
+      docViewer.set(`session:${rel}`);
       rightPanelVisible.set(true);
       rightTab.set("docs");
     }

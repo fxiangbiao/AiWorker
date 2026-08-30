@@ -406,7 +406,7 @@ function handleGenEvent(type: string, data: Record<string, unknown>): void {
       }
       if (next.result?.docPath) {
         const rel = next.result.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? next.result.docPath;
-        docViewer.set(rel);
+        docViewer.set(`session:${rel}`);
         rightPanelVisible.set(true);
         rightTab.set("docs");
       }

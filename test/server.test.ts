@@ -703,6 +703,65 @@ describe("HTTP Server", () => {
     local.close();
   });
 
+  it("/docs 返回会话资产与项目文档（排除 node_modules/.git 等系统目录）", async () => {
+    const projDir = resolve(testDir, "proj-docs");
+    mkdirSync(resolve(projDir, "docs"), { recursive: true });
+    mkdirSync(resolve(projDir, "node_modules", "pkg"), { recursive: true });
+    mkdirSync(resolve(projDir, ".git"), { recursive: true });
+    mkdirSync(resolve(testDir, "docs", "sess"), { recursive: true });
+    writeFileSync(resolve(projDir, "README.md"), "# 项目说明", "utf-8");
+    writeFileSync(resolve(projDir, "docs", "design.md"), "# 设计方案", "utf-8");
+    writeFileSync(resolve(projDir, "node_modules", "pkg", "README.md"), "# 依赖说明", "utf-8");
+    writeFileSync(resolve(projDir, ".git", "notes.md"), "# git notes", "utf-8");
+    writeFileSync(resolve(testDir, "docs", "sess", "report.md"), "# 会话报告", "utf-8");
+    const deps = mockDeps();
+    deps.workingDir = projDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/docs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      roots: { root: string; dir: string }[];
+      docs: { root: string; path: string; title: string }[];
+    };
+    expect(data.roots.some((r) => r.root === "project")).toBe(true);
+    expect(data.docs.some((d) => d.root === "session" && d.path === "sess/report.md")).toBe(true);
+    expect(data.docs.some((d) => d.root === "project" && d.path === "README.md")).toBe(true);
+    expect(data.docs.some((d) => d.root === "project" && d.path === "docs/design.md")).toBe(true);
+    expect(data.docs.some((d) => d.path === "node_modules/pkg/README.md")).toBe(false);
+    expect(data.docs.some((d) => d.path === ".git/notes.md")).toBe(false);
+    local.close();
+  });
+
+  it("/docs/content root=project 读取项目文档且拒绝路径穿越", async () => {
+    const projDir = resolve(testDir, "proj-content");
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(resolve(projDir, "design.md"), "# 设计方案内容", "utf-8");
+    writeFileSync(resolve(testDir, "secret.md"), "# 不应泄露", "utf-8");
+    const deps = mockDeps();
+    deps.workingDir = projDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const ok = await fetch(`http://127.0.0.1:${port}${API}/docs/content?root=project&path=${encodeURIComponent("design.md")}`);
+    expect(ok.status).toBe(200);
+    const d = (await ok.json()) as { root: string; content: string };
+    expect(d.root).toBe("project");
+    expect(d.content).toContain("设计方案内容");
+    const bad = await fetch(`http://127.0.0.1:${port}${API}/docs/content?root=project&path=${encodeURIComponent("../secret.md")}`);
+    expect(bad.status).toBe(404);
+    local.close();
+  });
+
+  it("/docs/content 无 root 参数兼容旧行为（视为 session）", async () => {
+    const resp = await fetch(`${base}${API}/docs/content?path=${encodeURIComponent("sess/report.md")}`);
+    expect(resp.status).toBe(200);
+    const d = (await resp.json()) as { root: string; content: string };
+    expect(d.root).toBe("session");
+    expect(d.content).toContain("会话报告");
+  });
+
   it("/plan SSE 流式返回 plan + step + done", async () => {
     const resp = await fetch(`${base}${API}/plan`, {
       method: "POST",

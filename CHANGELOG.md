@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 (2026-08-30)
+
+### 文档预览支持工作目录项目文档（Sprint 38）
+- **双来源**：文档预览面板分组展示「会话资产」（`data/docs/`）+「项目文档」（工作目录 `*.md`，mtime 降序，AI 刚写的排最前）
+- **项目扫描防噪音/防性能**：排除 `node_modules/.git/dist/.venv/__pycache__` 等系统目录与应用自身 dataDir（按绝对路径）；深度 ≤4、.md ≤200、单文件 ≤1MB
+- **API**：`/docs` 返回 `roots` + `docs[{root, path, title, size, mtime}]`；`/docs/content?root=session|project` 各自独立路径穿越防护（无 root 参数兼容旧行为）
+- **前端**：`docViewer` 改为 `root:rel` 前缀 key；预览面板分节 chips（项目文档用相对路径做标题）+ 手动刷新 + 监听 `session/update` 自动刷新；图表 sidecar（`data.json`）仅会话资产加载，避免误读项目业务 JSON；路径统一正斜杠（Windows 兼容）
+- 测试 +3（双来源扫描/排除、project 读取与穿越防护、session 兼容）；全量 556 全绿
+
 ## 0.9.1 (2026-08-30)
 
 ### Web 对话技能模式 + 技能检索（Sprint 37）
