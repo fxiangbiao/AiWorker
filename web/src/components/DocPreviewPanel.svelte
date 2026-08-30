@@ -102,7 +102,9 @@
     collapsedDirs = next;
   }
 
-  // 文档打开/切换时刷新列表（新生成的文档出现在列表）；打开项目文档时自动展开其祖先目录
+  // 文档打开/切换时刷新列表（新生成的文档出现在列表）；打开项目文档时自动展开其祖先目录。
+  // 注意：此效果读取 collapsedDirs，写入必须仅在真正变化时进行（新 Set 引用会触发依赖失效，
+  // 无条件写入会导致 读→写→读… 无限循环，Svelte 抛 effect_update_depth_exceeded）
   $effect(() => {
     const p = $docViewer;
     if (p) {
@@ -111,12 +113,13 @@
         const parts = p.slice("project:".length).split("/");
         parts.pop();
         const next = new Set(collapsedDirs);
+        let changed = false;
         let acc = "";
         for (const part of parts) {
           acc = acc ? `${acc}/${part}` : part;
-          next.delete(acc);
+          if (next.delete(acc)) changed = true;
         }
-        collapsedDirs = next;
+        if (changed) collapsedDirs = next;
       }
     }
   });
