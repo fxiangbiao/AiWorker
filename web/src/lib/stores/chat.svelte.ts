@@ -259,18 +259,20 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
         msgs.push(um);
       } else if (role === "tool") {
         const target = pendingTools.find((p) => p.id === m.tool_call_id);
-        const item = target?.msg.timeline?.find((t) => t.type === "tool" && t.id === m.tool_call_id);
-        if (item) {
-          const content = String(m.content || "");
-          const failed = content.startsWith("Error:");
-          item.result = !failed;
-          item.error = failed ? content.slice(6, 300) : undefined;
-          item.resultPreview = failed ? undefined : content.slice(0, 300);
-          item.pending = false;
-          pendingTools.splice(pendingTools.indexOf(target), 1);
-        } else {
-          // 无对应 tool_call（异常数据）：作为独立错误消息展示
-          msgs.push({ role: "assistant", content: m.content || "", _kind: "error" });
+        if (target) {
+          const item = target.msg.timeline?.find((t) => t.type === "tool" && t.id === m.tool_call_id);
+          if (item) {
+            const content = String(m.content || "");
+            const failed = content.startsWith("Error:");
+            item.result = !failed;
+            item.error = failed ? content.slice(6, 300) : undefined;
+            item.resultPreview = failed ? undefined : content.slice(0, 300);
+            item.pending = false;
+            pendingTools.splice(pendingTools.indexOf(target), 1);
+          } else {
+            // 无对应 tool_call（异常数据）：作为独立错误消息展示
+            msgs.push({ role: "assistant", content: m.content || "", _kind: "error" });
+          }
         }
       }
       // 其他角色（system 等）不展示

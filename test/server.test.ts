@@ -1416,3 +1416,112 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     local.close();
   });
 });
+
+describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
+  let server5: Server | undefined;
+  let base5: string;
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = makeTestDir("server-evolution");
+    setupEnv(dir);
+    const store = new SessionStore(resolve(dir, "sessions.db"));
+    // 注入有数据的会话，观察端点可聚合
+    const sess = store.createSession("default");
+    store.setSummary(sess.id, "测试会话");
+    store.appendMessage(sess.id, { role: "user", content: "帮我写一份周报" });
+
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: dir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: dir,
+      sessionStore: store,
+      evolutionEngine: {
+        observe: () => ({
+          windowStart: 0,
+          windowEnd: 1,
+          toolStats: [{ name: "fs_read", calls: 10, failed: 5, successRate: 0.5, avgDurationMs: 50, topErrors: [] }],
+          completion: { sessions: 1, ok: 1, rate: 1, avgTurns: 1 },
+          repeatedTasks: [],
+          userInterventions: 0,
+          generated: { apps: 0, docs: 0, updates: 0 },
+        }),
+        propose: async () => ({ ok: true, proposals: [] }),
+        list: () => [
+          {
+            id: "evo-abc",
+            type: "new-tool",
+            title: "生成周报工具",
+            reason: "重复任务 5 次",
+            action: { kind: "new-tool", description: "自动生成周报", type: "tool" },
+            risk: "low",
+            status: "pending",
+            createdAt: 123,
+          },
+        ],
+        adopt: async (id: string) => ({ ok: true, jobId: `job-${id}` }),
+        reject: (id: string) => ({ ok: true }),
+      } as never,
+    };
+    server5 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server5!.once("listening", () => resolve()));
+    const port = (server5!.address() as AddressInfo).port;
+    base5 = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(() => {
+    if (server5) {
+      server5.close();
+      server5 = undefined;
+    }
+    teardownEnv();
+  });
+
+  it("GET /evolution/observe 返回观察指标", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/observe`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.toolStats).toHaveLength(1);
+    expect(data.toolStats[0]).toMatchObject({ name: "fs_read", successRate: 0.5 });
+  });
+
+  it("POST /evolution/propose 触发提议", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/propose`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.proposals).toEqual([]);
+  });
+
+  it("GET /evolution/proposals 返回提案列表", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.proposals).toHaveLength(1);
+    expect(data.proposals[0]).toMatchObject({ id: "evo-abc", status: "pending" });
+  });
+
+  it("POST /evolution/proposals/:id/adopt 返回 jobId", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/adopt`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.jobId).toBe("job-evo-abc");
+  });
+
+  it("POST /evolution/proposals/:id/reject 成功", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/reject`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+  });
+
+  it("未知操作返回 404", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/frobnicate`, { method: "POST" });
+    expect(resp.status).toBe(404);
+  });
+});

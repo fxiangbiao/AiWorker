@@ -32,6 +32,7 @@ import type { SessionStore } from "./memory/session-store.js";
 import type { AppManager, AppActionResult } from "./core/app-manager.js";
 import type { AppFactory } from "./core/app-factory.js";
 import type { GeneratorQueue } from "./core/generator-queue.js";
+import type { EvolutionEngine } from "./core/evolution-engine.js";
 
 interface DelegateAgent {
   runStream(
@@ -100,6 +101,8 @@ interface ServerDeps {
   appFactory?: AppFactory;
   /** 生成任务队列（AI OS：异步生成，Sprint 35 补丁） */
   generatorQueue?: GeneratorQueue;
+  /** 进化引擎（Sprint 39：观察/提议/采纳，未注入则进化端点 503） */
+  evolutionEngine?: EvolutionEngine;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
@@ -1618,6 +1621,42 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 404, { error: "Doc not found" });
       }
       return;
+    }
+
+    // ─── 进化引擎（Sprint 39：观察/提议/采纳/拒绝） ───
+    if (deps.evolutionEngine && url.startsWith(apiUrl("/evolution"))) {
+      const evo = deps.evolutionEngine;
+      if (url === apiUrl("/evolution/observe") && req.method === "GET") {
+        sendJSON(res, 200, evo.observe());
+        return;
+      }
+      if (url === apiUrl("/evolution/propose") && req.method === "POST") {
+        const result = await evo.propose();
+        sendJSON(res, 200, result);
+        return;
+      }
+      if (url === apiUrl("/evolution/proposals") && req.method === "GET") {
+        sendJSON(res, 200, { proposals: evo.list() });
+        return;
+      }
+      if (url.startsWith(apiUrl("/evolution/proposals/")) && req.method === "POST") {
+        const rest = url.slice(apiUrl("/evolution/proposals/").length);
+        const id = decodeURIComponent(rest.split("/")[0] ?? "");
+        if (!id) {
+          sendJSON(res, 400, { error: "缺少提案 id" });
+          return;
+        }
+        if (rest.endsWith("/adopt")) {
+          sendJSON(res, 200, await evo.adopt(id));
+          return;
+        }
+        if (rest.endsWith("/reject")) {
+          sendJSON(res, 200, evo.reject(id));
+          return;
+        }
+        sendJSON(res, 404, { error: "未知操作（adopt|reject）" });
+        return;
+      }
     }
 
     if (url === apiUrl("/chat") && req.method === "POST") {

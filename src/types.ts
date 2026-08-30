@@ -513,6 +513,53 @@ export interface SessionTelemetryRecord {
   body: unknown;
 }
 
+// ===== 进化引擎（Sprint 39：观察 + 提议） =====
+
+/** 观察窗口内的单工具聚合统计 */
+export interface EvolutionToolStat {
+  name: string;
+  calls: number;
+  failed: number;
+  successRate: number;
+  avgDurationMs: number;
+  topErrors: { err: string; count: number }[];
+}
+
+/** 观察结果（全部从 session_events / audit 派生，不新增存储） */
+export interface EvolutionObservation {
+  windowStart: number;
+  windowEnd: number;
+  toolStats: EvolutionToolStat[];
+  completion: { sessions: number; ok: number; rate: number; avgTurns: number };
+  repeatedTasks: { pattern: string; count: number; examples: string[] }[];
+  userInterventions: number;
+  generated: { apps: number; docs: number; updates: number };
+}
+
+/** 提案动作（按类型结构化，采纳时可直接执行） */
+export type EvolutionAction =
+  | { kind: "new-skill"; expert: string; body: string }
+  | { kind: "new-tool"; description: string; type: "tool" }
+  | { kind: "new-app"; description: string; type: "app" }
+  | { kind: "config-change"; field: "model" | "temperature" | "maxTokens" | "thinking" | "skillEvo"; value: unknown }
+  | { kind: "tool-fix"; toolName: string; suggestion: string }
+  | { kind: "prompt-fix"; agentId: string; suggestion: string };
+
+export type EvolutionProposalType = EvolutionAction["kind"];
+
+/** 进化提案（meta-agent 产出，用户确认后执行） */
+export interface EvolutionProposal {
+  id: string;
+  type: EvolutionProposalType;
+  title: string;
+  reason: string;
+  action: EvolutionAction;
+  risk: "low" | "medium" | "high";
+  status: "pending" | "adopted" | "rejected";
+  createdAt: number;
+  meta?: { tokens?: number };
+}
+
 // ===== AI OS 应用模型（Sprint 34） =====
 
 /** 应用类型：Sprint 34 支持 tool/skill/agent/service；app（webapp）Sprint 35 */

@@ -6,8 +6,9 @@
   import AppsPanel from "./AppsPanel.svelte";
   import ProcessesPanel from "./ProcessesPanel.svelte";
   import AgentsPanel from "./AgentsPanel.svelte";
+  import EvolutionPanel from "./EvolutionPanel.svelte";
 
-  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents";
+  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents" | "evolution";
   let tab = $state<SystemTab>("context");
   let breakdown: {
     systemPromptBase?: number;
@@ -449,7 +450,6 @@
     else if (t === "schedule") loadSchedule();
     else if (t === "config") loadConfig();
   }
-
   // WS job/done 事件 → 调度 Tab 数据实时刷新
   let unsubWs: (() => void) | null = null;
 
@@ -470,6 +470,7 @@
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
     <button class="sp-nav" class:active={tab === "apps"} onclick={() => switchTab("apps")}>应用</button>
     <button class="sp-nav" class:active={tab === "processes"} onclick={() => switchTab("processes")}>进程</button>
+    <button class="sp-nav" class:active={tab === "evolution"} onclick={() => switchTab("evolution")}>进化</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
     <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
     <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
@@ -492,6 +493,8 @@
       </div>
     {:else if tab === "agents"}
       <AgentsPanel />
+    {:else if tab === "evolution"}
+      <EvolutionPanel />
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}

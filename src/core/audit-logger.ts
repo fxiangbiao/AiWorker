@@ -28,6 +28,10 @@ export const auditLogger = {
     if (!instance) return [];
     return instance.queryBySession(sessionId);
   },
+  countByAction(action: string): number {
+    if (!instance) return 0;
+    return instance.countByAction(action);
+  },
   close(): void {
     if (instance) {
       instance.close();

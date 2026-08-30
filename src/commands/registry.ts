@@ -10,8 +10,9 @@ import { configCommands } from "./config.js";
 import { pluginsCommands } from "./plugins.js";
 import { jobsCommands } from "./jobs.js";
 import { packageCommands } from "./package.js";
-import { miscCommands } from "./misc.js";
 import { appsCommands } from "./apps.js";
+import { evolutionCommands } from "./evolution.js";
+import { miscCommands } from "./misc.js";
 
 export type { CliCommand, CommandContext, CommandAction } from "./types.js";
 
@@ -26,6 +27,7 @@ export function buildCliCommands(): CliCommand[] {
     ...jobsCommands, // bg, jobs, schedule
     ...packageCommands, // pkg export/list
     ...appsCommands, // app（AI OS 应用生命周期）
+    ...evolutionCommands, // evo（AI OS 进化引擎）
     ...miscCommands, // mcps, help, exit
   ];
 }
