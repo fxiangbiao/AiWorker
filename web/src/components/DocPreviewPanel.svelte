@@ -4,7 +4,7 @@
    * 右侧面板「文档预览」Tab：左栏分组文档列表（会话资产 data/docs/ + 项目文档 workingDir/）＋ 右侧 Markdown 渲染
    */
   import { onMount } from "svelte";
-  import { X, RefreshCw, PanelLeftClose, PanelLeftOpen, FileText } from "lucide-svelte";
+  import { X, RefreshCw, PanelLeftClose, PanelLeftOpen, FileText, FolderOpen } from "lucide-svelte";
   import { API } from "$lib/stores/chat.svelte";
   import { docViewer } from "$lib/stores/apps.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
@@ -21,6 +21,8 @@
   let roots = $state<{ root: string; dir: string }[]>([]);
   /** 文档栏展开/收起（面板窄时收起给渲染区让位） */
   let railOpen = $state(true);
+  /** 项目文档树折叠目录（按相对路径） */
+  let collapsedDirs = $state<Set<string>>(new Set());
   const docPath = $derived($docViewer);
 
   async function loadDocs() {
@@ -40,10 +42,83 @@
   const projectDirName = $derived(roots.find((r) => r.root === "project")?.dir?.split(/[\\/]/).pop() ?? "");
   const docKey = (d: DocItem) => `${d.root}:${d.path}`;
 
-  // 文档打开/切换时刷新列表（新生成的文档出现在列表）
+  // ── 项目文档文件树（同目录文件聚合，仿「文件变更」左栏） ──
+  interface DocTreeNode {
+    name: string;
+    path: string;
+    dirs: Map<string, DocTreeNode>;
+    files: { d: DocItem; label: string }[];
+  }
+  interface DocTreeRow {
+    kind: "dir" | "file";
+    name: string;
+    path: string;
+    depth: number;
+    collapsed: boolean;
+    d?: DocItem;
+  }
+  function buildDocTree(items: DocItem[]): DocTreeNode {
+    const root: DocTreeNode = { name: "", path: "", dirs: new Map(), files: [] };
+    for (const d of items) {
+      const parts = d.path.split("/");
+      const label = parts.pop()!.replace(/\.md$/, "");
+      let node = root;
+      let acc = "";
+      for (const p of parts) {
+        acc = acc ? `${acc}/${p}` : p;
+        let child = node.dirs.get(p);
+        if (!child) {
+          child = { name: p, path: acc, dirs: new Map(), files: [] };
+          node.dirs.set(p, child);
+        }
+        node = child;
+      }
+      node.files.push({ d, label });
+    }
+    return root;
+  }
+  function flattenDocTree(node: DocTreeNode, depth: number, out: DocTreeRow[], collapsed: ReadonlySet<string>): void {
+    // 目录在前、文件在后，按名称排序
+    const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const files = [...node.files].sort((a, b) => a.label.localeCompare(b.label));
+    for (const d of dirs) {
+      const isCollapsed = collapsed.has(d.path);
+      out.push({ kind: "dir", name: d.name, path: d.path, depth, collapsed: isCollapsed });
+      if (!isCollapsed) flattenDocTree(d, depth + 1, out, collapsed);
+    }
+    for (const f of files) {
+      out.push({ kind: "file", name: f.label, path: f.d.path, depth, d: f.d });
+    }
+  }
+  const projectRows = $derived.by(() => {
+    const rows: DocTreeRow[] = [];
+    flattenDocTree(buildDocTree(projectDocs), 0, rows, collapsedDirs);
+    return rows;
+  });
+  function toggleDocDir(path: string) {
+    const next = new Set(collapsedDirs);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
+    collapsedDirs = next;
+  }
+
+  // 文档打开/切换时刷新列表（新生成的文档出现在列表）；打开项目文档时自动展开其祖先目录
   $effect(() => {
     const p = $docViewer;
-    if (p) void loadDocs();
+    if (p) {
+      void loadDocs();
+      if (p.startsWith("project:")) {
+        const parts = p.slice("project:".length).split("/");
+        parts.pop();
+        const next = new Set(collapsedDirs);
+        let acc = "";
+        for (const part of parts) {
+          acc = acc ? `${acc}/${part}` : part;
+          next.delete(acc);
+        }
+        collapsedDirs = next;
+      }
+    }
   });
 
   onMount(() => {
@@ -96,11 +171,26 @@
           {#if projectDocs.length > 0}
             <div class="dp-sec">项目文档{projectDirName ? ` · ${projectDirName}` : ""}<span class="dp-sec-count">{projectDocs.length}</span></div>
             <div class="dp-items">
-              {#each projectDocs as d (docKey(d))}
-                <button class="dp-item" class:active={docPath === docKey(d)} title={d.path} onclick={() => docViewer.set(docKey(d))}>
-                  <FileText size={12} class="dp-item-ico" />
-                  <span class="dp-item-label">{d.path.replace(/\.md$/, "")}</span>
-                </button>
+              {#each projectRows as row (row.kind === "dir" ? `dir:${row.path}` : `file:${row.path}`)}
+                {#if row.kind === "dir"}
+                  <button class="dp-item dp-dir" style:padding-left={`${4 + row.depth * 12}px`} onclick={() => toggleDocDir(row.path)}>
+                    <span class="dp-caret">{row.collapsed ? "▸" : "▾"}</span>
+                    <FolderOpen size={12} class="dp-item-ico" />
+                    <span class="dp-item-label">{row.name}</span>
+                  </button>
+                {:else}
+                  {@const d = row.d!}
+                  <button
+                    class="dp-item"
+                    class:active={docPath === docKey(d)}
+                    style:padding-left={`${20 + row.depth * 12}px`}
+                    title={d.path}
+                    onclick={() => docViewer.set(docKey(d))}
+                  >
+                    <FileText size={12} class="dp-item-ico" />
+                    <span class="dp-item-label">{row.name}</span>
+                  </button>
+                {/if}
               {/each}
             </div>
           {/if}
@@ -143,18 +233,15 @@
     background: var(--hover-bg); border-radius: 8px; padding: 0 5px;
   }
   .dp-items { display: flex; flex-direction: column; gap: 1px; padding: 0 2px 8px; }
-  .dp-item {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 6px; border: none; border-radius: 6px;
-    background: transparent; color: var(--dim);
-    font-family: var(--font-ui); font-size: 12px;
-    cursor: pointer; text-align: left; min-width: 0;
-  }
+  .dp-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border: none; border-radius: 6px; background: transparent; color: var(--dim); font-family: var(--font-ui); font-size: 12px; cursor: pointer; text-align: left; min-width: 0; }
   .dp-item-ico { flex-shrink: 0; opacity: .65; }
   .dp-item-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dp-item:hover { background: var(--hover-bg); color: var(--text); }
   .dp-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
   .dp-item.active .dp-item-ico { opacity: 1; }
+  .dp-caret { flex-shrink: 0; font-size: 10px; color: var(--dim); width: 10px; }
+  .dp-dir { gap: 4px; font-weight: 500; color: var(--text); }
+  .dp-dir:hover .dp-caret { color: var(--primary); }
   /* ── 渲染区 ── */
   .dp-render { flex: 1; min-width: 0; min-height: 0; }
   .dp-render-empty { color: var(--dim); font-size: 12px; text-align: center; padding: 32px 0; }
