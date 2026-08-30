@@ -81,7 +81,7 @@ function mockCoordinator() {
 function mockAgent() {
   return {
     runStream: async (
-      task: { mode?: string },
+      task: { mode?: string; instruction?: string; explicitSkill?: { name: string; body: string } },
       _wd: string,
       callbacks: { onTextDelta?: (t: string) => void; onToolResult?: (n: string, s: boolean, m: string) => void },
     ) => {
@@ -95,7 +95,7 @@ function mockAgent() {
 
 let server: Server | undefined;
 let base: string;
-let capturedTask: { mode?: string } | undefined;
+let capturedTask: { mode?: string; instruction?: string; explicitSkill?: { name: string; body: string } } | undefined;
 
 function mockDeps() {
   return {
@@ -529,6 +529,116 @@ describe("HTTP Server", () => {
     expect(blocked.message).toContain("拦截");
   });
 
+  it("/chat 技能模式：/技能名 激活（skill_activated 事件 + explicitSkill + instruction 保持原始）", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "code-review", version: "1.0", description: "代码审查", expert: "coding", triggers: [], body: "审查步骤：逐文件检查", raw: "" },
+      { name: "debug", version: "1.0", description: "调试", expert: "coding", triggers: [], body: "调试步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/code-review 修复主流程", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("skill_activated");
+    expect(types).toContain("text");
+    const act = events.find((e) => (e as { type: string }).type === "skill_activated") as {
+      name: string;
+      description: string;
+    };
+    expect(act.name).toBe("code-review");
+    expect(act.description).toBe("代码审查");
+    expect(capturedTask).toMatchObject({
+      instruction: "/code-review 修复主流程",
+      explicitSkill: { name: "code-review", body: "审查步骤：逐文件检查" },
+    });
+    local.close();
+  });
+
+  it("/chat 技能模式：未知技能返回 skill_not_found 且不执行智能体", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "code-review", version: "1.0", description: "代码审查", expert: "coding", triggers: [], body: "审查步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/ghost 任务", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("skill_not_found");
+    expect(types).not.toContain("text");
+    expect(types).not.toContain("done");
+    expect(capturedTask).toBeUndefined();
+    const nf = events.find((e) => (e as { type: string }).type === "skill_not_found") as {
+      name: string;
+      available: string[];
+    };
+    expect(nf.name).toBe("ghost");
+    expect(nf.available).toEqual(["code-review"]);
+    local.close();
+  });
+
+  it("/chat 技能模式：/skill <名称> 形式", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "debug", version: "1.0", description: "调试", expert: "coding", triggers: [], body: "调试步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/skill debug 追踪报错", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("skill_activated");
+    expect(capturedTask?.explicitSkill).toEqual({ name: "debug", body: "调试步骤" });
+    expect(capturedTask?.instruction).toBe("/skill debug 追踪报错");
+    local.close();
+  });
+
+  it("/chat 技能模式：非斜杠消息不受影响", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "debug", version: "1.0", description: "调试", expert: "coding", triggers: [], body: "调试步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "你好，帮我看看", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("text");
+    expect(types).toContain("done");
+    expect(capturedTask?.instruction).toBe("你好，帮我看看");
+    expect(capturedTask?.explicitSkill).toBeUndefined();
+    local.close();
+  });
+
   it("/plan SSE 流式返回 plan + step + done", async () => {
     const resp = await fetch(`${base}${API}/plan`, {
       method: "POST",
@@ -666,6 +776,40 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(found).toBeDefined();
     expect(found!.turnCount).toBe(2);
     expect(found!.messageCount).toBe(4);
+  });
+
+  it("/chat 用户消息只持久化一次（server 不重复 append，由 base-agent 统一负责）", async () => {
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () =>
+        ({
+          runStream: async (task: { sessionId?: string; instruction: string }) => {
+            store.ensureSession(task.sessionId!, "default");
+            store.appendMessage(task.sessionId!, { role: "user", content: task.instruction });
+            return { success: true, text: "ok" } as never;
+          },
+        }) as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store,
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const sessId = `sess-dup-${Date.now().toString(36)}`;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "你好", agentId: "default", sessionId: sessId }),
+    });
+    expect(resp.status).toBe(200);
+    await resp.text();
+    const messages = store.getMessages(sessId);
+    expect(messages.filter((m) => m.role === "user")).toHaveLength(1);
+    local.close();
   });
 
   it("删除不存在的会话返回 404", async () => {

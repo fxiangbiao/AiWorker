@@ -42,6 +42,8 @@ export interface AgentLoopDeps {
   processManager?: ProcessManager;
   /** 多模态图片（data URL/https；Sprint 36）：随本轮用户消息组装 content 数组，仅当轮上下文 */
   images?: string[];
+  /** 技能模式：/技能名 显式激活的技能（透传 assembleContext 注入系统提示） */
+  explicitSkill?: { name: string; body: string };
 }
 
 async function runAgentLoopInner(
@@ -49,14 +51,14 @@ async function runAgentLoopInner(
   userMessage: string,
   deps: AgentLoopDeps,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope, images } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope, images, explicitSkill } = deps;
   const toolTimeoutMs = deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS;
   /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
   const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images);
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -276,14 +278,14 @@ async function runAgentLoopStreamInner(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
-  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope, images } = deps;
+  const { modelRouter, contextManager, sessionStore, sessionId, workingDir, dataDir, toolScope, images, explicitSkill } = deps;
   const toolTimeoutMs = deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS;
   /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
   const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images);
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;

@@ -203,6 +203,8 @@ export interface Task {
   workingDir?: string;
   /** 多模态：随本轮提问附带的图片（data URL 或 https URL；仅当轮上下文，不持久化） */
   images?: string[];
+  /** 技能模式：/技能名 显式激活的技能（正文注入系统提示而非用户消息，避免污染历史与触发词二次注入） */
+  explicitSkill?: { name: string; body: string };
 }
 
 // ===== 工作目录感知 =====

@@ -156,6 +156,26 @@ function sendJSON(res: ServerResponse, status: number, data: unknown) {
   res.end(JSON.stringify(data));
 }
 
+interface SkillLite {
+  name: string;
+  body?: string;
+  description?: string;
+}
+
+/** 技能模式解析：/技能名 [任务] 或 /skill 技能名 [任务]（等价 CLI）；返回激活技能 / 未找到标记 / 非技能指令 */
+function resolveSkillInstruction(message: string, skills: SkillLite[]): { skill: SkillLite } | "not_found" | null {
+  const m = message.match(/^\/([a-zA-Z0-9][\w-]*)(?:\s+|$)/);
+  if (!m) return null;
+  let name = m[1];
+  if (name.toLowerCase() === "skill") {
+    const sub = message.slice(m[0].length).match(/^([a-zA-Z0-9][\w-]*)(?:\s+|$)/);
+    if (!sub) return null;
+    name = sub[1];
+  }
+  const skill = skills.find((s) => s.name.toLowerCase() === name.toLowerCase());
+  return skill ? { skill } : "not_found";
+}
+
 /** 智能体配置校验（POST /agents/<id>/config；type 内置沿用 id，自定义默认 custom） */
 function validateAgentPayload(
   id: string,
@@ -1570,8 +1590,11 @@ export function startServer(deps: ServerDeps, port: number) {
         return;
       }
 
+      // 技能模式：/技能名 [任务] 或 /skill 技能名 [任务]（等价 CLI；未知技能不建会话、不跑智能体）
+      const skillAction = resolveSkillInstruction(chatReq.message, deps.getSkills?.() ?? []);
+
       let sessionId = chatReq.sessionId;
-      if (!sessionId && deps.sessionStore) {
+      if (skillAction !== "not_found" && !sessionId && deps.sessionStore) {
         sessionId = deps.sessionStore.createSession(agentId).id;
         eventBus.broadcast({ type: "session/update", sessionId, kind: "create" });
       }
@@ -1590,10 +1613,20 @@ export function startServer(deps: ServerDeps, port: number) {
       };
 
       try {
+        if (skillAction === "not_found") {
+          const name = chatReq.message.match(/^\/([a-zA-Z0-9][\w-]*)/)?.[1] ?? "";
+          write({ type: "skill_not_found", name, available: (deps.getSkills?.() ?? []).map((s) => s.name) });
+          return;
+        }
+
         if (deps.sessionStore && sessionId) {
           deps.sessionStore.ensureSession(sessionId, agentId);
-          deps.sessionStore.appendMessage(sessionId, { role: "user", content: chatReq.message });
+          // 用户消息持久化由 base-agent.runStream 统一负责（此处不 append，避免双写）
           eventBus.broadcast({ type: "session/update", sessionId, kind: "message" });
+        }
+
+        if (skillAction) {
+          write({ type: "skill_activated", name: skillAction.skill.name, description: skillAction.skill.description ?? "" });
         }
 
         // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
@@ -1617,6 +1650,7 @@ export function startServer(deps: ServerDeps, port: number) {
             sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
             mode: chatReq.mode as PermissionMode | undefined,
             images,
+            ...(skillAction ? { explicitSkill: { name: skillAction.skill.name, body: skillAction.skill.body ?? "" } } : {}),
           };
 
           await agent.runStream(task, deps.workingDir, callbacks, abort.signal);

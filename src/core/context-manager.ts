@@ -201,6 +201,8 @@ export class ContextManager {
     agentId?: string,
     /** 多模态图片（data URL/https；Sprint 36）：随当前用户消息组装 content 数组 */
     images?: string[],
+    /** 技能模式：/技能名 显式激活的技能（注入系统提示，仅当轮上下文，不落历史） */
+    explicitSkill?: { name: string; body: string },
   ): Promise<Message[]> {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -249,6 +251,12 @@ export class ContextManager {
       if (skillsPrompt) {
         fullSystemPrompt += skillsPrompt;
       }
+    }
+
+    // 5.5. 显式激活技能（/技能名；注入系统提示而非用户消息——避免污染会话历史与触发词二次注入）
+    if (explicitSkill) {
+      fullSystemPrompt +=
+        `\n\n-- 用户显式激活技能：${explicitSkill.name} --\n请严格按以下技能方法执行当前任务：\n${explicitSkill.body}\n-- 技能结束 --`;
     }
 
     messages.push({ role: "system", content: fullSystemPrompt });

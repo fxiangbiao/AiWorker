@@ -451,6 +451,27 @@
     agent.timeline = agent.timeline || [];
 
     switch (data.type) {
+      case "skill_activated": {
+        // 技能模式：/技能名 激活成功 → 助手消息顶部徽标
+        const skill = { name: data.name as string, description: (data.description as string) || undefined };
+        agent._skills = [...(agent._skills || []), skill];
+        break;
+      }
+      case "skill_not_found": {
+        // 移除刚推入的空助手消息，仅保留错误提示
+        const last = store.messages[store.messages.length - 1];
+        if (
+          last &&
+          (last.role === "assistant" || last.role === "agent") &&
+          !last.content &&
+          (!last.timeline || last.timeline.length === 0)
+        ) {
+          store.messages = store.messages.slice(0, -1);
+        }
+        const available = ((data.available as string[]) || []).join(", ");
+        errors = [...errors, `未找到技能 "${data.name as string}"${available ? `。可用技能: ${available}` : ""}`];
+        break;
+      }
       case "text":
         agent.content += (data.content as string) || "";
         // 流式输出：显式跟随滚动（不依赖响应式 effect，保证每段 delta 都滚动）

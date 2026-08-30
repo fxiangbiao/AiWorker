@@ -31,6 +31,8 @@ export interface UIMessage {
   _steps?: PlanStep[];
   _meta?: { agentA?: string; agentB?: string; failedSteps?: string[] };
   _activeStep?: string;
+  /** 技能模式：/技能名 激活的技能（SSE skill_activated 事件写入，助手消息顶部徽标） */
+  _skills?: { name: string; description?: string }[];
 }
 
 export interface PlanStep {
