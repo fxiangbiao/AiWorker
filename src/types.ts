@@ -547,7 +547,7 @@ export type EvolutionAction =
 
 export type EvolutionProposalType = EvolutionAction["kind"];
 
-/** 进化提案（meta-agent 产出，用户确认后执行） */
+/** 进化提案（meta-agent 产出；两段式确认：pending→confirmed（采纳，仅确认内容）→applied（确认写入生效）） */
 export interface EvolutionProposal {
   id: string;
   type: EvolutionProposalType;
@@ -555,10 +555,13 @@ export interface EvolutionProposal {
   reason: string;
   action: EvolutionAction;
   risk: "low" | "medium" | "high";
-  status: "pending" | "adopted" | "rejected";
+  status: "pending" | "confirmed" | "applied" | "rejected";
   createdAt: number;
   meta?: { tokens?: number };
 }
+
+/** 采纳确认后的写入预览（= 提案 action，前端/CLI 展示供用户审查） */
+export type EvolutionPreview = EvolutionAction;
 
 // ===== AI OS 应用模型（Sprint 34） =====
 

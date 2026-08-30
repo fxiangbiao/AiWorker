@@ -405,8 +405,7 @@ function pendingProposal(partial: Partial<EvolutionProposal> = {}): EvolutionPro
 }
 
 describe("EvolutionEngine", () => {
-
-  it("adopt new-tool → submitGenerate 返回 jobId + 状态 adopted + 审计", async () => {
+  it("adopt 只确认不写入：pending → confirmed + 返回 preview，不触发 submitGenerate", async () => {
     const submitGenerate = vi.fn((spec: { description: string; type: string }) => `job-${spec.type}`);
     const engine = makeEngine({ submitGenerate });
     seedProposal(engine, pendingProposal({
@@ -415,15 +414,41 @@ describe("EvolutionEngine", () => {
       action: { kind: "new-tool", description: "生成周报", type: "tool" },
     }));
 
-    const result = await engine.adopt("evo-newtool");
+    const result = engine.adopt("evo-newtool");
+    expect(result.ok).toBe(true);
+    expect(result.preview).toEqual({ kind: "new-tool", description: "生成周报", type: "tool" });
+    expect(submitGenerate).not.toHaveBeenCalled();
+    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-newtool.json"), "utf-8")) as EvolutionProposal;
+    expect(saved.status).toBe("confirmed");
+  });
+
+  it("apply new-tool → 真正提交生成 + 状态 applied + 审计", async () => {
+    const submitGenerate = vi.fn((spec: { description: string; type: string }) => `job-${spec.type}`);
+    const engine = makeEngine({ submitGenerate });
+    seedProposal(engine, pendingProposal({
+      id: "evo-newtool2",
+      type: "new-tool",
+      action: { kind: "new-tool", description: "生成周报", type: "tool" },
+      status: "confirmed",
+    }));
+
+    const result = await engine.apply("evo-newtool2");
     expect(result.ok).toBe(true);
     expect(result.jobId).toBe("job-tool");
     expect(submitGenerate).toHaveBeenCalledWith({ description: "生成周报", type: "tool", sessionId: "evolution" });
-    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-newtool.json"), "utf-8")) as EvolutionProposal;
-    expect(saved.status).toBe("adopted");
+    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-newtool2.json"), "utf-8")) as EvolutionProposal;
+    expect(saved.status).toBe("applied");
   });
 
-  it("adopt new-skill：校验失败不标记 adopted", async () => {
+  it("apply 要求 confirmed 状态：pending 直接 apply 拒绝", async () => {
+    const engine = makeEngine();
+    seedProposal(engine, pendingProposal({ id: "evo-notconf" }));
+    const result = await engine.apply("evo-notconf");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("未确认");
+  });
+
+  it("adopt new-skill：校验失败不置 confirmed", () => {
     const engine = makeEngine();
     seedProposal(engine, pendingProposal({
       id: "evo-badskill",
@@ -431,33 +456,65 @@ describe("EvolutionEngine", () => {
       action: { kind: "new-skill", expert: "default", body: "没有 frontmatter 的正文内容，无法通过校验。" },
     }));
 
-    const result = await engine.adopt("evo-badskill");
+    const result = engine.adopt("evo-badskill");
     expect(result.ok).toBe(false);
     expect(result.error).toContain("校验失败");
     const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-badskill.json"), "utf-8")) as EvolutionProposal;
     expect(saved.status).toBe("pending");
   });
 
-  it("adopt config-change → setConfigField 调用 + 审计", async () => {
+  it("adopt new-skill 合法：确认返回 preview 含 body，不落盘技能", () => {
+    const engine = makeEngine();
+    const body = "---\nname: weekly-report\nversion: \"1.0\"\ntriggers:\n  - \"周报\"\nexpert: default\ntools_required:\n  - fs_write\n---\n\n# 周报\n\n## 解决方案\n步骤说明。\n";
+    seedProposal(engine, pendingProposal({
+      id: "evo-goodskill",
+      type: "new-skill",
+      action: { kind: "new-skill", expert: "default", body },
+    }));
+
+    const result = engine.adopt("evo-goodskill");
+    expect(result.ok).toBe(true);
+    expect(result.preview).toEqual({ kind: "new-skill", expert: "default", body });
+    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-goodskill.json"), "utf-8")) as EvolutionProposal;
+    expect(saved.status).toBe("confirmed");
+    // 确认阶段不落盘技能文件
+    expect(existsSync(resolve(process.cwd(), "skills", "default", "weekly-report.md"))).toBe(false);
+  });
+
+  it("apply config-change → setConfigField 调用 + 审计", async () => {
     const setConfigField = vi.fn(() => ({ ok: true }));
     const engine = makeEngine({ setConfigField });
     seedProposal(engine, pendingProposal({
       id: "evo-config",
       type: "config-change",
       action: { kind: "config-change", field: "temperature", value: 0.8 },
+      status: "confirmed",
     }));
 
-    const result = await engine.adopt("evo-config");
+    const result = await engine.apply("evo-config");
     expect(result.ok).toBe(true);
     expect(setConfigField).toHaveBeenCalledWith("temperature", 0.8);
   });
 
-  it("幂等：已 adopted 的提案不可重复处理", async () => {
+  it("幂等：confirmed 重复 adopt 拒绝；applied 重复 apply 拒绝", async () => {
     const engine = makeEngine();
-    seedProposal(engine, pendingProposal({ id: "evo-done", status: "adopted" }));
-    const result = await engine.adopt("evo-done");
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("已处理");
+    seedProposal(engine, pendingProposal({ id: "evo-conf", status: "confirmed" }));
+    seedProposal(engine, pendingProposal({ id: "evo-applied", status: "applied" }));
+    const adoptAgain = engine.adopt("evo-conf");
+    expect(adoptAgain.ok).toBe(false);
+    expect(adoptAgain.error).toContain("已处理");
+    const applyAgain = await engine.apply("evo-applied");
+    expect(applyAgain.ok).toBe(false);
+    expect(applyAgain.error).toContain("已处理");
+  });
+
+  it("reject 可从 confirmed 撤销（不写入）", () => {
+    const engine = makeEngine();
+    seedProposal(engine, pendingProposal({ id: "evo-rev", status: "confirmed" }));
+    const result = engine.reject("evo-rev");
+    expect(result.ok).toBe(true);
+    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-rev.json"), "utf-8")) as EvolutionProposal;
+    expect(saved.status).toBe("rejected");
   });
 
   it("reject：状态置 rejected + 审计", () => {
@@ -581,18 +638,38 @@ describe("CLI /evo 命令", () => {
     expect(writes.join("\n")).toContain("用法");
   });
 
-  it("/evo adopt <id> 采纳并反馈 jobId", async () => {
+  it("/evo adopt <id> 确认提案并展示预览（不写入）", async () => {
     const engine = makeEngine();
     seedProposal(engine, pendingProposal({
       id: "evo-adopt",
       type: "new-tool",
-      action: { kind: "new-tool", description: "工具", type: "tool" },
+      action: { kind: "new-tool", description: "自动生成周报", type: "tool" },
     }));
     const { ctx, writes } = makeCtx(engine);
     await find("evo").handler(ctx, "adopt evo-adopt", "/evo adopt evo-adopt");
     const joined = writes.join("\n");
-    expect(joined).toContain("已采纳");
+    expect(joined).toContain("已确认提案");
+    expect(joined).toContain("尚未写入");
+    expect(joined).toContain("自动生成周报");
+    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-adopt.json"), "utf-8")) as EvolutionProposal;
+    expect(saved.status).toBe("confirmed");
+  });
+
+  it("/evo apply <id> 确认写入并反馈 jobId", async () => {
+    const engine = makeEngine();
+    seedProposal(engine, pendingProposal({
+      id: "evo-apply",
+      type: "new-tool",
+      action: { kind: "new-tool", description: "自动生成周报", type: "tool" },
+      status: "confirmed",
+    }));
+    const { ctx, writes } = makeCtx(engine);
+    await find("evo").handler(ctx, "apply evo-apply", "/evo apply evo-apply");
+    const joined = writes.join("\n");
+    expect(joined).toContain("已写入");
     expect(joined).toContain("job-tool");
+    const saved = JSON.parse(readFileSync(resolve(dir, "evolution", "proposals", "evo-apply.json"), "utf-8")) as EvolutionProposal;
+    expect(saved.status).toBe("applied");
   });
 
   it("/evo reject <id> 拒绝", async () => {

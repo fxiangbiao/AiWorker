@@ -6,13 +6,13 @@
 
 - **观察层**（`evolution-observer`）：从 `session_events` / 审计派生进化指标，不新增存储——工具成功率/耗时/失败 top 错误（按 callId 配对）、任务完成率（turn/end reason）、重复任务聚类（首条用户消息前缀相似度，≥3 次提示）、用户干预频率、生成统计；窗口最近 7 天；会话列表放大 limit（≥500）防窗口截断；空数据短路跳过 LLM 省预算
 - **提议层**（`evolution-proposer`）：meta-agent 分析观察数据 → 单条结构化提案（new-skill / new-tool / new-app / config-change / tool-fix / prompt-fix），schema 校验 + 解析失败重试 ≤2 次；提案落盘 `data/evolution/proposals/` + `ledger.json` 台账；**每日 ≤3 条限频护栏**
-- **采纳/拒绝**（`evolution-engine`）：按类型分发执行——new-skill 复用 skill-evolution 校验注册（meta-agent 直接产出 SKILL.md）、new-tool/new-app 复用生成队列（与对话生成同队列串行互斥）、config-change 走配置通道（白名单字段）、tool-fix/prompt-fix 仅记录建议人工执行；幂等（仅 pending 可处理）；全审计 + `evolution/*` WS 事件
-- **API**：`GET /evolution/observe`、`POST /evolution/propose`、`GET /evolution/proposals`、`POST /evolution/proposals/:id/adopt|reject`
-- **Web「进化」Tab**：观察指标仪表（成功率条/失败错误 chips/重复任务/生成统计）+ 提案卡片（类型徽标/风险/采纳拒绝按钮）；采纳 new-tool/new-app 反馈 jobId 并引导「应用」Tab
-- **CLI `/evo`**：observe / propose / list / adopt / reject
+- **采纳/拒绝**（`evolution-engine`，**两段式确认**）：`adopt` 仅确认提案内容（pending→confirmed，返回写入预览，**不写入任何内容**）；`apply` 才真正执行（confirmed→applied）——new-skill 复用 skill-evolution 校验注册（meta-agent 直接产出 SKILL.md）、new-tool/new-app 复用生成队列（与对话生成同队列串行互斥）、config-change 走配置通道（白名单字段）、tool-fix/prompt-fix 仅记录建议人工执行；`reject` 可从 pending/confirmed 撤销；幂等（各状态机非法流转拒绝）；全审计 + `evolution/*` WS 事件
+- **API**：`GET /evolution/observe`、`POST /evolution/propose`、`GET /evolution/proposals`、`POST /evolution/proposals/:id/adopt|apply|reject`（adopt 返回 preview）
+- **Web「进化」Tab**：观察指标仪表（成功率条/失败错误 chips/重复任务/生成统计）+ 提案卡片（类型徽标/风险）；采纳后展开**写入预览**（SKILL.md 全文/配置值等）→「确认写入」/「撤销」二次确认；采纳 new-tool/new-app 反馈 jobId 并引导「应用」Tab
+- **CLI `/evo`**：observe / propose / list / adopt（预览）/ apply（写入）/ reject
 - **修复 web tsc 3 存量错误**：`chat.svelte.ts` pendingTools 判空、`markdown.ts` marked v15 API 变更（highlight 选项移除 → renderer 扩展、parse 同步断言）；web tsc 首次 0 错误
 - **数据核查**：`data/docs` 文件名为正确 UTF-8（此前"GBK 乱码"为 PowerShell 控制台显示假象，全目录扫描无乱码，无需修复）
-- 测试 +40（观察聚合/窗口/空数据、提议 schema/限频/重试、采纳各类型分发/幂等、端点 6 例、CLI 6 例）；全量 596 全绿
+- 测试 +40（观察聚合/窗口/空数据、提议 schema/限频/重试、两段式确认全状态机、端点 7 例、CLI 7 例）；全量 602 全绿
 
 ## 0.9.2 (2026-08-30)
 

@@ -1,6 +1,6 @@
 # Sprint 39 — 进化引擎第一期：观察 + 提议（0.10.0）
 
-> 状态：**✅ 开发完成（596 测试全绿，待提交）**
+> 状态：**✅ 开发完成（602 测试全绿，两段式确认已落地，待提交）**
 > 需求：自进化闭环（设计文档 4.6）第一期——「观察 → 提议 → 用户确认」，完成 AI OS 愿景最后一块核心拼图
 > 现状：进化只完成 2/5 层（技能自沉淀 ✅、记忆自组织 ✅）；工具自优化 ❌、能力自生长 ❌、配置自调优 ❌
 > 前置：0.9.2（53c1984）
@@ -50,7 +50,7 @@ interface EvolutionProposal {
   reason: string;                    // 观察依据（成功率 43%、同类任务 5 次…）
   action: EvolutionAction;           // 按 type 区分（见下）
   risk: "low" | "medium" | "high";
-  status: "pending" | "adopted" | "rejected";
+  status: "pending" | "confirmed" | "applied" | "rejected";   // 两段式确认：pending→confirmed（采纳，不写入）→applied（确认写入）
   createdAt: number;
   meta?: { tokens?: number };        // 进化预算记录（第一期仅记账）
 }
@@ -68,17 +68,19 @@ type EvolutionAction =
 - 存储：`data/evolution/proposals/<id>.json`（mkdir -p 初始化）+ `data/evolution/ledger.json`（台账时间线，追加）
 - **限频护栏**：同日已有 ≥3 条提案 → `POST /evolution/propose` 拒绝（返回 remaining 提示）
 
-### 3. 采纳执行（src/core/evolution-engine.ts，新增）
+### 3. 采纳执行（src/core/evolution-engine.ts，新增，**两段式确认**）
 
-- `observe()` / `propose()` / `list()` / `adopt(id)` / `reject(id)`
-- `adopt` 按 type 分发（依赖注入，index.ts 组装）：
-  - `new-skill` → `skillEvolution.validate()`（body 写入临时文件校验）→ `register()` 落盘 `skills/<expert>/`；校验失败返回 error 不标记 adopted
+- `observe()` / `propose()` / `list()` / `adopt(id)` / `apply(id)` / `reject(id)`
+- **状态机**：`pending →(adopt 确认内容，不写入)→ confirmed →(apply 确认写入，真正执行)→ applied`；reject 可从 pending/confirmed 撤销
+- `adopt` 仅做：可行性校验（new-skill 校验 SKILL.md 合法性）+ 置 confirmed + 返回**写入预览**（= action）；**不写入任何内容**
+- `apply` 按 type 分发执行（依赖注入，index.ts 组装）：
+  - `new-skill` → `skillEvolution.register()` 落盘 `skills/<expert>/`（adopt 阶段已校验）；失败返回 error 不标记 applied
   - `new-tool` / `new-app` → `generatorQueue.submit({ kind:"generate", spec:{ description: action.description, type: action.type, sessionId: "evolution" } })` → 返回 jobId（与对话生成同队列，天然串行互斥）
   - `config-change` → `setConfigField(field, value)`（**白名单 = setConfigField 实际支持的字段**：model/temperature/maxTokens/thinking/skillEvo；提案 schema 已约束，运行时再校验一次）
-  - `tool-fix` / `prompt-fix` → 标记 adopted + 审计 detail 注明"建议人工执行"，不做自动改写
-- 全部动作写 `auditLogger.log(action: "evolution:adopt")` + 广播 `evolution/adopted`（带 jobId 时一并广播）
+  - `tool-fix` / `prompt-fix` → 标记 applied + 审计 detail 注明"建议人工执行"，不做自动改写
+- 全部动作写 `auditLogger.log(action: "evolution:adopt|apply")` + 广播 `evolution/confirmed|applied`（带 jobId 时一并广播）
 - `reject` → 状态置 rejected + 审计 + `evolution/rejected` 事件
-- **幂等**：adopt/reject 仅对 pending 生效；已终态返回 `{ ok:false, error:"提案已处理" }`
+- **幂等**：adopt 仅 pending 生效、apply 仅 confirmed 生效、reject 对 pending/confirmed 生效；非法流转返回 `{ ok:false, error:"提案已处理" }`
 
 ### 4. API（src/server.ts）
 
@@ -86,12 +88,13 @@ type EvolutionAction =
 GET  /api/v1/evolution/observe                     → EvolutionObservation
 POST /api/v1/evolution/propose                     → { ok, proposals: EvolutionProposal[] }（空观察返回 []；限频拒绝带 remaining）
 GET  /api/v1/evolution/proposals                   → EvolutionProposal[]（按 createdAt 降序）
-POST /api/v1/evolution/proposals/:id/adopt         → { ok, jobId?, detail? }
+POST /api/v1/evolution/proposals/:id/adopt         → { ok, preview? }（确认提案，不写入）
+POST /api/v1/evolution/proposals/:id/apply         → { ok, jobId?, detail? }（确认写入，真正执行）
 POST /api/v1/evolution/proposals/:id/reject        → { ok }
 ```
 
 - ServerDeps 注入 `evolutionEngine?`（未注入返回 503，与 appManager 同模式）
-- WS 事件：`evolution/adopted`（含 jobId）/ `evolution/rejected`
+- WS 事件：`evolution/confirmed` / `evolution/applied`（含 jobId）/ `evolution/rejected`
 
 ### 5. Web「进化」Tab（SystemPanel + EvolutionPanel.svelte，新增）
 
@@ -99,12 +102,12 @@ POST /api/v1/evolution/proposals/:id/reject        → { ok }
 - 上半区**观察指标仪表**：工具成功率 top 失败列表、任务完成率、重复任务 chips、生成统计
 - 下半区**提案列表**：类型徽标（new-skill 绿 / new-tool 蓝 / new-app 紫 / config-change 橙 / fix 灰）+ 标题 + 理由 + 风险标 + 采纳/拒绝按钮
 - 「运行观察并提议」按钮（observe + propose 串联）
-- **采纳反馈路径（明确）**：EvolutionPanel 不在对话流，`spawnGenCard` 不适用 → 采纳 new-tool/new-app 后显示**任务已提交 + jobId**，附提示「生成进度见右侧「应用」Tab / 轨迹」，并刷新提案列表；WS 监听 `evolution/*` 自动刷新
+- **采纳反馈路径（明确）**：EvolutionPanel 不在对话流，`spawnGenCard` 不适用 → 采纳后**展开写入预览**（SKILL.md 全文/配置值/生成描述），点「确认写入」才执行；new-tool/new-app 显示**任务已提交 + jobId**，附提示「生成进度见右侧「应用」Tab / 轨迹」，并刷新提案列表；WS 监听 `evolution/*` 自动刷新
 - 采纳失败展示后端 error（如技能校验失败、配置字段非法）
 
 ### 6. CLI `/evo`（src/commands/evolution.ts，新增）
 
-- `/evo observe` / `/evo propose` / `/evo list` / `/evo adopt <id>` / `/evo reject <id>`
+- `/evo observe` / `/evo propose` / `/evo list` / `/evo adopt <id>`（预览）/ `/evo apply <id>`（写入）/ `/evo reject <id>`
 - **CommandContext 新增 `evolutionEngine?: EvolutionEngine` 字段**（未注入提示不可用，同 /app 模式）；注册进 registry.ts（放 appsCommands 后）
 
 ### 7. C 项：web tsc 3 错误修复
@@ -118,9 +121,9 @@ POST /api/v1/evolution/proposals/:id/reject        → { ok }
 
 - `evolution-observer`：注入事件 fixture → 断言工具聚合/成功率/失败 top/完成率/重复聚类/**窗口过滤（含超 20 会话场景）**/空数据短路
 - `evolution-proposer`：mock modelRouter → JSON 解析、schema 拒绝非法输出（**含 action 按类型结构化校验**）、限频护栏、空观察跳过 LLM
-- `evolution-engine`：adopt 各类型分发（mock skillEvolution/generatorQueue/setConfigField）、**new-skill 校验失败不标记 adopted**、幂等、reject、审计
-- 端点：observe/propose/proposals/adopt/reject 全链路（mock deps + listen(0)）
-- CLI：/evo 命令解析与分发
+- `evolution-engine`：两段式确认全状态机（adopt 不写入/apply 写入/幂等/reject 可撤销）、各类型分发（mock skillEvolution/generatorQueue/setConfigField）、**new-skill 校验失败不置 confirmed**、审计
+- 端点：observe/propose/proposals/adopt/apply/reject 全链路（mock deps + listen(0)）
+- CLI：/evo 命令解析与分发（adopt 预览 / apply 写入）
 - web tsc 修复后 `npx tsc --noEmit -p web` 0 错误
 - 全量验证链：`npm run build && npm run lint && npm test && npm run web:build`
 

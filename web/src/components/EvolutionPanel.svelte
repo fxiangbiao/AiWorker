@@ -30,8 +30,19 @@
     type: string;
     title: string;
     reason: string;
+    action: {
+      kind: string;
+      expert?: string;
+      body?: string;
+      description?: string;
+      field?: string;
+      value?: unknown;
+      toolName?: string;
+      suggestion?: string;
+      agentId?: string;
+    };
     risk: "low" | "medium" | "high";
-    status: "pending" | "adopted" | "rejected";
+    status: "pending" | "confirmed" | "applied" | "rejected";
     createdAt: number;
   }
 
@@ -50,7 +61,7 @@
     "prompt-fix": "提示词修复",
   };
   const RISK_LABEL: Record<string, string> = { low: "低", medium: "中", high: "高" };
-  const STATUS_LABEL: Record<string, string> = { pending: "待确认", adopted: "已采纳", rejected: "已拒绝" };
+  const STATUS_LABEL: Record<string, string> = { pending: "待确认", confirmed: "已确认·待写入", applied: "已写入", rejected: "已拒绝" };
 
   function pct(v?: number): string {
     return v === undefined ? "-" : `${Math.round(v * 100)}%`;
@@ -104,22 +115,47 @@
     }
   }
 
-  async function act(id: string, action: "adopt" | "reject") {
+  async function act(id: string, action: "adopt" | "apply" | "reject") {
     msg = null;
     try {
       const r = await fetch(`${API}/evolution/proposals/${id}/${action}`, { method: "POST" });
-      const d = (await r.json()) as { ok: boolean; jobId?: string; detail?: string; error?: string };
+      const d = (await r.json()) as { ok: boolean; jobId?: string; detail?: string; error?: string; preview?: unknown };
       if (!r.ok || !d.ok) {
         msg = { kind: "err", text: d.error ?? `操作失败（HTTP ${r.status}）` };
-      } else {
+      } else if (action === "adopt") {
+        msg = { kind: "ok", text: "已确认提案（尚未写入），请审查下方内容后点「确认写入」" };
+      } else if (action === "apply") {
         msg = {
           kind: "ok",
-          text: action === "adopt" ? `已采纳${d.jobId ? `，生成任务 ${d.jobId}（进度见右侧「应用」Tab）` : ""}` : "已拒绝",
+          text: `已写入${d.jobId ? `，生成任务 ${d.jobId}（进度见右侧「应用」Tab）` : ""}${d.detail ? ` · ${d.detail}` : ""}`,
         };
+      } else {
+        msg = { kind: "ok", text: "已拒绝" };
       }
       await loadProposals();
     } catch (e) {
       msg = { kind: "err", text: (e as Error).message };
+    }
+  }
+
+  /** 渲染确认态预览文本（action 内容，供用户审查） */
+  function previewText(p: Proposal): string {
+    const a = p.action;
+    switch (a.kind) {
+      case "new-skill":
+        return `专家: ${a.expert}\n\n${a.body ?? ""}`;
+      case "new-tool":
+        return `生成工具: ${a.description ?? ""}`;
+      case "new-app":
+        return `生成应用: ${a.description ?? ""}`;
+      case "config-change":
+        return `配置项: ${a.field} = ${JSON.stringify(a.value)}`;
+      case "tool-fix":
+        return `工具: ${a.toolName}\n建议: ${a.suggestion}`;
+      case "prompt-fix":
+        return `智能体: ${a.agentId}\n建议: ${a.suggestion}`;
+      default:
+        return "";
     }
   }
 
@@ -229,10 +265,19 @@
             <span class="evo-prop-status evo-status-{p.status}">{STATUS_LABEL[p.status]}</span>
           </div>
           <div class="evo-prop-reason">{p.reason}</div>
+          {#if p.status === "confirmed"}
+            <div class="evo-preview">
+              <div class="evo-preview-title">将写入的内容（确认无误后点「确认写入」）：</div>
+              <pre class="evo-preview-body">{previewText(p)}</pre>
+            </div>
+          {/if}
           <div class="evo-prop-actions">
             {#if p.status === "pending"}
               <button class="evo-btn evo-sm evo-adopt" onclick={() => act(p.id, "adopt")}><Check size={12} /> 采纳</button>
               <button class="evo-btn evo-sm evo-reject" onclick={() => act(p.id, "reject")}><X size={12} /> 拒绝</button>
+            {:else if p.status === "confirmed"}
+              <button class="evo-btn evo-sm evo-adopt" onclick={() => act(p.id, "apply")}><Check size={12} /> 确认写入</button>
+              <button class="evo-btn evo-sm evo-reject" onclick={() => act(p.id, "reject")}><X size={12} /> 撤销</button>
             {:else}
               <span class="evo-prop-id">{p.id}</span>
             {/if}
@@ -480,7 +525,10 @@
   .evo-status-pending {
     color: var(--warn);
   }
-  .evo-status-adopted {
+  .evo-status-confirmed {
+    color: var(--primary-light);
+  }
+  .evo-status-applied {
     color: var(--success);
   }
   .evo-status-rejected {
@@ -489,6 +537,27 @@
   .evo-prop-reason {
     font-size: 12px;
     color: var(--dim);
+  }
+  .evo-preview {
+    border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+    border-radius: 6px;
+    padding: 8px;
+    background: color-mix(in srgb, var(--primary) 6%, transparent);
+  }
+  .evo-preview-title {
+    font-size: 11px;
+    color: var(--primary-light);
+    margin-bottom: 4px;
+  }
+  .evo-preview-body {
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+    max-height: 180px;
+    overflow: auto;
   }
   .evo-prop-actions {
     display: flex;

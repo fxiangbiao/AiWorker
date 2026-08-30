@@ -1463,7 +1463,8 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
             createdAt: 123,
           },
         ],
-        adopt: async (id: string) => ({ ok: true, jobId: `job-${id}` }),
+        adopt: (id: string) => ({ ok: true, preview: { kind: "new-tool", description: "自动生成周报", type: "tool" } }),
+        apply: async (id: string) => ({ ok: true, jobId: `job-${id}` }),
         reject: (id: string) => ({ ok: true }),
       } as never,
     };
@@ -1505,8 +1506,17 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
     expect(data.proposals[0]).toMatchObject({ id: "evo-abc", status: "pending" });
   });
 
-  it("POST /evolution/proposals/:id/adopt 返回 jobId", async () => {
+  it("POST /evolution/proposals/:id/adopt 确认提案并返回预览（不写入）", async () => {
     const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/adopt`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.preview).toEqual({ kind: "new-tool", description: "自动生成周报", type: "tool" });
+    expect(data.jobId).toBeUndefined();
+  });
+
+  it("POST /evolution/proposals/:id/apply 确认写入并返回 jobId", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/apply`, { method: "POST" });
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(data.ok).toBe(true);

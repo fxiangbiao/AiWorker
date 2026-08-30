@@ -26,17 +26,38 @@ function renderProposal(p: EvolutionProposal): string {
   const risk = RISK_COLOR[p.risk]?.(p.risk) ?? chalk.gray(p.risk);
   const type = chalk.cyan(TYPE_LABEL[p.type] ?? p.type);
   const status =
-    p.status === "pending" ? chalk.yellow("待确认") : p.status === "adopted" ? chalk.green("已采纳") : chalk.gray("已拒绝");
+    p.status === "pending" ? chalk.yellow("待确认") : p.status === "confirmed" ? chalk.blue("已确认") : p.status === "applied" ? chalk.green("已写入") : chalk.gray("已拒绝");
   return `  ${status} ${type} ${chalk.white(p.title)} ${chalk.dim(`[${risk}]`)} ${chalk.gray(p.id)}
      ${chalk.dim(p.reason)}`;
+}
+
+/** 采纳确认后的写入内容预览（不写入，供审查） */
+function renderPreview(a: EvolutionProposal["action"]): string {
+  switch (a.kind) {
+    case "new-skill":
+      return `    ${chalk.dim("专家")}: ${a.expert}\n    ${chalk.dim("SKILL.md")}:\n${a.body
+        .split("\n")
+        .map((l) => `      ${l}`)
+        .join("\n")}`;
+    case "new-tool":
+      return `    ${chalk.dim("生成工具")}: ${a.description}`;
+    case "new-app":
+      return `    ${chalk.dim("生成应用")}: ${a.description}`;
+    case "config-change":
+      return `    ${chalk.dim("配置项")}: ${a.field} = ${JSON.stringify(a.value)}`;
+    case "tool-fix":
+      return `    ${chalk.dim("工具")}: ${a.toolName}\n    ${chalk.dim("建议")}: ${a.suggestion}`;
+    case "prompt-fix":
+      return `    ${chalk.dim("智能体")}: ${a.agentId}\n    ${chalk.dim("建议")}: ${a.suggestion}`;
+  }
 }
 
 export const evolutionCommands: CliCommand[] = [
   {
     name: "evo",
-    usage: "evo <observe|propose|list|adopt|reject> [id]",
-    description: "AI OS 进化引擎（观察/提议/采纳）",
-    detail: "observe 观察指标 / propose 生成提案（每日 ≤3 条）/ list 提案列表 / adopt <id> 采纳 / reject <id> 拒绝",
+    usage: "evo <observe|propose|list|adopt|apply|reject> [id]",
+    description: "AI OS 进化引擎（观察/提议/两段式确认）",
+    detail: "observe 观察指标 / propose 生成提案（每日 ≤3 条）/ list 提案列表 / adopt <id> 确认提案（预览写入内容，不写入）/ apply <id> 确认写入（真正执行）/ reject <id> 拒绝",
     handler: async (ctx, arg) => {
       const evo = ctx.evolutionEngine;
       if (!evo) {
@@ -79,7 +100,7 @@ export const evolutionCommands: CliCommand[] = [
           } else if (result.ok) {
             ctx.writeLine(
               result.proposals.length > 0
-                ? chalk.green(`✓ 生成 ${result.proposals.length} 条提案（/evo list 查看，/evo adopt <id> 采纳）`)
+                ? chalk.green(`✓ 生成 ${result.proposals.length} 条提案（/evo list 查看，/evo adopt <id> 确认）`)
                 : chalk.gray("暂无值得提议的改进点"),
             );
           } else {
@@ -95,7 +116,9 @@ export const evolutionCommands: CliCommand[] = [
             ctx.writeLine("");
             for (const p of list) {
               ctx.writeLine(renderProposal(p));
-              if (p.status === "adopted" && p.type === "tool-fix") {
+              if (p.status === "confirmed") {
+                ctx.writeLine(chalk.dim("     （已确认，/evo apply <id> 确认写入）"));
+              } else if (p.status === "applied" && p.type === "tool-fix") {
                 ctx.writeLine(chalk.dim("     （建议人工执行，未自动改写）"));
               }
             }
@@ -108,11 +131,28 @@ export const evolutionCommands: CliCommand[] = [
             ctx.writeLine(chalk.gray("用法: /evo adopt <id>"));
             break;
           }
-          const result = await evo.adopt(id);
+          const result = evo.adopt(id);
           if (result.ok) {
-            ctx.writeLine(chalk.green(`✓ 已采纳: ${id}${result.jobId ? `（生成任务 ${result.jobId}）` : ""}${result.detail ? ` · ${result.detail}` : ""}`));
+            ctx.writeLine(chalk.green(`✓ 已确认提案: ${id}（尚未写入）`));
+            ctx.writeLine(chalk.cyan("  📋 将写入的内容:"));
+            ctx.writeLine(renderPreview(result.preview!));
+            ctx.writeLine(chalk.gray("  /evo apply <id> 确认写入，/evo reject <id> 撤销"));
           } else {
-            ctx.writeLine(chalk.red(`✗ 采纳失败: ${result.error}`));
+            ctx.writeLine(chalk.red(`✗ 确认失败: ${result.error}`));
+          }
+          break;
+        }
+        case "apply": {
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /evo apply <id>"));
+            break;
+          }
+          ctx.writeLine(chalk.cyan(`\n✍️  确认写入: ${id}…`));
+          const result = await evo.apply(id);
+          if (result.ok) {
+            ctx.writeLine(chalk.green(`✓ 已写入: ${id}${result.jobId ? `（生成任务 ${result.jobId}）` : ""}${result.detail ? ` · ${result.detail}` : ""}`));
+          } else {
+            ctx.writeLine(chalk.red(`✗ 写入失败: ${result.error}`));
           }
           break;
         }
@@ -130,7 +170,7 @@ export const evolutionCommands: CliCommand[] = [
           break;
         }
         default:
-          ctx.writeLine(chalk.gray("用法: /evo observe|propose|list|adopt <id>|reject <id>"));
+          ctx.writeLine(chalk.gray("用法: /evo observe|propose|list|adopt <id>|apply <id>|reject <id>"));
           break;
       }
       ctx.printStatus();

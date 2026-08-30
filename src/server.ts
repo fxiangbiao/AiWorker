@@ -1647,14 +1647,18 @@ export function startServer(deps: ServerDeps, port: number) {
           return;
         }
         if (rest.endsWith("/adopt")) {
-          sendJSON(res, 200, await evo.adopt(id));
+          sendJSON(res, 200, evo.adopt(id));
+          return;
+        }
+        if (rest.endsWith("/apply")) {
+          sendJSON(res, 200, await evo.apply(id));
           return;
         }
         if (rest.endsWith("/reject")) {
           sendJSON(res, 200, evo.reject(id));
           return;
         }
-        sendJSON(res, 404, { error: "未知操作（adopt|reject）" });
+        sendJSON(res, 404, { error: "未知操作（adopt|apply|reject）" });
         return;
       }
     }
