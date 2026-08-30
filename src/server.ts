@@ -5,10 +5,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { resolve, dirname, relative, isAbsolute, basename } from "node:path";
+import { resolve, dirname, relative, isAbsolute, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
+import { createAudioWs } from "./media/media-server.js";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
@@ -23,8 +24,14 @@ import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
 import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
 import { renderSessionMarkdown } from "./memory/session-export.js";
-import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo } from "./types.js";
+import { processManager } from "./core/process-manager.js";
+import { APP_BRIDGE_SNIPPET } from "./core/app-bridge.js";
+import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo, AgentConfig } from "./types.js";
+import { VALID_MODELS } from "./core/agent-config-loader.js";
 import type { SessionStore } from "./memory/session-store.js";
+import type { AppManager, AppActionResult } from "./core/app-manager.js";
+import type { AppFactory } from "./core/app-factory.js";
+import type { GeneratorQueue } from "./core/generator-queue.js";
 
 interface DelegateAgent {
   runStream(
@@ -40,7 +47,35 @@ interface ServerDeps {
   workingDir: string;
   coordinator: TeamCoordinator;
   createAgent: (agentId: string) => DelegateAgent | undefined;
-  getAgentList: () => { id: string; name: string }[];
+  getAgentList: () => {
+    id: string;
+    name: string;
+    displayName: string;
+    type: string;
+    modelPreference: string;
+    maxIterations: number;
+    tools: string[];
+    skills: string[];
+    mcpServers: string[];
+    plugins: string[];
+    strictTools: boolean;
+    permissions: { defaultMode: string; allowedTools: string[]; deniedTools: string[] };
+    systemPrompt: string;
+    isCustom: boolean;
+    hasConfig: boolean;
+  }[];
+  /** 保存智能体配置（写 YAML + 热重载；index.ts 注入） */
+  saveAgentConfig?: (id: string, cfg: AgentConfig) => { ok: boolean; error?: string };
+  /** 删除智能体配置（内置回默认 / 自定义移除；index.ts 注入） */
+  deleteAgentConfig?: (id: string) => { ok: boolean };
+  isBuiltinAgent?: (id: string) => boolean;
+  /** 智能体表单选项（工具/技能/MCP/插件） */
+  getAgentMeta?: () => {
+    tools: { name: string; description: string }[];
+    skills: { name: string; expert: string; description: string }[];
+    mcp: { name: string; connected: boolean; toolCount: number }[];
+    plugins: { name: string; tools: string[]; status: string }[];
+  };
   skillNames: string[];
   sessionStore?: SessionStore;
   getSkills?: () => {
@@ -59,6 +94,12 @@ interface ServerDeps {
     { name: string; transport: string; connected: boolean; toolCount: number; state?: string; error?: string; tools?: { name: string; description: string }[] }
   >;
   getPlugins?: () => PluginInfo[];
+  /** 应用管理器（AI OS：/apps 端点，Sprint 34） */
+  appManager?: AppManager;
+  /** 应用工厂（AI OS：/apps/generate，Sprint 35） */
+  appFactory?: AppFactory;
+  /** 生成任务队列（AI OS：异步生成，Sprint 35 补丁） */
+  generatorQueue?: GeneratorQueue;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
@@ -80,6 +121,8 @@ interface ChatRequest {
   agentId?: string;
   mode?: string;
   sessionId?: string;
+  /** 多模态图片（data URL/https；Sprint 36），需当前模型支持视觉 */
+  images?: string[];
 }
 
 interface PlanRequest {
@@ -111,6 +154,64 @@ function sendJSON(res: ServerResponse, status: number, data: unknown) {
     "Access-Control-Allow-Origin": "*",
   });
   res.end(JSON.stringify(data));
+}
+
+/** 智能体配置校验（POST /agents/<id>/config；type 内置沿用 id，自定义默认 custom） */
+function validateAgentPayload(
+  id: string,
+  body: Record<string, unknown>,
+  isBuiltin: boolean,
+): { ok: true; cfg: AgentConfig } | { ok: false; error: string } {
+  if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(id)) {
+    return { ok: false, error: "id 需为小写字母/数字/连字符，且不超过 32 字符" };
+  }
+  const displayName = String(body.displayName ?? "").trim();
+  if (!displayName || displayName.length > 32) {
+    return { ok: false, error: "显示名必填（≤32 字符）" };
+  }
+  const systemPrompt = String(body.systemPrompt ?? "").trim();
+  if (!systemPrompt) {
+    return { ok: false, error: "systemPrompt 必填" };
+  }
+  if (systemPrompt.length > 20_000) {
+    return { ok: false, error: "systemPrompt 过长（≤20000 字符）" };
+  }
+  const modelPreference = String(body.modelPreference ?? "default");
+  if (!VALID_MODELS.has(modelPreference)) {
+    return { ok: false, error: `modelPreference 非法（可选: ${[...VALID_MODELS].join(" / ")}）` };
+  }
+  const maxIterations = Number(body.maxIterations ?? 30);
+  if (!Number.isFinite(maxIterations) || maxIterations < 1 || maxIterations > 200) {
+    return { ok: false, error: "maxIterations 需在 1-200 之间" };
+  }
+  const strArr = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : []);
+  const mode = String((body.permissions as Record<string, unknown> | undefined)?.defaultMode ?? "ask");
+  if (mode !== "ask" && mode !== "plan" && mode !== "auto") {
+    return { ok: false, error: "defaultMode 非法（ask / plan / auto）" };
+  }
+  return {
+    ok: true,
+    cfg: {
+      id,
+      name: id,
+      displayName,
+      type: isBuiltin ? id : "custom",
+      systemPrompt,
+      modelPreference,
+      maxIterations,
+      sandbox: false,
+      tools: strArr(body.tools),
+      mcpServers: strArr(body.mcpServers),
+      skills: strArr(body.skills),
+      plugins: strArr(body.plugins),
+      strictTools: body.strictTools === true,
+      permissions: {
+        defaultMode: mode as PermissionMode,
+        allowedTools: strArr(body.allowedTools),
+        deniedTools: strArr(body.deniedTools),
+      },
+    },
+  };
 }
 
 function sendSSE(res: ServerResponse) {
@@ -290,6 +391,18 @@ function scanDiffs(snapshotsDir: string, sessionStore?: SessionStore): DiffSessi
         // 旧格式快照兼容推断：无 binary/modified/deleted 显式标记时，
         // 按 diff 文本 + 文件当前是否存在推断（避免历史快照显示误导性的 +0 -0）
         const inferred = inferLegacyFlags(parsed, entry);
+        // 指纹监控"新增文件"快照无行级 diff（只有一行 ctx 文本 + 当前内容全文）：
+        // 把当前内容展开为全新增行（+ 前缀），前端才能显示行号与新增颜色标识。
+        // 必须在 inferLegacyFlags 之后（其依赖原始 ctx 文本提取行数）。
+        if (
+          !parsed.binary &&
+          parsed.currentContent &&
+          parsed.lines.length === 1 &&
+          parsed.lines[0]!.type === "ctx" &&
+          /新增文件[（(]\d+\s*行[）)]/.test(parsed.lines[0]!.text)
+        ) {
+          parsed.lines = parsed.currentContent.split("\n").map((l) => ({ type: "add" as const, text: l }));
+        }
         const added =
           parsed.lines.filter((l) => l.type === "add").length ||
           (inferred.addedFromText ?? 0);
@@ -391,6 +504,66 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    // ─── 应用沙箱静态资源（Sprint 35：/apps/<id>/index.html 等） ───
+    if (req.method === "GET" && url.startsWith("/apps/")) {
+      const rawRel = url.slice("/apps/".length);
+      const qIdx = rawRel.indexOf("?");
+      const relPath = qIdx >= 0 ? rawRel.slice(0, qIdx) : rawRel;
+      // widget 形态（iframe 带 ?surface=widget）：框架注入透明背景（小部件透明由宿主负责）
+      const isWidget = qIdx >= 0 && rawRel.slice(qIdx + 1).includes("surface=widget");
+      const slash = relPath.indexOf("/");
+      const appId = slash > 0 ? decodeURIComponent(relPath.slice(0, slash)) : "";
+      const filePath = slash > 0 ? relPath.slice(slash + 1) : "index.html";
+      if (appId && deps.appManager) {
+        const app = deps.appManager.get(appId);
+        if (app && deps.dataDir) {
+          const appRoot = resolve(deps.dataDir, "apps", appId);
+          const target = resolve(appRoot, filePath);
+          // 路径穿越防护：解析结果必须仍在沙箱目录内
+          const rel = relative(appRoot, target);
+          // style.css 为可选文件（模型可不生成）：缺失时返回空 CSS，避免 index.html 引用产生 404 噪音
+          if (!rel.startsWith("..") && !isAbsolute(rel) && filePath.split(".").pop() === "css" && !existsSync(target)) {
+            res.writeHead(200, { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-cache" });
+            res.end("");
+            return;
+          }
+          if (!rel.startsWith("..") && !isAbsolute(rel) && existsSync(target) && statSync(target).isFile()) {
+            const ext = filePath.split(".").pop() || "";
+            const mime: Record<string, string> = {
+              html: "text/html; charset=utf-8",
+              js: "application/javascript",
+              mjs: "application/javascript",
+              css: "text/css",
+              json: "application/json",
+              svg: "image/svg+xml",
+              png: "image/png",
+            };
+            res.writeHead(200, {
+              "Content-Type": mime[ext] || "application/octet-stream",
+              "Access-Control-Allow-Origin": "*",
+              "Cache-Control": "no-cache",
+            });
+            // webapp 应用：注入宿主能力桥 + 全局 reset 样式（消 body margin/滚动，UI 填满窗口）；
+            // widget 形态额外强制 html/body 透明（小部件透明背景由框架保证）
+            if (filePath === "index.html" && app.type === "app") {
+              const raw = readFileSync(target, "utf-8");
+              const widgetCss = isWidget ? "html,body,#app{background:transparent!important}" : "";
+              const inject = `<style>html,body{margin:0;padding:0;height:100%;overflow:hidden}#app{width:100%;height:100%}${widgetCss}</style><script>${APP_BRIDGE_SNIPPET}</script>`;
+              const injected = raw.includes("</head>")
+                ? raw.replace("</head>", `${inject}</head>`)
+                : `${inject}${raw}`;
+              res.end(injected);
+              return;
+            }
+            res.end(readFileSync(target));
+            return;
+          }
+        }
+      }
+      sendJSON(res, 404, { error: "App file not found" });
+      return;
+    }
+
     if (req.method === "GET" && !url.startsWith(API_PREFIX)) {
       const distPath = resolve(distDir, url.slice(1));
       // 路径穿越防护：解析结果必须仍在 distDir 内（防 GET /../../config/hooks.json）
@@ -417,6 +590,74 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === apiUrl("/agents") && req.method === "GET") {
       sendJSON(res, 200, { agents: deps.getAgentList() });
+      return;
+    }
+
+    if (url === apiUrl("/agents/meta") && req.method === "GET") {
+      if (!deps.getAgentMeta) {
+        sendJSON(res, 503, { error: "Agent meta not available" });
+        return;
+      }
+      sendJSON(res, 200, deps.getAgentMeta());
+      return;
+    }
+
+    if (url.startsWith(apiUrl("/agents/")) && req.method === "POST") {
+      if (!deps.saveAgentConfig || !deps.deleteAgentConfig || !deps.isBuiltinAgent) {
+        sendJSON(res, 503, { error: "Agent config not available" });
+        return;
+      }
+      const rest = decodeURIComponent(url.slice(apiUrl("/agents/").length));
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(body) as Record<string, unknown>;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (rest.endsWith("/reset")) {
+        const id = rest.slice(0, -"/reset".length);
+        if (!deps.isBuiltinAgent(id)) {
+          sendJSON(res, 400, { error: "仅内置智能体可恢复默认" });
+          return;
+        }
+        deps.deleteAgentConfig(id);
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
+      if (rest.endsWith("/delete")) {
+        const id = rest.slice(0, -"/delete".length);
+        if (deps.isBuiltinAgent(id)) {
+          sendJSON(res, 400, { error: "内置智能体不可删除（可恢复默认）" });
+          return;
+        }
+        deps.deleteAgentConfig(id);
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
+      if (rest.endsWith("/config")) {
+        const id = rest.slice(0, -"/config".length);
+        const v = validateAgentPayload(id, payload, deps.isBuiltinAgent(id));
+        if (!v.ok) {
+          sendJSON(res, 400, { error: v.error });
+          return;
+        }
+        const r = deps.saveAgentConfig(id, v.cfg);
+        if (!r.ok) {
+          sendJSON(res, 400, { error: r.error ?? "保存失败" });
+          return;
+        }
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
+      sendJSON(res, 404, { error: "Unknown agent action" });
       return;
     }
 
@@ -575,6 +816,201 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/plugins") && req.method === "GET") {
       const plugins = deps.getPlugins?.() ?? [];
       sendJSON(res, 200, { plugins });
+      return;
+    }
+
+    // ─── AI OS 应用与进程（Sprint 34） ───
+    if (url === apiUrl("/apps") && req.method === "GET") {
+      const apps = deps.appManager ? deps.appManager.list() : [];
+      sendJSON(res, 200, { apps });
+      return;
+    }
+    if (url === apiUrl("/apps/generate") && req.method === "POST") {
+      const queue = deps.generatorQueue;
+      if (!queue || !deps.appFactory) {
+        sendJSON(res, 503, { error: "Generator not available" });
+        return;
+      }
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: { description?: string; type?: string; surface?: string; sessionId?: string };
+      try {
+        payload = JSON.parse(body) as { description?: string; type?: string; surface?: string; sessionId?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!payload.description || typeof payload.description !== "string") {
+        sendJSON(res, 400, { error: "Missing 'description'" });
+        return;
+      }
+      // 异步：入队即返 jobId，生成在后台跑，前端经 gen/* 事件 + 查询追踪
+      const jobId = queue.submit({
+        description: payload.description,
+        type: (payload.type as never) ?? "app",
+        surface: payload.surface as never,
+        sessionId: payload.sessionId,
+      });
+      sendJSON(res, 200, { ok: true, jobId });
+      return;
+    }
+    if (url === apiUrl("/apps/gen") && req.method === "GET") {
+      const q = deps.generatorQueue;
+      if (!q) {
+        sendJSON(res, 503, { error: "Generator not available" });
+        return;
+      }
+      sendJSON(res, 200, { jobs: q.list() });
+      return;
+    }
+    if (url.startsWith(apiUrl("/apps/gen/")) && req.method === "GET") {
+      const q = deps.generatorQueue;
+      if (!q) {
+        sendJSON(res, 503, { error: "Generator not available" });
+        return;
+      }
+      const jobId = decodeURIComponent(url.slice(apiUrl("/apps/gen/").length));
+      const job = q.get(jobId);
+      if (!job) {
+        sendJSON(res, 404, { error: "Job not found" });
+        return;
+      }
+      sendJSON(res, 200, { job });
+      return;
+    }
+    if (url.startsWith(apiUrl("/apps/gen/")) && url.endsWith("/cancel") && req.method === "POST") {
+      const q = deps.generatorQueue;
+      if (!q) {
+        sendJSON(res, 503, { error: "Generator not available" });
+        return;
+      }
+      const jobId = decodeURIComponent(url.slice(apiUrl("/apps/gen/").length).replace(/\/cancel$/, ""));
+      const ok = q.cancel(jobId);
+      sendJSON(res, ok ? 200 : 400, ok ? { ok: true } : { error: "仅可取消排队中任务" });
+      return;
+    }
+    if (url.startsWith(apiUrl("/apps/")) && url.endsWith("/update") && req.method === "POST") {
+      if (!deps.appFactory) {
+        sendJSON(res, 503, { error: "App factory not available" });
+        return;
+      }
+      const appId = decodeURIComponent(url.slice(apiUrl("/apps/").length).replace(/\/update$/, ""));
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: { description?: string; sessionId?: string };
+      try {
+        payload = JSON.parse(body) as { description?: string; sessionId?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!payload.description || typeof payload.description !== "string") {
+        sendJSON(res, 400, { error: "Missing 'description'" });
+        return;
+      }
+      const result = await deps.appFactory.update(appId, payload.description, payload.sessionId);
+      sendJSON(res, result.ok ? 200 : 400, result);
+      return;
+    }
+    if (url.startsWith(apiUrl("/apps/")) && url.endsWith("/bridge") && req.method === "POST") {
+      if (!deps.appManager) {
+        sendJSON(res, 503, { error: "App manager not available" });
+        return;
+      }
+      const appId = decodeURIComponent(url.slice(apiUrl("/apps/").length).replace(/\/bridge$/, ""));
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: { method?: string; params?: Record<string, unknown> };
+      try {
+        payload = JSON.parse(body) as { method?: string; params?: Record<string, unknown> };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!payload.method || typeof payload.method !== "string") {
+        sendJSON(res, 400, { error: "Missing 'method'" });
+        return;
+      }
+      try {
+        const result = await deps.appManager.handleBridge(appId, payload.method, payload.params ?? {});
+        sendJSON(res, 200, { ok: true, result });
+      } catch (err) {
+        sendJSON(res, 400, { ok: false, error: (err as Error).message });
+      }
+      return;
+    }
+    if (url === apiUrl("/apps/install") && req.method === "POST") {
+      if (!deps.appManager) {
+        sendJSON(res, 503, { error: "App manager not available" });
+        return;
+      }
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let payload: { path?: string; force?: boolean; originSessionId?: string };
+      try {
+        payload = JSON.parse(body) as { path?: string; force?: boolean; originSessionId?: string };
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!payload.path || typeof payload.path !== "string") {
+        sendJSON(res, 400, { error: "Missing 'path'" });
+        return;
+      }
+      const abs = isAbsolute(payload.path) ? payload.path : resolve(deps.workingDir, payload.path);
+      const result = deps.appManager.installFromDir(abs, {
+        force: payload.force === true,
+        originSessionId: payload.originSessionId,
+      });
+      sendJSON(res, result.ok ? 200 : 400, result.ok ? { ok: true, app: result.app } : { error: result.error });
+      return;
+    }
+    if (url.startsWith(apiUrl("/apps/")) && req.method === "POST") {
+      if (!deps.appManager) {
+        sendJSON(res, 503, { error: "App manager not available" });
+        return;
+      }
+      const rest = url.slice(apiUrl("/apps/").length);
+      const slash = rest.lastIndexOf("/");
+      if (slash <= 0) {
+        sendJSON(res, 400, { error: "Invalid path" });
+        return;
+      }
+      const id = decodeURIComponent(rest.slice(0, slash));
+      const action = rest.slice(slash + 1);
+      let result: AppActionResult;
+      if (action === "start") result = await deps.appManager.start(id);
+      else if (action === "stop") result = await deps.appManager.stop(id);
+      else if (action === "destroy") result = await deps.appManager.destroy(id);
+      else {
+        sendJSON(res, 400, { error: `Unknown action: ${action}` });
+        return;
+      }
+      sendJSON(res, result.ok ? 200 : 400, result.ok ? { ok: true, app: result.app } : { error: result.error });
+      return;
+    }
+    if (url === apiUrl("/processes") && req.method === "GET") {
+      sendJSON(res, 200, { processes: processManager.list(), stats: processManager.stats() });
       return;
     }
 
@@ -1062,6 +1498,40 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    // ─── 文档工作台（Sprint 35：data/docs/ 会话资产） ───
+    if (url === apiUrl("/docs") && req.method === "GET") {
+      const docsDir = deps.dataDir ? resolve(deps.dataDir, "docs") : resolve(process.cwd(), "data", "docs");
+      const list: { path: string; title: string; size: number }[] = [];
+      const walk = (dir: string, base: string): void => {
+        if (!existsSync(dir)) return;
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          const full = resolve(dir, e.name);
+          if (e.isDirectory()) walk(full, join(base, e.name));
+          else if (e.name.endsWith(".md")) {
+            const rel = join(base, e.name);
+            list.push({ path: rel, title: e.name.replace(/\.md$/, ""), size: statSync(full).size });
+          }
+        }
+      };
+      walk(docsDir, "");
+      list.sort((a, b) => b.path.localeCompare(a.path));
+      sendJSON(res, 200, { docs: list });
+      return;
+    }
+    if (url.startsWith(apiUrl("/docs/content")) && req.method === "GET") {
+      const docsDir = deps.dataDir ? resolve(deps.dataDir, "docs") : resolve(process.cwd(), "data", "docs");
+      const u = new URL(req.url ?? "", "http://localhost");
+      const rel = u.searchParams.get("path") ?? "";
+      const abs = resolve(docsDir, rel);
+      const relCheck = relative(docsDir, abs);
+      if (!relCheck.startsWith("..") && !isAbsolute(relCheck) && existsSync(abs) && statSync(abs).isFile()) {
+        sendJSON(res, 200, { path: rel, content: readFileSync(abs, "utf-8") });
+      } else {
+        sendJSON(res, 404, { error: "Doc not found" });
+      }
+      return;
+    }
+
     if (url === apiUrl("/chat") && req.method === "POST") {
       let body: string;
       try {
@@ -1081,6 +1551,15 @@ export function startServer(deps: ServerDeps, port: number) {
 
       if (!chatReq.message || typeof chatReq.message !== "string") {
         sendJSON(res, 400, { error: "Missing 'message' field" });
+        return;
+      }
+
+      // 多模态：图片请求需当前模型支持视觉（models.json 当前 profile 配 vision:true）
+      const images = Array.isArray(chatReq.images) ? chatReq.images.filter((u) => typeof u === "string") : undefined;
+      if (images && images.length > 0 && !deps.modelRouter.supportsVision()) {
+        sendJSON(res, 400, {
+          error: "当前模型不支持视觉输入（图片）。请在 config/models.json 的模型 profile（default 或当前使用）配置 vision:true（如 deepseek-vl 等视觉模型）后重试。",
+        });
         return;
       }
 
@@ -1137,6 +1616,7 @@ export function startServer(deps: ServerDeps, port: number) {
             instruction: chatReq.message,
             sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
             mode: chatReq.mode as PermissionMode | undefined,
+            images,
           };
 
           await agent.runStream(task, deps.workingDir, callbacks, abort.signal);
@@ -1169,10 +1649,16 @@ export function startServer(deps: ServerDeps, port: number) {
   // SSE 是单次任务（chat/plan/debate）的请求-响应事件流；WS 是全局下行通道，
   // 服务端主动推送（会话元数据变更 / 任务事件广播），支持多端同步。
   const wss = new WebSocketServer({ noServer: true });
+  // 音频通道（Sprint 36：/api/v1/audio，TTS 请求/响应）
+  const audioWs = createAudioWs(deps.dataDir ?? resolve(process.cwd(), "data"));
   server.on("upgrade", (req, socket, head) => {
     if (req.url === apiUrl("/ws")) {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit("connection", ws, req);
+      });
+    } else if (req.url === audioWs.path) {
+      audioWs.wss.handleUpgrade(req, socket, head, (ws) => {
+        audioWs.wss.emit("connection", ws, req);
       });
     } else {
       socket.destroy();

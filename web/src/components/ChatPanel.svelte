@@ -6,6 +6,8 @@
   import AskCard from "./AskCard.svelte";
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
+  import GenCard from "./GenCard.svelte";
+  import { spawnGenCard } from "$lib/stores/apps.svelte";
   import {
     store,
     saveChats,
@@ -22,7 +24,47 @@
   import { stream, setSending } from "$lib/stores/stream.svelte";
   import { totalTokens, currentModel } from "$lib/stores/status";
 
+  let { agents = [] as { id: string; name: string }[] }: { agents?: { id: string; name: string }[] } = $props();
+
   let errors: string[] = $state([]);
+
+  // ── 多模态图片（Sprint 36）：待发送图片 data URL 列表（最多 4 张） ──
+  let pendingImages = $state<string[]>([]);
+  let fileInput = $state<HTMLInputElement | null>(null);
+
+  function addImages(files: FileList | File[]) {
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith("image/") || pendingImages.length >= 4) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = reader.result as string;
+        if (url && pendingImages.length < 4) pendingImages = [...pendingImages, url];
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function onFilePick() {
+    if (fileInput?.files) addImages(fileInput.files);
+    if (fileInput) fileInput.value = "";
+  }
+
+  /** 粘贴图片（文本粘贴不受影响） */
+  function handlePaste(e: ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imgs: File[] = [];
+    for (const it of items) {
+      if (it.type.startsWith("image/")) {
+        const f = it.getAsFile();
+        if (f) imgs.push(f);
+      }
+    }
+    if (imgs.length > 0) {
+      e.preventDefault();
+      addImages(imgs);
+    }
+  }
 
   // 切换会话时清空错误提示与确认/提问卡片（临时状态）
   let _lastSession = $state(store.activeChatId);
@@ -119,6 +161,11 @@
       : kind === "debate" && text.startsWith("/debate ") ? text.slice(8).trim()
       : text;
 
+    if (kind === "forge") {
+      handleForge(payload, text);
+      return;
+    }
+
     if (kind !== "chat") {
       if (!payload) {
         errors = [...errors, kind === "plan" ? "请输入任务描述" : "请输入辩论话题"];
@@ -128,7 +175,11 @@
       return;
     }
 
-    store.messages.push({ role: "user", content: text });
+    store.messages.push({
+      role: "user",
+      content: text,
+      images: pendingImages.length > 0 ? [...pendingImages] : undefined,
+    });
 
     const chat = store.chats.find((c) => c.id === store.activeChatId);
     if (chat && (!chat.turns || chat.turns === 0)) {
@@ -139,10 +190,12 @@
     }
     saveChats(store.chats);
 
-    streamChat(text);
+    const imgs = [...pendingImages];
+    pendingImages = [];
+    streamChat(text, imgs);
   }
   /** 统一发起 chat 流式请求（retryLast/streamChat/retryTool 共用） */
-  function streamChatRequest(text: string, onFail?: () => void) {
+  function streamChatRequest(text: string, images: string[], onFail?: () => void) {
     const ac = new AbortController();
     setSending(true, ac);
     errors = [];
@@ -160,6 +213,7 @@
         mode: store.mode,
         agentId: store.agentId,
         sessionId: store.activeChatId,
+        images,
       }),
       signal: ac.signal,
     })
@@ -196,8 +250,8 @@
       });
   }
 
-  function streamChat(text: string) {
-    streamChatRequest(text);
+  function streamChat(text: string, images: string[] = []) {
+    streamChatRequest(text, images);
   }
 
   /** 重新生成：重发最后一条用户消息，替换最后一条助手回复 */
@@ -217,12 +271,21 @@
     const replaced = store.messages.splice(lastUserIdx + 1);
     store.messages = [...store.messages];
 
-    streamChatRequest(text, () => {
+    streamChatRequest(text, [], () => {
       // 失败时恢复旧回复，避免消息丢失
       if (replaced.length > 0) {
         store.messages = [...store.messages, ...replaced];
       }
     });
+  }
+
+  /** 应用工坊：聊天流状态卡片 + 后台生成（生成期间不阻塞对话，可继续发消息） */
+  function handleForge(payload: string, raw: string) {
+    if (!payload) {
+      errors = [...errors, "请输入要生成的应用描述"];
+      return;
+    }
+    void spawnGenCard(payload, { sessionId: store.activeChatId ?? undefined, userText: raw });
   }
 
   async function handleCollab(kind: "plan" | "debate", payload: string, raw: string) {
@@ -525,21 +588,26 @@
   }
 </script>
 
-<div class="main-panel">
+<div class="main-panel" onpaste={handlePaste}>
   <div class="msg-list" id="msg-list">
     {#if store.messages.length === 0}
       <div class="empty-state">
         <div class="mark-big">&#9670;</div>
         <h2>AiWorker</h2>
-        <p>个人 AI Agent 助手 &mdash; 多智能体协作 + 流式工具执行</p>
+        <p>个人 AI Agent 助手 &mdash; AI OS</p>
+        <p class="empty-hint">在下方输入消息开始对话（支持粘贴图片）</p>
       </div>
     {:else}
       <div class="msg-inner">
       {#each store.messages as msg, i (i)}
         {#if msg.role === "user"}
-          <UserMessage content={msg.content} />
+          <UserMessage content={msg.content} images={msg.images ?? []} />
         {:else if msg.role === "assistant" || msg.role === "agent"}
-          <AgentCard {msg} onRetryTool={retryTool} />
+          {#if msg._kind === "gen"}
+            <GenCard {msg} />
+          {:else}
+            <AgentCard {msg} onRetryTool={retryTool} />
+          {/if}
         {/if}
       {/each}
       {#each store.confirms as c}
@@ -554,17 +622,48 @@
       </div>
     {/if}
   </div>
+  {#if pendingImages.length > 0}
+    <div class="img-bar">
+      {#each pendingImages as url, i (i)}
+        <div class="img-item">
+          <img class="img-thumb" src={url} alt="待发送图片" />
+          <button class="img-remove" title="移除" onclick={() => (pendingImages = pendingImages.filter((_, j) => j !== i))}>&#10005;</button>
+        </div>
+      {/each}
+      <span class="img-hint">图片将随消息发送（需模型支持视觉）</span>
+    </div>
+  {/if}
+  <input
+    type="file"
+    accept="image/*"
+    multiple
+    hidden
+    bind:this={fileInput}
+    onchange={onFilePick}
+  />
   <InputArea
     onSend={handleSend}
     inputMode={store.inputMode}
     onSelectMode={(m) => (store.inputMode = m)}
     onRetryLast={retryLast}
     canRetry={!stream.sending && store.inputMode === "chat" && store.messages.length > 0 && (store.messages[store.messages.length - 1].role === "assistant" || store.messages[store.messages.length - 1].role === "agent")}
+    onPickImage={() => fileInput?.click()}
+    imageCount={pendingImages.length}
+    {agents}
   />
 </div>
 
 <style>
   .main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+  .img-bar { display: flex; align-items: center; gap: 10px; padding: 8px 18px 0; flex-wrap: wrap; }
+  .img-item { position: relative; }
+  .img-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+  .img-remove {
+    position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;
+    border: none; border-radius: 50%; background: var(--error); color: #fff;
+    font-size: 10px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .img-hint { font-size: 11px; color: var(--dim); }
   .msg-list {
     flex: 1;
     overflow-y: auto;
@@ -590,4 +689,5 @@
   .mark-big { font-size: 40px; opacity: .15; }
   h2 { font-size: 18px; font-weight: 600; color: var(--text); }
   p { font-size: 13px; max-width: 340px; color: var(--dim); line-height: 1.6; }
+  .empty-hint { font-size: 12px; color: var(--dim); opacity: .7; }
 </style>

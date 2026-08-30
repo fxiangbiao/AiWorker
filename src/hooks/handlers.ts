@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import chalk from "chalk";
 import type { HookHandler, PermissionMode } from "../types.js";
 import type { Message } from "../types.js";
+import { messageText } from "../types.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
 import { ApprovalService, type ConfirmRequestLike } from "../security/approval-service.js";
@@ -172,7 +173,8 @@ export function createSensitiveDataFilter(): HookHandler {
 
     if (ctx.event === "onToolCallPre") {
       const toolName = ctx.data.toolName as string;
-      if (toolName === "terminal_exec" || toolName === "terminal_session" || toolName === "fs_write") {
+      // 写类工具（fs_write / fs_edit 的 newText 都能向文件写入敏感信息）统一检测
+      if (toolName === "terminal_exec" || toolName === "terminal_session" || toolName === "fs_write" || toolName === "fs_edit") {
         input = typeof ctx.data.args === "string" ? ctx.data.args : JSON.stringify(ctx.data.args ?? {});
       }
     }
@@ -370,7 +372,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
 
     if (ctx.event === "onToolCallPre") {
       const toolName = ctx.data.toolName as string;
-      if (toolName !== "fs_write") return;
+      if (toolName !== "fs_write" && toolName !== "fs_edit") return;
 
       const filePath = extractFilePath(ctx.data.args, projectBase);
       if (!filePath) return;
@@ -380,13 +382,6 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         sessionSnap = new Map();
         snapshots.set(ctx.sessionId, sessionSnap);
       }
-
-      let written = fsWritePaths.get(ctx.sessionId);
-      if (!written) {
-        written = new Set();
-        fsWritePaths.set(ctx.sessionId, written);
-      }
-      written.add(filePath);
 
       try {
         if (existsSync(filePath)) {
@@ -402,7 +397,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
 
       // ── 工作目录指纹监控：仅在"可能写文件的工具"（terminal_exec/MCP/插件等）调用后触发；
       //    只读工具（web_search/fs_read 等）不扫描；fs_write 走下方精确快照逻辑 ──
-      if (MAY_WRITE_TOOL.test(toolName) && toolName !== "fs_write" && projectBase !== process.cwd()) {
+      if (MAY_WRITE_TOOL.test(toolName) && toolName !== "fs_write" && toolName !== "fs_edit" && projectBase !== process.cwd()) {
         // 会话级节流：间隔内同一会话不重复全量扫描（变化由下次扫描兜底捕获）
         const now = Date.now();
         const last = lastScanAt.get(ctx.sessionId) ?? 0;
@@ -438,14 +433,23 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         }
       }
 
-      // ── fs_write 精确快照逻辑 ──
-      if (toolName !== "fs_write") return;
+      // ── fs_write / fs_edit 精确快照逻辑（行级 diff，含删除行） ──
+      if (toolName !== "fs_write" && toolName !== "fs_edit") return;
 
       const result = ctx.data.result as { success: boolean; content: string } | undefined;
       if (!result?.success) return;
 
       const filePath = extractFilePath(ctx.data.args, projectBase);
       if (!filePath) return;
+
+      // 仅在成功写入后才标记指纹去重（失败/被拦截的调用不占用，
+      // 否则后续 terminal_exec 等对该文件的改动会被误跳过 diff）
+      let written = fsWritePaths.get(ctx.sessionId);
+      if (!written) {
+        written = new Set();
+        fsWritePaths.set(ctx.sessionId, written);
+      }
+      written.add(filePath);
 
       const sessionSnap = snapshots.get(ctx.sessionId);
       const oldContent = sessionSnap?.get(filePath);
@@ -828,7 +832,7 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
 
     const messages = ctx.data.messages as Message[] | undefined;
     // 取本轮最后一条 user 消息（assembleContext 含历史，find 会取到最早一条）
-    const userInput = messages?.filter((m) => m.role === "user").at(-1)?.content.slice(0, 500) ?? "";
+    const userInput = messages?.filter((m) => m.role === "user").at(-1) ? messageText(messages.filter((m) => m.role === "user").at(-1)!).slice(0, 500) : "";
 
     // 结束原因：截断 → length；错误轮 → error；否则 stop
     const finishReason: string = ctx.data.truncated ? "length" : hadError ? "error" : "stop";
@@ -840,7 +844,7 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     if (messages) {
       for (const m of messages) {
         if (m.role === "tool") {
-          const isError = m.content.startsWith("Error:");
+          const isError = messageText(m).startsWith("Error:");
           if (isError) toolCallsFailed++;
           else toolCallsSuccess++;
         }

@@ -298,6 +298,37 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(await run("a\nb\nc\n", "")).toEqual({ adds: 0, dels: 3 });
   });
 
+  it("captureDiff fs_edit 局部修改：精确 diff（含删除行）", async () => {
+    const { createCaptureDiff } = await import("../src/hooks/handlers.js");
+    const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
+    const file = resolve(testDir, `edit-${Math.random().toString(36).slice(2, 8)}.txt`);
+    writeFileSync(file, "a\nold1\nold2\nb\n", "utf-8");
+
+    // fs_edit 删除跨行片段（oldText 匹配 old1\nold2，newText 为空）
+    await handler(makeCtx({
+      event: "onToolCallPre",
+      data: { toolName: "fs_edit", args: JSON.stringify({ path: file, oldText: "old1\nold2\n", newText: "" }) },
+    }));
+    writeFileSync(file, "a\nb\n", "utf-8");
+    await handler(makeCtx({
+      event: "onToolCallPost",
+      data: { toolName: "fs_edit", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
+    }));
+
+    const snapDir = resolve(testDir, "snapshots", "test-session");
+    const snapFiles = readdirSync(snapDir)
+      .filter((f) => f.endsWith(".diff"))
+      .map((f) => resolve(snapDir, f))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    const content = readFileSync(snapFiles[0], "utf-8");
+    const dels = (content.match(/^- /gm) || []).length;
+    const adds = (content.match(/^\+ /gm) || []).length;
+    expect(dels).toBe(2);
+    expect(adds).toBe(0);
+    expect(content).toContain("- old1");
+    expect(content).toContain("- old2");
+  });
+
   it("captureDiff 相对路径以工作目录为基准解析（与 fs_write 一致）", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const proj = resolve(testDir, "proj-diff");

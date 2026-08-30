@@ -3,8 +3,12 @@
   import { API } from "$lib/stores/chat.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
+  import AppsPanel from "./AppsPanel.svelte";
+  import ProcessesPanel from "./ProcessesPanel.svelte";
+  import AgentsPanel from "./AgentsPanel.svelte";
 
-  let tab = $state<"context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace">("context");
+  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents";
+  let tab = $state<SystemTab>("context");
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -17,17 +21,6 @@
     skillsMatched?: string[];
     skillsTotal?: number;
   } = $state({});
-  let logs: {
-    id?: string;
-    userInput?: string;
-    agentId?: string;
-    iterations?: number;
-    toolCallsTotal?: number;
-    toolCallsFailed?: number;
-    tokensPrompt?: number;
-    tokensCompletion?: number;
-    finishReason?: string;
-  }[] = $state([]);
 
   interface SkillCard {
     name: string;
@@ -122,15 +115,6 @@
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => { breakdown = d.breakdown || {}; })
       .catch(() => { breakdown = {}; })
-      .finally(() => { loading = false; });
-  }
-
-  function loadLogs() {
-    loading = true;
-    fetch(`${API}/logs`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => { logs = d.logs || []; })
-      .catch(() => { logs = []; })
       .finally(() => { loading = false; });
   }
 
@@ -234,12 +218,11 @@
     failed: "失败",
   };
 
-  // ── 系统配置（等价 TUI /config） ──
+  // ── 系统配置（等价 TUI /config；迭代上限已统一由「智能体」Tab 管理） ──
   interface ConfigState {
     model: string;
     availableModels: { key: string; model: string; provider: string }[];
     runtimeConfig: { profileKey?: string; temperature?: number | null; maxTokens?: number | null };
-    iterations: Record<string, number>;
     thinking: boolean;
     skillEvo: boolean;
     appVersion: string;
@@ -248,8 +231,6 @@
   let cfgModel = $state("default");
   let cfgTemperature = $state("");
   let cfgMaxTokens = $state("");
-  let cfgIterAgent = $state("default");
-  let cfgIterValue = $state("");
   let cfgMsg = $state("");
   // 添加模型表单
   let newModelKey = $state("");
@@ -267,8 +248,6 @@
         cfgModel = configState.runtimeConfig.profileKey || "default";
         cfgTemperature = configState.runtimeConfig.temperature != null ? String(configState.runtimeConfig.temperature) : "";
         cfgMaxTokens = configState.runtimeConfig.maxTokens != null ? String(configState.runtimeConfig.maxTokens) : "";
-        cfgIterAgent = Object.keys(configState.iterations)[0] || "default";
-        cfgIterValue = configState.iterations[cfgIterAgent] != null ? String(configState.iterations[cfgIterAgent]) : "";
       })
       .catch(() => { configState = null; })
       .finally(() => { loading = false; });
@@ -299,12 +278,6 @@
   }
   function onMaxTokens() {
     void applyConfig("maxTokens", parseInt(cfgMaxTokens, 10));
-  }
-  function onIterAgentChange() {
-    cfgIterValue = configState?.iterations[cfgIterAgent] != null ? String(configState.iterations[cfgIterAgent]) : "";
-  }
-  function onIterations() {
-    void applyConfig("iterations", { agentId: cfgIterAgent, value: parseInt(cfgIterValue, 10) });
   }
   function onThinking(e: Event) {
     void applyConfig("thinking", (e.target as HTMLInputElement).checked);
@@ -446,11 +419,10 @@
     }
   }
 
-  function switchTab(t: "context" | "logs" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace") {
+  function switchTab(t: "context" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
-    else if (t === "logs") loadLogs();
     else if (t === "skills") loadSkills();
     else if (t === "mcp") loadMcp();
     else if (t === "plugins") loadPlugins();
@@ -472,10 +444,12 @@
 <div class="sys-panel">
   <div class="sp-side">
     <button class="sp-nav" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
-    <button class="sp-nav" class:active={tab === "logs"} onclick={() => switchTab("logs")}>日志</button>
+    <button class="sp-nav" class:active={tab === "agents"} onclick={() => switchTab("agents")}>智能体</button>
     <button class="sp-nav" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
+    <button class="sp-nav" class:active={tab === "apps"} onclick={() => switchTab("apps")}>应用</button>
+    <button class="sp-nav" class:active={tab === "processes"} onclick={() => switchTab("processes")}>进程</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
     <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
     <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
@@ -496,27 +470,8 @@
         <div class="sp-row sp-total"><span>总计</span><b>{fmtTok(breakdown.total)}</b></div>
         <div class="sp-note">技能 {breakdown.skillsMatched?.length ?? 0}/{breakdown.skillsTotal ?? 0} 匹配</div>
       </div>
-    {:else if tab === "logs"}
-      {#if logs.length === 0}
-        <div class="sp-empty">暂无日志</div>
-      {:else}
-        <div class="sp-log-list">
-          {#each logs as l}
-            <div class="sp-log">
-              <div class="sp-log-title">{(l.userInput || "").slice(0, 32) || "—"}</div>
-              <div class="sp-log-meta">
-                {l.agentId || "-"} · 迭代 {l.iterations ?? 0} · 工具 {l.toolCallsTotal ?? 0}
-              </div>
-              <div class="sp-log-meta">
-                输入 {fmtTok(l.tokensPrompt)} · 输出 {fmtTok(l.tokensCompletion)}
-                · <span class:ok={!l.toolCallsFailed} class:bad={(l.toolCallsFailed ?? 0) > 0}>
-                    {(l.toolCallsFailed ?? 0) > 0 ? `失败 ${l.toolCallsFailed}` : "成功"}
-                  </span>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
+    {:else if tab === "agents"}
+      <AgentsPanel />
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}
@@ -605,6 +560,10 @@
           {/each}
         </div>
       {/if}
+    {:else if tab === "apps"}
+      <AppsPanel />
+    {:else if tab === "processes"}
+      <ProcessesPanel />
     {:else if tab === "schedule"}
       <div class="sp-section"><div class="sp-row"><span>定时任务（config/schedule.json）</span></div></div>
       {#if schedList.length === 0}
@@ -682,15 +641,6 @@
           <label class="sp-cfg-row">max-tokens（≥100，空=默认）
             <input class="sp-cfg-input" bind:value={cfgMaxTokens} placeholder="默认" />
             <button class="sp-io-mini" onclick={onMaxTokens}>应用</button>
-          </label>
-          <label class="sp-cfg-row">迭代上限（专家 + 10-1000）
-            <select class="sp-cfg-input" bind:value={cfgIterAgent} onchange={onIterAgentChange}>
-              {#each Object.keys(configState.iterations) as agentId}
-                <option value={agentId}>{agentId}</option>
-              {/each}
-            </select>
-            <input class="sp-cfg-input sp-cfg-num" bind:value={cfgIterValue} placeholder="10-1000" />
-            <button class="sp-io-mini" onclick={onIterations}>应用</button>
           </label>
           <label class="sp-cfg-row">思考展示
             <input type="checkbox" checked={configState.thinking} onchange={onThinking} />
@@ -828,7 +778,7 @@
   .sp-total b { color: var(--primary); }
   .sp-note { font-size: 11px; color: var(--dim); margin-top: 6px; }
   .sp-empty { font-size: 12px; color: var(--dim); padding: 12px 0; text-align: center; }
-  .sp-log-list, .sp-groups { display: flex; flex-direction: column; gap: 8px; }
+  .sp-groups { display: flex; flex-direction: column; gap: 8px; }
   .sp-group { display: flex; flex-direction: column; gap: 4px; }
   .sp-group-title {
     font-size: 11px;
@@ -888,16 +838,6 @@
     word-break: break-word;
     color: var(--text);
   }
-  .sp-log {
-    padding: 8px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-  }
-  .sp-log-title { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sp-log-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
-  .ok { color: var(--success); }
-  .bad { color: var(--error); }
   .sp-mcp-list { display: flex; flex-direction: column; gap: 8px; }
   .sp-mcp {
     padding: 10px 12px;

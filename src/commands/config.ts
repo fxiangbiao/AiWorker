@@ -110,7 +110,7 @@ export const configCommands: CliCommand[] = [
     name: "config",
     usage: "config",
     description: "查看/配置模型与系统参数",
-    detail: "持久化到 data/runtime-config.json（model/temperature/max-tokens/iterations/thinking/skill-evo/add-model/reset）",
+    detail: "model/temperature/max-tokens 持久化到 data/runtime-config.json；iterations 持久化到 config/agents/<id>.yaml（与「智能体」Tab 同机制）；thinking/skill-evo/add-model/reset",
     handler: async (ctx, _arg, line) => {
       const parts = line.split(/\s+/).slice(1);
       const sub = parts[0] ?? "";
@@ -214,10 +214,18 @@ export const configCommands: CliCommand[] = [
           const n = parseInt(arg, 10);
           if (isNaN(n) || n < 10 || n > 1000) {
             ctx.writeLine(chalk.red("✗ 迭代上限需在 10-1000 之间"));
+          } else if (ctx.saveAgentConfig) {
+            // 与「智能体」Tab 同机制：持久化到 config/agents/<id>.yaml（热重载生效）
+            const cfg = { ...agent.getConfig(), maxIterations: n };
+            const r = ctx.saveAgentConfig(cfg);
+            if (!r.ok) {
+              ctx.writeLine(chalk.red(`✗ 保存失败: ${r.error ?? "未知错误"}`));
+            } else {
+              ctx.writeLine(chalk.green(`✓ ${agent.getName()} 迭代上限 → ${n}（已持久化到 config/agents/${cfg.id}.yaml，重启后仍生效）`));
+            }
           } else {
             agent.setMaxIterations(n);
-            persist();
-            ctx.writeLine(chalk.green(`✓ ${agent.getName()} 迭代上限 → ${n}（已持久化，重启后仍生效）`));
+            ctx.writeLine(chalk.green(`✓ ${agent.getName()} 迭代上限 → ${n}（内存生效，未持久化）`));
           }
         }
       } else if (sub === "thinking" || sub === "thought") {

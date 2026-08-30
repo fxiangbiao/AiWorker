@@ -1,15 +1,17 @@
 # AiWorker
 
-> 个人 AI Agent 助手 — 多智能体协作 + MCP + Skills + Hooks + 自进化
+> 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.6.4-blue)
+![version](https://img.shields.io/badge/version-0.9.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
 ![ui](https://img.shields.io/badge/UI-TUI%2BWeb-8b5cf6)
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP、技能库、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种界面。
+
+正在升级为 **AI OS**（个人 AI 操作系统）：AI 是大脑、Harness 是手脚、应用模型即插即用、自进化引擎闭环——规划见 [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md)。
 
 ## 目录
 
@@ -35,7 +37,8 @@
 - **记忆与上下文**：三层记忆（工作 / 情景 FTS5 / 语义 MEMORY.md）+ 会话事件溯源（replay + `/trace`）+ 超长结果 spill 落盘 + 自动标题 + 上下文压缩
 - **后台与调度**：`/bg` 后台任务（不阻塞交互，完成 WS 推送）；`/schedule` 定时任务（**支持自然语言添加**，如"每天早上8点生成早报"）
 - **资产分发**：技能/MCP/插件统一 `.aw` 包（zip+manifest，`scripts/pack-aw.mjs` 打包）及**裸格式**（SKILL.md / MCP .json / 插件目录）导入导出；`/install`、`/pkg export`、Web 三 Tab 支持
-- **界面**：TUI 自研帧缓冲渲染引擎；Web（Svelte 5 + SSE + WebSocket 实时总线）；HTTP Server 托管；CI 双平台
+- **AI OS 应用模型**（0.7.0）：`data/apps/<id>/app.json` manifest（tool/skill/agent/service）+ 生命周期状态机 + 子进程能力桥（JSON-RPC 隔离，无 terminal 权限）+ 崩溃自动重启 + `/app` 命令 + Web 应用/进程视图
+- **界面**：TUI 自研帧缓冲渲染引擎；Web（Svelte 5 + SSE + WebSocket 实时总线 + lucide 图标 + 暗色模式）；HTTP Server 托管
 
 ## 界面预览
 
@@ -46,6 +49,12 @@
 ![Web UI — 演示 1](docs/screenshots/web_ui_demo1.png)
 
 ![Web UI — 演示 2](docs/screenshots/web_ui_demo2.png)
+
+![Web UI — 演示 3](docs/screenshots/web_ui_demo3.png)
+
+![Web UI — 演示 4](docs/screenshots/web_ui_demo4.png)
+
+![Web UI — 演示 5](docs/screenshots/web_ui_demo5.png)
 
 ## 作品展示
 
@@ -114,6 +123,7 @@ npm run dev -- [选项]
 | `/mode <ask\|plan\|auto>` | 切换权限模式 |
 | `/plan <任务>` | 多专家 DAG 协作 |
 | `/debate <话题>` | 双专家辩论 |
+| `/app <list\|info\|install\|start\|stop\|destroy>` | AI OS 应用生命周期管理 |
 | `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
 | `/jobs [cancel <id>]` | 查看/取消后台任务 |
 | `/schedule` | 定时任务管理：`add "<cron>\|自然语言>" "<任务>" [agentId]` / `remove <id>` |
@@ -172,6 +182,9 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/skills` | GET | 技能列表（含描述与分组） |
 | `/api/v1/diffs` | GET | 会话文件变更（快照 diff） |
 | `/api/v1/plugins` | GET | 插件列表 |
+| `/api/v1/apps` | GET/POST | 应用列表 / 安装（body: path） |
+| `/api/v1/apps/:id/start\|stop\|destroy` | POST | 应用生命周期操作 |
+| `/api/v1/processes` | GET | 进程列表（Agent/App/Job）+ 统计 |
 | `/api/v1/packages/export\|peek\|import\|list` | GET/POST | .aw 资产包导出/预览/导入/列表（支持裸格式） |
 | `/api/v1/jobs` | GET/POST/DELETE | 后台任务列表/提交/取消 |
 | `/api/v1/schedule` | GET/POST/DELETE | 定时任务（支持自然语言） |
@@ -184,7 +197,8 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 aiworker/
 ├── config/               # 配置文件（models/agents/mcp/permissions/hooks/plugins/schedule/sandbox）
 ├── skills/               # 技能库（SKILL.md，7 领域）
-├── plans/                # Sprint 设计文档
+├── docs/                 # 设计文档（基础方案 + AI OS 架构升级方案 + 截图/演示）
+├── plans/                # Sprint 实施计划
 ├── src/
 │   ├── core/             # agent-loop / model-router / context-manager / team-coordinator /
 │   │                     # tool-registry（作用域）/ plugin-manager / job-runner / scheduler /
@@ -263,15 +277,16 @@ npm run web:build   # Web UI 构建
 - **存储**: better-sqlite3 + WAL + FTS5 + Intl.Segmenter 中文分词
 - **模型**: DeepSeek API（默认）+ OpenAI 兼容格式（多 provider）
 - **CLI/TUI**: Commander.js + 自研帧缓冲渲染引擎（零依赖）
-- **Web UI**: Svelte 5 + Vite 6 + marked + highlight.js + DOMPurify
+- **Web UI**: Svelte 5 + Vite 6 + lucide-svelte + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
-- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》
+- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》《docs/AIOS-架构升级方案.md》
 
 ## 相关文档
 
 - [AGENTS.md](AGENTS.md) — AI 辅助开发指南（模块速览 / 关键约定 / 测试）
 - [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
-- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档
+- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档（基础架构）
+- [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md) — AI OS 架构规划（应用模型 / 进程 / 即时生成 / 语音视频 / 进化引擎）
 - [docs/comparison-report.md](docs/comparison-report.md) — 与 DeepSeek Harness 的源码对比报告
 
 ## 许可证

@@ -11,6 +11,7 @@ import { pluginsCommands } from "./plugins.js";
 import { jobsCommands } from "./jobs.js";
 import { packageCommands } from "./package.js";
 import { miscCommands } from "./misc.js";
+import { appsCommands } from "./apps.js";
 
 export type { CliCommand, CommandContext, CommandAction } from "./types.js";
 
@@ -24,6 +25,7 @@ export function buildCliCommands(): CliCommand[] {
     ...pluginsCommands, // plugins, install
     ...jobsCommands, // bg, jobs, schedule
     ...packageCommands, // pkg export/list
+    ...appsCommands, // app（AI OS 应用生命周期）
     ...miscCommands, // mcps, help, exit
   ];
 }

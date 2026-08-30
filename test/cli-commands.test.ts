@@ -41,6 +41,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}) {
     getName: () => "测试专家",
     getMaxIterations: () => 100,
     setMaxIterations: vi.fn(),
+    getConfig: () => ({ id: "default", maxIterations: 100, systemPrompt: "p", tools: [], mcpServers: [] }),
   };
   const ctx: CommandContext = {
     mode: () => "auto",
@@ -260,29 +261,40 @@ describe("配置命令", () => {
     expect(printStatus).toHaveBeenCalled();
   });
 
-  it("config iterations 设置当前专家上限并持久化", async () => {
+  it("config iterations 设置当前专家上限并持久化到 YAML（智能体配置）", async () => {
     const persist = vi.fn();
     const printStatus = vi.fn();
-    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist, printStatus });
+    const saveAgentConfig = vi.fn(() => ({ ok: true }));
+    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist, printStatus, saveAgentConfig });
+    await find("config").handler(ctx, "", "/config iterations 150");
+    expect(saveAgentConfig).toHaveBeenCalledTimes(1);
+    const cfg = saveAgentConfig.mock.calls[0]![0] as { id: string; maxIterations: number };
+    expect(cfg.id).toBe("default");
+    expect(cfg.maxIterations).toBe(150);
+    expect(persist).not.toHaveBeenCalled();
+    expect(printStatus).toHaveBeenCalled();
+    expect(writeLines.some((l) => l.includes("迭代上限 → 150") && l.includes("config/agents/default.yaml"))).toBe(true);
+  });
+
+  it("config iterations 无 saveAgentConfig 时仅内存生效", async () => {
+    const printStatus = vi.fn();
+    const { ctx, writeLines } = makeCtx({ printStatus });
     await find("config").handler(ctx, "", "/config iterations 150");
     const agent = (ctx as CommandContext).currentAgent() as {
       setMaxIterations: ReturnType<typeof vi.fn>;
-      getMaxIterations: () => number;
     };
     expect(agent.setMaxIterations).toHaveBeenCalledWith(150);
-    expect(persist).toHaveBeenCalled();
-    expect(printStatus).toHaveBeenCalled();
-    expect(writeLines.some((l) => l.includes("迭代上限 → 150"))).toBe(true);
+    expect(writeLines.some((l) => l.includes("内存生效，未持久化"))).toBe(true);
   });
 
   it("config iterations 越界值被拒绝", async () => {
-    const persist = vi.fn();
-    const { ctx, writeLines } = makeCtx({ persistRuntimeConfig: persist });
+    const saveAgentConfig = vi.fn();
+    const { ctx, writeLines } = makeCtx({ saveAgentConfig });
     await find("config").handler(ctx, "", "/config iterations 5");
     expect(writeLines.some((l) => l.includes("10-1000"))).toBe(true);
     await find("config").handler(ctx, "", "/config iterations 5000");
     expect(writeLines.some((l) => l.includes("10-1000"))).toBe(true);
-    expect(persist).not.toHaveBeenCalled();
+    expect(saveAgentConfig).not.toHaveBeenCalled();
   });
 
   it("config iterations 无参数显示当前专家上限", async () => {

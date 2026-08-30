@@ -7,12 +7,25 @@
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
+/** 多模态消息内容块（Sprint 36 语音视频：文本 + 图片） */
+export type MessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface Message {
   role: Role;
-  content: string;
+  /** 纯文本或多模态内容块数组（图片消息走数组；OpenAI 兼容格式） */
+  content: string | MessageContentPart[];
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
+}
+
+/** 提取消息纯文本（多模态数组取全部 text 块拼接；供上下文组装/token 估算/审计等） */
+export function messageText(msg: { content: string | MessageContentPart[] }): string {
+  return typeof msg.content === "string"
+    ? msg.content
+    : msg.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
 }
 
 export interface ToolCall {
@@ -81,6 +94,8 @@ export interface ModelCompleteOptions {
   tools?: ToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  /** 思考模式覆盖（缺省用 profile；生成器传 false 省 token 防空输出） */
+  thinking?: boolean;
   signal?: AbortSignal;
 }
 
@@ -155,6 +170,12 @@ export interface AgentConfig {
   sandbox: boolean;
   tools: string[]; // tool names
   mcpServers: string[];
+  /** 绑定技能（按名称；运行时注入 systemPrompt，见 BaseAgent.applyDeclaredSkills） */
+  skills?: string[];
+  /** 绑定插件（按插件名；保存时展开其工具进 tools 白名单） */
+  plugins?: string[];
+  /** 严格工具模式：关闭 mcp_/插件工具的全局豁免，仅白名单可见（默认 false 宽松） */
+  strictTools?: boolean;
   permissions: {
     defaultMode: PermissionMode;
     allowedTools: string[];
@@ -180,6 +201,8 @@ export interface Task {
   sessionId?: string;
   mode?: PermissionMode;
   workingDir?: string;
+  /** 多模态：随本轮提问附带的图片（data URL 或 https URL；仅当轮上下文，不持久化） */
+  images?: string[];
 }
 
 // ===== 工作目录感知 =====
@@ -486,4 +509,141 @@ export interface SessionTelemetryRecord {
   severity: "info" | "warn" | "error";
   attributes: Record<string, string | number>;
   body: unknown;
+}
+
+// ===== AI OS 应用模型（Sprint 34） =====
+
+/** 应用类型：Sprint 34 支持 tool/skill/agent/service；app（webapp）Sprint 35 */
+export type AppType = "tool" | "skill" | "agent" | "service" | "app";
+
+/** 应用权限（terminal 被禁用，manifest schema 拒绝） */
+export type AppPermission = "network" | "notify" | "llm" | `fs:${string}`;
+
+/** 能力桥能力（子进程/iframe 可请求的系统能力） */
+export type AppCapability = "storage" | "notify" | "llm" | "fs" | "http";
+
+export interface AppToolDecl {
+  name: string;
+  description: string;
+  parameters: ToolParameter;
+}
+
+export interface AppManifest {
+  id: string;
+  type: AppType;
+  name: string;
+  version: string;
+  description: string;
+  /** 相对沙箱目录的入口文件（webapp 为 index.html） */
+  entry: string;
+  /** 静态声明权限（运行时未声明能力走 ask 通道申请） */
+  permissions?: AppPermission[];
+  /** tool 类型：注册的工具声明 */
+  tools?: AppToolDecl[];
+  lifecycle?: { onStart?: string; onStop?: string; onDestroy?: string };
+  /** 生成来源会话（审计回溯） */
+  originSessionId?: string;
+  /** service 类型：OS 启动自动拉起 */
+  autostart?: boolean;
+  /** app（webapp）类型：窗口形态 */
+  ui?: { surface?: AppSurface };
+}
+
+export type AppStatus = "installed" | "starting" | "running" | "stopping" | "stopped" | "failed" | "destroyed";
+
+export interface AppInfo {
+  id: string;
+  type: AppType;
+  name: string;
+  version: string;
+  description: string;
+  entry: string;
+  permissions: string[];
+  tools: string[];
+  status: AppStatus;
+  autostart: boolean;
+  originSessionId?: string;
+  lastError?: string;
+  crashCount?: number;
+  /** 来源插件（config/plugins/ 兼容视图） */
+  plugin?: boolean;
+  /** app（webapp）类型：窗口形态（panel/float/widget） */
+  ui?: { surface?: AppSurface };
+}
+
+// ===== 进程模型（Sprint 34） =====
+
+export type AgentProcessStatus = "running" | "done" | "failed" | "killed";
+export type AppProcessStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
+
+export type OsProcess =
+  | {
+      kind: "agent";
+      pid: string;
+      agentId: string;
+      sessionId: string;
+      status: AgentProcessStatus;
+      priority: "front" | "bg";
+      startedAt: number;
+      endedAt?: number;
+    }
+  | {
+      kind: "app";
+      pid: string;
+      appId: string;
+      status: AppProcessStatus;
+      startedAt: number;
+      endedAt?: number;
+    }
+  | {
+      kind: "job";
+      pid: string;
+      jobId: string;
+      status: "queued" | "running" | "done" | "failed";
+      startedAt?: number;
+      endedAt?: number;
+    };
+
+// ===== AppFactory 即时生成（Sprint 35） =====
+
+/** 生成产出的一个文件 */
+export interface GenFile {
+  path: string;
+  content: string;
+}
+
+/** 应用窗口形态 */
+export type AppSurface = "panel" | "float" | "widget";
+
+/** 生成规格（用户描述 + 模板 id/形态；type 缺省 "app" 表示自动识别） */
+export interface AppSpec {
+  description: string;
+  type: string;
+  surface?: AppSurface;
+  sessionId?: string;
+}
+
+/** 生成模板（契约：结构/行数上限/权限白名单/提示词） */
+export interface AppTemplate {
+  id: string;
+  type: AppType;
+  name: string;
+  description: string;
+  /** 文件职责约定（提示词注入） */
+  structure: string;
+  /** 权限白名单（生成期安全：LLM 只能从中选择，不能新增） */
+  allowedPermissions: string[];
+  /** 生成步骤说明（webapp 分块：逻辑→样式） */
+  steps: { id: string; label: string }[];
+}
+
+/** 生成器抽象（Sprint 35 v2：生成走 agent-loop + fs_write 工具，无独立生成器类） */
+
+export interface GenerateResult {
+  ok: boolean;
+  app?: AppInfo;
+  error?: string;
+  files?: GenFile[];
+  /** 文档型产出路径（data/docs/...） */
+  docPath?: string;
 }

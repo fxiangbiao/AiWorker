@@ -51,6 +51,10 @@ const readFileDef: ToolDefinition = {
           description: "文件编码，默认 utf-8",
           enum: ["utf-8", "base64"],
         },
+        lineNumbers: {
+          type: "boolean",
+          description: "true 时每行前置行号（1-based，右对齐），便于 fs_edit 按行号编辑（startLine/endLine）",
+        },
       },
       required: ["path"],
     },
@@ -68,10 +72,19 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
     };
   }
   const content = readFileSync(filePath, "utf-8");
+  const out =
+    args.lineNumbers === true
+      ? (() => {
+          // 与 fs_edit 行号语义一致：尾部换行不产生额外空行行号
+          const lines = content.split("\n");
+          if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+          return lines.map((l, i) => `${String(i + 1).padStart(4)}  ${l}`).join("\n");
+        })()
+      : content;
   return {
     tool_call_id: "",
     success: true,
-    content: spillOrTruncate(ctx.dataDir, ctx.sessionId, content, "txt"),
+    content: spillOrTruncate(ctx.dataDir, ctx.sessionId, out, "txt"),
   };
 };
 
@@ -127,6 +140,154 @@ const writeFileHandler: ToolHandler = async (args, ctx) => {
     tool_call_id: "",
     success: true,
     content: `已写入文件: ${filePath} (${(args.content as string).length} 字符)`,
+  };
+};
+
+// ===== 文件编辑（局部修改：替换/删除指定片段） =====
+
+const editFileDef: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "fs_edit",
+    description:
+      "修改文件中的局部片段（两种模式，二选一）：" +
+      "①行号模式：startLine/endLine 指定 1-based 行区间（含两端），newText 替换该区间（空 = 删除），行号可用 fs_read 加 lineNumbers:true 查看；" +
+      "②文本匹配模式：oldText 必须唯一匹配的原文片段替换为 newText（空 = 删除），支持跨行。适合局部微调（改几行/删几行），避免整文件重写；新文件请用 fs_write。",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "文件路径" },
+        oldText: { type: "string", description: "文本匹配模式：要替换的原文片段（必须唯一匹配，可跨行）" },
+        newText: { type: "string", description: "替换后的内容（空字符串 = 删除；两种模式通用）" },
+        startLine: { type: "number", description: "行号模式：起始行（1-based，含）。提供 startLine 或 endLine 即启用行号模式" },
+        endLine: { type: "number", description: "行号模式：结束行（1-based，含；缺省 = startLine 只改一行）" },
+      },
+      required: ["path"],
+    },
+  },
+};
+
+const editFileHandler: ToolHandler = async (args, ctx) => {
+  const filePath = resolve(ctx.workingDir, args.path as string);
+
+  // 路径遍历防护: 确保解析后路径仍在工作目录内
+  const resolvedPath = resolve(filePath);
+  const resolvedBase = resolve(ctx.workingDir);
+  const rel = relative(resolvedBase, resolvedPath);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `路径超出项目目录: ${args.path as string}`,
+    };
+  }
+
+  // 权限检查：Auto 模式下高危需确认
+  const dangerCheck = detector.check(`write ${filePath}`);
+  if (dangerCheck.isDangerous && ctx.permissions === "auto") {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `高危操作被拦截: ${dangerCheck.message}`,
+    };
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf-8");
+  } catch {
+    return { tool_call_id: "", success: false, content: "", error: `文件不存在: ${filePath}` };
+  }
+
+  const newText = String(args.newText ?? "");
+  const hasLineMode = args.startLine !== undefined || args.endLine !== undefined;
+
+  // ── 行号模式：替换/删除第 startLine..endLine 行（1-based，含两端） ──
+  if (hasLineMode) {
+    const lines = content.split("\n");
+    // 尾部换行不产生额外空行（行号与 fs_read lineNumbers 一致）
+    const hadTrailing = lines.length > 1 && lines[lines.length - 1] === "";
+    if (hadTrailing) lines.pop();
+    const total = lines.length;
+    const sNum = args.startLine !== undefined ? Math.floor(Number(args.startLine)) : 1;
+    const eNum = args.endLine !== undefined ? Math.floor(Number(args.endLine)) : sNum;
+    if (!Number.isFinite(sNum) || !Number.isFinite(eNum) || sNum < 1 || eNum < 1) {
+      return {
+        tool_call_id: "",
+        success: false,
+        content: "",
+        error: `startLine/endLine 必须为 ≥1 的整数（实际 startLine=${args.startLine ?? "未提供"}, endLine=${args.endLine ?? "未提供"}）`,
+      };
+    }
+    if (eNum < sNum) {
+      return {
+        tool_call_id: "",
+        success: false,
+        content: "",
+        error: `endLine(${eNum}) 不能小于 startLine(${sNum})`,
+      };
+    }
+    const s = sNum;
+    const e = eNum;
+    if (e > total) {
+      return {
+        tool_call_id: "",
+        success: false,
+        content: "",
+        error: `行号超出文件范围: ${s > total ? "startLine" : "endLine"} ${e} > 总行数 ${total}（可用 fs_read 加 lineNumbers:true 查看行号）`,
+      };
+    }
+    // newText 为空 = 删除区间行；否则替换为新行（按 \n 拆分）
+    const replacementLines = newText === "" ? [] : newText.split("\n");
+    const updatedLines = [...lines.slice(0, s - 1), ...replacementLines, ...lines.slice(e)];
+    let updated = updatedLines.join("\n");
+    if (hadTrailing && updatedLines.length > 0) updated += "\n";
+    writeFileSync(filePath, updated, "utf-8");
+    return {
+      tool_call_id: "",
+      success: true,
+      content: `已修改文件: ${filePath}（第 ${s}-${e} 行 → ${replacementLines.length} 行）`,
+    };
+  }
+
+  // ── 文本匹配模式：oldText 唯一匹配替换 ──
+  const oldText = String(args.oldText ?? "");
+  if (!oldText) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: "缺少编辑目标：请提供 oldText（文本匹配）或 startLine/endLine（行号模式）",
+    };
+  }
+
+  const occurrences = content.split(oldText).length - 1;
+  if (occurrences === 0) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `未找到匹配文本（oldText 与文件内容不一致）: ${oldText.slice(0, 80)}`,
+    };
+  }
+  if (occurrences > 1) {
+    return {
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `oldText 匹配不唯一（出现 ${occurrences} 次），请提供更大上下文或改用行号模式`,
+    };
+  }
+
+  // 用 split/join 替换：replace 会把 newText 中的 $&/$`/$'/$$ 按替换模式展开，静默篡改内容
+  const updated = content.split(oldText).join(newText);
+  writeFileSync(filePath, updated, "utf-8");
+  return {
+    tool_call_id: "",
+    success: true,
+    content: `已修改文件: ${filePath}（替换 1 处：${oldText.split("\n").length} 行 → ${newText.split("\n").length} 行）`,
   };
 };
 
@@ -373,6 +534,14 @@ const webFetchHandler: ToolHandler = async (args) => {
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
     const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      return {
+        tool_call_id: "",
+        success: false,
+        content: "",
+        error: `抓取失败: HTTP ${response.status} ${response.statusText}`,
+      };
+    }
     const text = await response.text();
     // 简单 HTML 清理
     const cleaned = text
@@ -527,6 +696,7 @@ const terminalSessionHandler: ToolHandler = async (args, ctx) => {
 export function registerBuiltinTools(): void {
   toolRegistry.register("fs_read", readFileDef, readFileHandler);
   toolRegistry.register("fs_write", writeFileDef, writeFileHandler);
+  toolRegistry.register("fs_edit", editFileDef, editFileHandler);
   toolRegistry.register("fs_list", listDirDef, listDirHandler);
   toolRegistry.register("terminal_exec", execCmdDef, execCmdHandler);
   toolRegistry.register("web_search", webSearchDef, webSearchHandler);

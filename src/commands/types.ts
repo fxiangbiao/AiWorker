@@ -8,6 +8,8 @@ import type { ModelRouter } from "../core/model-router.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { TeamCoordinator } from "../core/team-coordinator.js";
 import type { BaseAgent } from "../agents/base-agent.js";
+import type { AppManager } from "../core/app-manager.js";
+import type { AppFactory } from "../core/app-factory.js";
 
 export type CommandAction = "continue" | "exit";
 
@@ -28,6 +30,8 @@ export interface CommandContext {
   agents: Record<string, BaseAgent>;
   /** 当前路由专家（/config iterations 用；index.ts 注入 routeToExpert("") 语义） */
   currentAgent: () => BaseAgent;
+  /** 保存智能体配置（写 config/agents/<id>.yaml + 热重载；注入后 /config iterations 持久化，否则仅内存生效） */
+  saveAgentConfig?: (cfg: import("../types.js").AgentConfig) => { ok: boolean; error?: string };
   coordinator: TeamCoordinator;
   modelRouter: ModelRouter;
   sessionStore: SessionStore;
@@ -42,6 +46,10 @@ export interface CommandContext {
   getContextBreakdown: (query: string) => ContextBreakdown;
   /** 全部已注册命令（/help 生成表格用；index.ts 组装后注入） */
   listCommands: () => CliCommand[];
+  /** 应用管理器（/app 命令用；未注入则该命令提示不可用） */
+  appManager?: AppManager;
+  /** 应用工厂（/app new|update 用；未注入则提示不可用） */
+  appFactory?: AppFactory;
   // 输出抽象（测试可捕获）
   write: (text: string) => void;
   writeLine: (line: string) => void;

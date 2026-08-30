@@ -1,6 +1,6 @@
 {
   "name": "aiworker",
-  "version": "0.6.6",
+  "version": "0.9.0",
   "description": "AiWorker - 娑擃亙姹?AI Agent 閸斺晜澧滈敍灞筋樋閺呴缚鍏樻担鎾冲礂娴?+ MCP + Skills + Hooks",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.0",
+    "better-sqlite3": "^12.11.1",
     "chalk": "^5.4.1",
     "commander": "^12.1.0",
     "cron-parser": "^5.10.0",

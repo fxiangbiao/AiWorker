@@ -1,38 +1,28 @@
 <script lang="ts">
-  import ModeTabs from "./ModeTabs.svelte";
-  import AgentSelect from "./AgentSelect.svelte";
-  import { store, saveSettings } from "$lib/stores/chat.svelte";
+  import { Settings, PanelLeftOpen, PanelRightOpen, Moon, Sun } from "lucide-svelte";
+  import { theme, toggleTheme } from "$lib/stores/theme.svelte";
 
-  let { agents = [] as { id: string; name: string }[], onOpenSystem, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
-    agents?: { id: string; name: string }[];
+  let { onOpenSystem, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
     onOpenSystem: () => void;
     onExpandLeft: () => void;
     onExpandRight: () => void;
     leftHidden: boolean;
     rightHidden: boolean;
   }>();
-
-  function selectMode(m: string) {
-    store.mode = m;
-    saveSettings();
-  }
-  function selectAgent(id: string) {
-    store.agentId = id;
-    saveSettings();
-  }
 </script>
 
 <div class="topbar">
   {#if leftHidden}
-    <button class="side-btn" title="展开左侧栏" onclick={onExpandLeft}>&#8811;</button>
+    <button class="side-btn" title="展开左侧栏" onclick={onExpandLeft}><PanelLeftOpen size={15} /></button>
   {/if}
   <div class="logo"><img src="/logo.svg" alt="AiWorker" class="logo-img" />AiWorker</div>
-  <ModeTabs mode={store.mode} onSelect={selectMode} />
-  <AgentSelect agentId={store.agentId} {agents} onchange={selectAgent} />
   <div class="spacer"></div>
-  <button class="side-btn" title="系统设置" onclick={onOpenSystem}>&#9881;</button>
+  <button class="side-btn" title={$theme === "dark" ? "切换到浅色模式" : "切换到暗色模式"} onclick={toggleTheme}>
+    {#if $theme === "dark"}<Sun size={15} />{:else}<Moon size={15} />{/if}
+  </button>
+  <button class="side-btn" title="系统设置" onclick={onOpenSystem}><Settings size={15} /></button>
   {#if rightHidden}
-    <button class="side-btn" title="展开右侧栏" onclick={onExpandRight}>&#8810;</button>
+    <button class="side-btn" title="展开右侧栏" onclick={onExpandRight}><PanelRightOpen size={15} /></button>
   {/if}
 </div>
 

@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.9.0 (2026-08-30)
+
+### 多模态 + 应用工坊 + 智能体管理（Sprint 36 及后续迭代）
+- **多模态图片**：对话支持粘贴/选择图片上传（`Message.content` 联合类型、`Task.images`、`/chat` vision 门控——当前模型不支持视觉时明确提示配置 `vision:true`）；后端 TTS 音频通道（`/api/v1/audio` WS，edge-tts 自研客户端；语音输入受网络限制放弃，保留图片能力）
+- **「应用工坊」任务模式**：输入区任务类型下拉新增第三项——对话直接触发应用生成（后台队列，不阻塞对话）；聊天流**实时状态卡片**（排队→生成中步骤/百分比/文件明细→完成+打开应用/查看文档→失败原因），与按钮生成（GenWizard 简化后）统一走聊天流卡片
+- **生成卡片持久化**：终态（done/failed/canceled）写入卡片消息（`_genStatus/_genResult/_genError`），刷新/重开会话仍可恢复展示；`GET /api/v1/apps/gen` 列表端点 + 前端拉取恢复进行中任务
+- **能力桥修复**：宿主回发 `bridge:res` 的 targetOrigin 改 `"*"`（沙箱 iframe origin 为 "null"，原传宿主 origin 被浏览器静默丢弃导致 30s「宿主无响应」）；`http.fetch` 加 10s 超时 + 明确错误；webapp 生成模板明确桥接返回契约（`{status, ok, text}`）；天气应用 httpGet 解析修复
+- **智能体管理（二期完整版）**：系统设置新增「智能体」Tab——内置 7 专家查看/编辑 System Prompt 与参数（写 `config/agents/*.yaml` **热生效**，恢复默认一键回 TS）；**自定义智能体**（GenericAgent + YAML，与内置同等待遇：执行专家下拉/对话/团队协作/jobRunner 均可用），支持自定义 prompt/模型/迭代/工具白名单 + **技能绑定**（运行时注入，更新即时生效）+ **MCP/插件绑定**（保存展开进白名单）+ **严格工具模式**（关闭 mcp/插件全局豁免）；`/agents/meta` 表单选项端点 + config/reset/delete 端点
+- **迭代上限收敛**：唯一事实源改为 `config/agents/*.yaml`（智能体 Tab / CLI `/config iterations` 同机制持久化），移除 runtime-config 运行时覆盖（消除两处配置冲突）
+- **日志并入轨迹 Tab**：上部「最近活动」（跨会话 turn 汇总，今天/昨天/日期分组，点击直达）→ 下部「会话轨迹」（默认跟随当前会话，可固定目标会话）；「日志」Tab 移除
+- **会话列表统一**：移除「应用生成」独立分区（生成过程已在对话流卡片），appgen 后台会话不再展示
+- **修复**：Svelte 5 深响应代理回写（生成卡片 `_genJobId` 原直接改局部对象不触发更新）、生成卡片跨会话终态定位、AgentsPanel 挂载漏加载、智能体保存丢失 allowedTools/deniedTools、技能段 marker 定位替换防重复/防 YAML 固化
+- **README**：界面预览补全 7 张截图（修复 web_ui_demo1 双后缀断链）
+- 测试 +15（agent-config-loader roundtrip、agents API CRUD、GenericAgent 技能注入、media 音频、CLI iterations 持久化）；全量 543 全绿
+
+## 0.8.0 (2026-08-27)
+
+### AI OS 应用工厂 v2 + 窗口体系 + 应用预览面板（Sprint 35）
+- **应用工厂 v2（生成管线重构）**：复用 agent-loop + fs_write/fs_edit 工具生成应用（与智能体对话写文件无区别）——构造临时「生成 agent」（tools 白名单 fs 四件套、modelPreference coding、迭代上限 30），多轮工具调用写文件，彻底删除 v1 的分块续写/拼接逻辑；校验器最终把关（app.js 语法/引用/manifest 白名单/入口存在）+ 反馈 LLM 自查再修（≤2 轮）
+- **新工具 `fs_edit`**：局部修改（文本唯一匹配 或 行号区间 startLine/endLine 替换/删除），`fs_read` 支持 `lineNumbers:true` 输出行号；变更面板因此能显示**删除行**（之前仅新增）
+- **窗口体系**：三形态（panel 停靠预览 / float 浮窗 / widget 透明小部件）+ 拖拽（pointer capture）/缩放/置顶 + 形态互切（停靠↔浮窗↔小部件）+ widget 透明背景框架级保证（宿主注入 `background:transparent!important`）+ 位置/状态持久化
+- **右侧面板「应用预览」Tab**：新生成应用/文档默认停靠展示（自动展开面板），应用名 + 版本 + 浮窗/小部件/关闭按钮；文档 Markdown 渲染（标题目录点击定位 + 滚动跟随 + 图表）；文档浮层随时可重新打开历史文档
+- **能力桥**（宿主注入 C 方案）：`window.__AIWORKER_BRIDGE__`（storage/notify/llm/fs/http）+ `/apps/:id/bridge` 端点；沙箱 iframe 消息按 `ev.source` 身份校验（origin 为 "null" 无法用 origin 校验）+ 请求 30s 超时；webapp manifest 按模板白名单写入权限（能力桥"直接用"契约成立）
+- **异步生成队列**：`generator-queue`（jobId 即返、状态流转、取消排队任务、gen/* 事件、完成态保留 20 条）+ GenWizard 进度条 + 轨迹时间线（agent-loop 工具事件驱动）+ 生成中可随时关闭（后台继续）
+- **会话展示**：左侧会话列表上下分栏（上栏正常会话 / 下栏「应用生成」独立分区）；appgen 会话可读标题（`应用生成: xxx`）；自动切换跳过 appgen 会话
+- **文件变更面板**：指纹监控「新增文件」快照展开为全新增行（行号 + 绿色标识）；「当前内容」视图补行号；自动刷新后按 path 重映射选中
+- **update() 健壮性**：同应用并发互斥（串行化）、agent 运行后存在性复核、reload 先于重启（新工具声明生效）、start 失败清理、semver 版本递增、style.css-only 变更检测
+- **进程列表修复**：服务器重启恢复的 running 应用补注册进程（幂等短路补 `registerAppProcess`）；进程展示应用名；状态栏 Cpu 计数含 app 进程、cost 按 prompt/completion 分价
+- 测试 +33；全量 524 全绿（含 v2 生成全链路 mock、fs_edit 双模式、恢复进程注册、widget 透明注入、新增文件展开）
+
+## 0.7.0 (2026-08-26)
+
+### AI OS 内核：应用模型 + 进程模型（Sprint 34）
+- **应用模型**：`data/apps/<id>/app.json` manifest（tool/skill/agent/service 四类；webapp Sprint 35）+ schema 校验（**terminal 权限禁用**、fs 权限限沙箱内、entry 防穿越、工具声明校验）+ 生命周期状态机（installed→starting→running→stopping→stopped / destroyed）+ state.json 持久化 + **autostart 启动自动拉起** + destroy 幂等（代码/进程/权限/审计全清）
+- **子进程能力桥**（`app-runtime`）：tool/service 应用**不进程内加载**——`child_process` + `--max-old-space-size=256` + 行分隔 JSON-RPC；能力 API（storage/notify/llm/fs/http，**无 terminal**）；60s 工具超时、stdout 截断、15s 心跳、**崩溃指数退避重启**（1s/2s/4s ≤3 次）；能力权限强制层（sandbox.checkAppCapability：storage 自动允许，其余静态声明命中，未命中走 ask 通道 fail-closed）
+- **进程模型**：`process-manager` 统一 Agent/App/Job 注册表 + 事件广播（`process/*`）；agent-loop / job-runner / app-manager 登记；`/api/v1/processes` 实时视图
+- **CLI `/app`**：list / info / install（目录）/ start / stop / destroy（二次确认）
+- **HTTP**：`GET/POST /api/v1/apps`、`POST /api/v1/apps/:id/start|stop|destroy`；WS 事件 `app/*` 实时刷新
+- **插件兼容**：现有 config/plugins/ 插件展示为 tool 类应用（list 合并视图，plugin-manager 零改动）
+- **Web UI 升级**：暗色模式（顶栏开关 + localStorage + 跟随系统）、lucide 图标统一、细滚动条、`:focus-visible`、空状态启动台（新对话/生成应用/查看进程/语音）、左侧 OS 导航（对话/应用/进程/任务/设置）、StatusBar 进程/应用计数、SystemPanel 新增「应用」「进程」Tab、应用面板生命周期操作 + 销毁确认
+- **依赖**：better-sqlite3 11→12.11.1（Node 24 ABI 兼容）、lucide-svelte 1.0（Svelte 5 兼容）
+- 测试 +35（manifest/app-manager/app-runtime/process-manager/apps-api 端点）；全量 492 全绿
+
 ## 0.6.6 (2026-08-23)
 
 ### 高危拦截加固 + 工具错误展示/重试优化
