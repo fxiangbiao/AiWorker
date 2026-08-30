@@ -49,6 +49,9 @@
   let skillOptions = $state<SkillOption[]>([]);
   let pickerOpen = $state(false);
   let pickerIdx = $state(0);
+  /** 下拉展开方向：true=向上（输入区贴近视口底部时防被裁剪） */
+  let pickerUp = $state(true);
+  let pickerWrap: HTMLDivElement;
 
   onMount(() => {
     fetch(`${API}/skills`)
@@ -82,11 +85,23 @@
     );
   });
 
+  /** 按输入区上下可用空间决定下拉方向（下方空间不足 280px 且上方更充裕时向上展开） */
+  function positionPicker() {
+    const rect = pickerWrap?.getBoundingClientRect();
+    if (!rect) return;
+    const roomBelow = window.innerHeight - rect.bottom;
+    const roomAbove = rect.top;
+    pickerUp = roomBelow < 280 && roomAbove > roomBelow;
+  }
+
   function openPicker() {
     if (inputMode !== "chat") return;
     pickerOpen = true;
     pickerIdx = 0;
-    tick().then(() => ta?.focus());
+    tick().then(() => {
+      positionPicker();
+      ta?.focus();
+    });
   }
 
   /** 插入技能名：保留已有草稿为任务（/token 之后的文本或纯文本草稿），避免误删输入内容 */
@@ -153,6 +168,7 @@
     if (inputMode === "chat" && text.startsWith("/")) {
       pickerOpen = true;
       pickerIdx = 0;
+      positionPicker();
     } else {
       pickerOpen = false;
     }
@@ -175,7 +191,7 @@
 
 <div class="input-area">
   <div class="input-inner">
-    <div class="input-row-wrap">
+    <div class="input-row-wrap" bind:this={pickerWrap}>
       <div class="input-row">
         <textarea
           bind:this={ta}
@@ -197,7 +213,7 @@
       </div>
 
       {#if pickerOpen && inputMode === "chat"}
-        <div class="skill-picker">
+        <div class="skill-picker" class:up={pickerUp} class:down={!pickerUp}>
           {#if filteredSkills.length === 0}
             <div class="sp-empty-row">
               {skillOptions.length === 0 ? "暂无技能（检查 skills/ 目录或导入 .aw/.md）" : `无匹配技能 "${pickerToken}"`}
@@ -377,7 +393,6 @@
   .skill-picker {
     position: absolute;
     left: 0; right: 0;
-    top: calc(100% + 6px);
     z-index: 30;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -387,6 +402,8 @@
     overflow-y: auto;
     padding: 4px;
   }
+  .skill-picker.up { bottom: calc(100% + 6px); }
+  .skill-picker.down { top: calc(100% + 6px); }
   .sp-item {
     display: flex;
     align-items: baseline;
