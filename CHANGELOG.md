@@ -7,6 +7,7 @@
 - **项目扫描防噪音/防性能**：排除 `node_modules/.git/dist/.venv/__pycache__` 等系统目录与应用自身 dataDir（按绝对路径）；深度 ≤4、.md ≤200、单文件 ≤1MB
 - **API**：`/docs` 返回 `roots` + `docs[{root, path, title, size, mtime}]`；`/docs/content?root=session|project` 各自独立路径穿越防护（无 root 参数兼容旧行为）
 - **前端**：`docViewer` 改为 `root:rel` 前缀 key；预览面板分节 chips（项目文档用相对路径做标题）+ 手动刷新 + 监听 `session/update` 自动刷新；图表 sidecar（`data.json`）仅会话资产加载，避免误读项目业务 JSON；路径统一正斜杠（Windows 兼容）
+- **布局优化**：文档预览改**左侧垂直文档栏**（会话资产/项目文档分组、sticky 标题、当前文档高亮、可收起给渲染区让位）＋右侧渲染；渲染区无标题时自动隐藏目录列
 - 测试 +3（双来源扫描/排除、project 读取与穿越防护、session 兼容）；全量 556 全绿
 
 ## 0.9.1 (2026-08-30)

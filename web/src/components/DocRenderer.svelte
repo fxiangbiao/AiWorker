@@ -99,6 +99,9 @@
     return heads;
   }
 
+  /** 无标题时隐藏目录列，给内容让位（左侧文档栏已占一定宽度） */
+  let tocHeadings = $derived(html ? extractHeadings() : []);
+
   /** 目录点击 → 渲染区滚动定位到标题 */
   function jumpTo(id: string) {
     activeHeading = id;
@@ -125,19 +128,21 @@
 
 <div class="dr">
   {#if html}
-    <div class="dr-toc">
-      {#each extractHeadings() as h (h.id)}
-        <button
-          class="dr-toc-item"
-          class:active={activeHeading === h.id}
-          style:padding-left={`${(h.level - 1) * 10}px`}
-          title={h.text}
-          onclick={() => jumpTo(h.id)}
-        >
-          {h.text}
-        </button>
-      {/each}
-    </div>
+    {#if tocHeadings.length > 0}
+      <div class="dr-toc">
+        {#each tocHeadings as h (h.id)}
+          <button
+            class="dr-toc-item"
+            class:active={activeHeading === h.id}
+            style:padding-left={`${(h.level - 1) * 10}px`}
+            title={h.text}
+            onclick={() => jumpTo(h.id)}
+          >
+            {h.text}
+          </button>
+        {/each}
+      </div>
+    {/if}
     <div class="dr-render" bind:this={renderEl} onscroll={onRenderScroll} aria-label="文档内容">
       {#if chart}
         <div class="dr-chart">
