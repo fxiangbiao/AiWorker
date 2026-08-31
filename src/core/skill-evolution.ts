@@ -128,8 +128,13 @@ export class SkillEvolution {
       const targetPath = resolve(targetDir, `${name}.md`);
 
       writeFileSync(targetPath, raw, "utf-8");
-      skillRegistry.reloadSkill(targetPath);
+      const reloaded = skillRegistry.reloadSkill(targetPath);
       try { unlinkSync(filePath); } catch { /* 清理 pending 文件，失败不影响 */ }
+      if (!reloaded) {
+        // 解析失败：注册表未加载，回滚已写文件，返回失败（防"虚假成功"）
+        try { unlinkSync(targetPath); } catch { /* 清理失败不影响 */ }
+        return false;
+      }
       return true;
     } catch {
       return false;

@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.11.0 (2026-08-30)
+
+### 进化引擎第二期：补丁生效 + 快照回滚（Sprint 40）
+
+- **快照回滚（硬能力）**：apply 写入前自动快照受影响目标（`data/evolution/snapshots/<id>.json`）——技能文件/配置 YAML/runtime-config.json 存原内容（原不存在记 null）、tool-fix 存完整 ToolDefinition（函数不可序列化，restore 时从当前注册表取 handler）；`POST /evolution/proposals/:id/rollback` + CLI `/evo rollback <id>` + Web「回滚」按钮一键还原；状态机加 `rolled_back` 终态（applied 才可回滚，回滚后再改需重新 propose）
+- **tool-fix 真正生效**：meta-agent 产出改进后的工具描述（`newDescription`）→ apply 时热覆盖注册（保留原 handler，仅换 description；本次运行生效，重启回内置默认）；回滚用快照完整定义重注册
+- **prompt-fix 真正生效**：meta-agent 产出改进后的完整 systemPrompt（`newPrompt`）→ apply 写 `config/agents/<id>.yaml` + `reloadAgent` 热重载（复用智能体 Tab 保存管线）；回滚恢复原 YAML + 热重载
+- **技能注册表卸载**：`skillRegistry.unloadSkill(name)` 按名移除内存条目（回滚删除技能文件后同步，防残留仍被触发词激活——审核发现的漏洞）
+- **台账视图**：`GET /evolution/ledger?limit=N` 返回 ledger 尾部条目；Web 进化 Tab 新增「进化台账」时间线（提议/确认/写入/回滚/拒绝/生成结果）
+- **变更对比展示**（`evolution-diff`）：applied/rolled_back 提案可查看「进化前后对比」——before 从快照提取、after 从提案 action 派生，行级 LCS diff 高亮（红删绿增）；`GET /evolution/proposals/:id/change` + CLI `/evo diff <id>` + Web 卡片「查看变更」按钮；纯新增类（new-tool/new-app）显示全绿 add
+- **生成结果回写**：apply new-tool/new-app 记 `generated-submitted` + jobId；index.ts 桥接 `gen/done|failed` 事件 → `onGenResult` 按 jobId 匹配提案 → ledger 记 `generated`（ok/appId）+ 广播 `evolution/generated`
+- 两段式确认保留：adopt 预览新增 newDescription/newPrompt 全文；schema 强制新字段必填 + **路径穿越防护**（expert/toolName/agentId 仅拒绝 / \ ..，允许中文名）
+- 修复：prompt-fix 旧格式提案（缺 newPrompt）apply 被拒不污染提示词；快照 capture/restore 越界路径拒绝（安全加固）；**config-change 白名单收紧为 temperature/maxTokens**（thinking 是内存开关不落盘、回滚无效，交配置 Tab 管理——review 发现）；diffLines/extractAfter 参数防御旧数据缺失；**tool-fix 回滚依赖 registerTool 缺失时明确报错**（不虚假成功）；Web「查看变更」支持展开/收起切换 + 加载失败提示；**skill-evolution.register 校验 reloadSkill 结果**（解析失败返回 false 并回滚文件，防技能"虚假生效"）；生成任务 **canceled** 也回写台账
+- 测试 +36（snapshot 六态/restore 联动/unloadSkill/engine rollback 七例/端点 4/CLI 3/schema 4/diff 13/中文技能名/onGenResult 2/registerTool 缺失/register 2）；全量 655 全绿
+
+## 0.10.0 (2026-08-30)
+
+### 进化引擎第一期：观察 + 提议（Sprint 39）
+
+- **观察层**（`evolution-observer`）：从 `session_events` / 审计派生进化指标，不新增存储——工具成功率/耗时/失败 top 错误（按 callId 配对）、任务完成率（turn/end reason）、重复任务聚类（首条用户消息前缀相似度，≥3 次提示）、用户干预频率、生成统计；窗口最近 7 天；会话列表放大 limit（≥500）防窗口截断；空数据短路跳过 LLM 省预算
+- **提议层**（`evolution-proposer`）：meta-agent 分析观察数据 → 单条结构化提案（new-skill / new-tool / new-app / config-change / tool-fix / prompt-fix），schema 校验 + 解析失败重试 ≤2 次；提案落盘 `data/evolution/proposals/` + `ledger.json` 台账；**每日 ≤3 条限频护栏**
+- **采纳/拒绝**（`evolution-engine`，**两段式确认**）：`adopt` 仅确认提案内容（pending→confirmed，返回写入预览，**不写入任何内容**）；`apply` 才真正执行（confirmed→applied）——new-skill 复用 skill-evolution 校验注册（meta-agent 直接产出 SKILL.md）、new-tool/new-app 复用生成队列（与对话生成同队列串行互斥）、config-change 走配置通道（白名单字段）、tool-fix/prompt-fix 仅记录建议人工执行；`reject` 可从 pending/confirmed 撤销；幂等（各状态机非法流转拒绝）；全审计 + `evolution/*` WS 事件
+- **API**：`GET /evolution/observe`、`POST /evolution/propose`、`GET /evolution/proposals`、`POST /evolution/proposals/:id/adopt|apply|reject`（adopt 返回 preview）
+- **Web「进化」Tab**：观察指标仪表（成功率条/失败错误 chips/重复任务/生成统计）+ 提案卡片（类型徽标/风险）；采纳后展开**写入预览**（SKILL.md 全文/配置值等）→「确认写入」/「撤销」二次确认；采纳 new-tool/new-app 反馈 jobId 并引导「应用」Tab
+- **CLI `/evo`**：observe / propose / list / adopt（预览）/ apply（写入）/ reject
+- **修复 web tsc 3 存量错误**：`chat.svelte.ts` pendingTools 判空、`markdown.ts` marked v15 API 变更（highlight 选项移除 → renderer 扩展、parse 同步断言）；web tsc 首次 0 错误
+- **数据核查**：`data/docs` 文件名为正确 UTF-8（此前"GBK 乱码"为 PowerShell 控制台显示假象，全目录扫描无乱码，无需修复）
+- 测试 +40（观察聚合/窗口/空数据、提议 schema/限频/重试、两段式确认全状态机、端点 7 例、CLI 7 例）；全量 602 全绿
+
+## 0.9.2 (2026-08-30)
+
+### 文档预览支持工作目录项目文档（Sprint 38）
+- **双来源**：文档预览面板分组展示「会话资产」（`data/docs/`）+「项目文档」（工作目录 `*.md`，mtime 降序，AI 刚写的排最前）
+- **项目扫描防噪音/防性能**：排除 `node_modules/.git/dist/.venv/__pycache__` 等系统目录与应用自身 dataDir（按绝对路径）；深度 ≤4、.md ≤200、单文件 ≤1MB
+- **API**：`/docs` 返回 `roots` + `docs[{root, path, title, size, mtime}]`；`/docs/content?root=session|project` 各自独立路径穿越防护（无 root 参数兼容旧行为）
+- **前端**：`docViewer` 改为 `root:rel` 前缀 key；预览面板分节 chips（项目文档用相对路径做标题）+ 手动刷新 + 监听 `session/update` 自动刷新；图表 sidecar（`data.json`）仅会话资产加载，避免误读项目业务 JSON；路径统一正斜杠（Windows 兼容）
+- **布局优化**：文档预览改**左侧垂直文档栏**（会话资产/项目文档分组、sticky 标题、当前文档高亮、可收起给渲染区让位）＋右侧渲染；渲染区无标题时自动隐藏目录列
+- 测试 +3（双来源扫描/排除、project 读取与穿越防护、session 兼容）；全量 556 全绿
+
+## 0.9.1 (2026-08-30)
+
+### Web 对话技能模式 + 技能检索（Sprint 37）
+- **技能模式**：Web 输入 `/技能名 任务` 等价 CLI `/技能名` 激活技能（兼容 `/skill <名称>` 形式）——技能正文注入系统提示（`Task.explicitSkill` → context 组装，仅当轮上下文，不进会话历史），指令保持原始输入；SSE 新增 `skill_activated` 事件，助手消息顶部显示 `⚡ 技能名` 徽标
+- **技能检索**：输入框以 `/` 开头弹出技能选择器（名称/描述/专家/触发词实时过滤，↑↓ 高亮、Tab/点击插入、Esc 关闭），配置条新增「技能」按钮一键唤起；系统设置「技能」Tab 增加搜索框
+- **未知技能兜底**：`/xxx` 未命中时 SSE 发 `skill_not_found`（含可用技能列表），不建会话、不跑智能体、不落库
+- **修复 /chat 用户消息双写**：server.ts 与 base-agent 各 append 一次用户消息导致服务端会话重复（turnCount 翻倍、清缓存刷新可见重复）——持久化收敛到 base-agent 唯一入口
+- 测试 +5（技能激活/未知技能//skill 形式/非斜杠消息不受影响/双写回归）；全量 548 全绿
+
 ## 0.9.0 (2026-08-30)
 
 ### 多模态 + 应用工坊 + 智能体管理（Sprint 36 及后续迭代）

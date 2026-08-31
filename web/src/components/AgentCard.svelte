@@ -45,6 +45,13 @@
     <div class="error-card">⚠ {msg.content}</div>
   {:else}
     <div class="agent-card">
+      {#if msg._skills && msg._skills.length > 0}
+        <div class="skill-chips">
+          {#each msg._skills as sk}
+            <span class="skill-chip" title={sk.description || sk.name}>⚡ {sk.name}</span>
+          {/each}
+        </div>
+      {/if}
       {#if groups.length > 0}
         <div class="timeline">
           {#each groups as g}
@@ -89,6 +96,25 @@
     background: var(--surface);
     box-shadow: var(--shadow);
     overflow: hidden;
+  }
+  .skill-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 14px 0;
+  }
+  .skill-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-light);
+    border: 1px solid var(--primary);
+    border-radius: 20px;
+    padding: 2px 10px;
+    cursor: default;
   }
   .live-label {
     font-size: 11px;

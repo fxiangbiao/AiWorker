@@ -144,6 +144,14 @@ class SkillRegistry {
       return null;
     }
   }
+
+  /** 按名卸载技能（Sprint 40：回滚删除技能文件后同步内存，防残留仍被激活） */
+  unloadSkill(name: string): boolean {
+    const idx = this.skills.findIndex((s) => s.name === name);
+    if (idx < 0) return false;
+    this.skills.splice(idx, 1);
+    return true;
+  }
 }
 
 export const skillRegistry = SkillRegistry.getInstance();

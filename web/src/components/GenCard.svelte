@@ -18,6 +18,9 @@
 
   let { msg }: { msg: UIMessage } = $props();
 
+  /** 更新 vs 生成：决定文案与结果展示（卡片消息带 _genAction，刷新后仍可区分） */
+  const isUpdate = $derived(msg._genAction === "update");
+
   // 优先实时 genJobs（进行中进度）；无实时数据时回退到持久化终态（刷新/重开会话后仍展示）
   const job = $derived(
     (msg._genJobId ? $genJobs[msg._genJobId] : undefined) ??
@@ -36,7 +39,7 @@
       openAppInPreview(res.app.id, res.app);
     } else if (res?.docPath) {
       const rel = res.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? res.docPath;
-      docViewer.set(rel);
+      docViewer.set(`session:${rel}`);
       rightPanelVisible.set(true);
       rightTab.set("docs");
     }
@@ -50,21 +53,21 @@
 <div class="gen-card">
   <div class="gen-head">
     <Sparkles size={13} class="gen-icon" />
-    <span class="gen-title">应用工坊</span>
+    <span class="gen-title">{isUpdate ? "应用更新" : "应用工坊"}</span>
     {#if !job}
       <span class="gen-status">{msg.content || "等待服务器响应…"}</span>
     {:else if job.status === "queued"}
       <span class="gen-status">排队中…</span>
     {:else if job.status === "running"}
       <span class="gen-status">
-        {job.step ?? "生成中"}… <span class="gen-pct">{job.pct ?? 0}%</span>
+        {job.step ?? (isUpdate ? "更新中" : "生成中")}… <span class="gen-pct">{job.pct ?? 0}%</span>
       </span>
     {:else if job.status === "done"}
-      <span class="gen-status ok">✓ 生成完成</span>
+      <span class="gen-status ok">✓ {isUpdate ? "更新完成" : "生成完成"}</span>
     {:else if job.status === "canceled"}
       <span class="gen-status">已取消</span>
     {:else}
-      <span class="gen-status err">✗ 生成失败</span>
+      <span class="gen-status err">✗ {isUpdate ? "更新失败" : "生成失败"}</span>
     {/if}
   </div>
 
@@ -82,14 +85,18 @@
 
   {#if job?.status === "done"}
     {#if job.result?.app}
-      <div class="gen-done">✓ 应用已就绪：{job.result.app.name}（已停靠右侧「应用预览」）</div>
+      <div class="gen-done">
+        {isUpdate
+          ? `✓ 应用已更新：${job.result.app.name} v${job.result.app.version ?? ""}（已停靠右侧「应用预览」）`
+          : `✓ 应用已就绪：${job.result.app.name}（已停靠右侧「应用预览」）`}
+      </div>
       <button class="gen-btn" onclick={openResult}>打开应用</button>
     {:else if job.result?.docPath}
       <div class="gen-done">✓ 文档已生成</div>
       <button class="gen-btn" onclick={openResult}>查看文档</button>
     {/if}
   {:else if job?.status === "failed"}
-    <div class="gen-fail">✗ {job.error ?? "生成失败"}</div>
+    <div class="gen-fail">✗ {job.error ?? (isUpdate ? "更新失败" : "生成失败")}</div>
   {/if}
 
   {#if job?.status === "queued"}

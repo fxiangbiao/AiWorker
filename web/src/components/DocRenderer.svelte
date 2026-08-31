@@ -1,10 +1,11 @@
 <script lang="ts">
   /**
    * 文档渲染器（Sprint 35）— Markdown 渲染 + 标题目录（点击定位 + 滚动跟随）+ 图表
-   * 供右侧「应用预览」面板与文档工作台复用；path 为 data/docs/ 内相对路径
+   * 供右侧「应用预览」面板与文档工作台复用；path 为 "root:相对路径"（root ∈ session|project，无前缀兼容视为 session）
    */
   import { marked } from "marked";
   import DOMPurify from "dompurify";
+  import { ListTree } from "lucide-svelte";
   import { API } from "$lib/stores/chat.svelte";
 
   let { path }: { path: string } = $props();
@@ -17,6 +18,15 @@
   /** 加载序号：快速切换文档时丢弃过期响应，防止内容错乱 */
   let loadSeq = 0;
 
+  /** 解析 root:rel（session 文档支持图表 sidecar；project 文档为纯 Markdown，避免误读项目 data.json） */
+  function parseDocKey(p: string): { root: string; rel: string } {
+    const idx = p.indexOf(":");
+    if (idx > 0 && (p.slice(0, idx) === "session" || p.slice(0, idx) === "project")) {
+      return { root: p.slice(0, idx), rel: p.slice(idx + 1) };
+    }
+    return { root: "session", rel: p };
+  }
+
   $effect(() => {
     if (path) void load(path);
   });
@@ -27,15 +37,19 @@
     html = "";
     chart = null;
     activeHeading = "";
+    outlineOpen = false; // 每篇文档默认收起大纲
+    const { root, rel } = parseDocKey(p);
     try {
-      const r = await fetch(`${API}/docs/content?path=${encodeURIComponent(p)}`);
+      const r = await fetch(`${API}/docs/content?root=${root}&path=${encodeURIComponent(rel)}`);
       if (!r.ok) return;
       const d = (await r.json()) as { content?: string };
       if (seq !== loadSeq) return; // 过期响应丢弃
       content = d.content ?? "";
       html = addHeadingIds(DOMPurify.sanitize(marked.parse(content) as string));
-      const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
-      if (dir) void loadChart(dir, seq);
+      // 图表 sidecar 仅会话资产（data/docs/）加载：项目目录里的 data.json 可能是业务数据，误读为图表
+      if (root === "session" && rel.includes("/")) {
+        void loadChart(rel.slice(0, rel.lastIndexOf("/")), seq);
+      }
     } catch {
       if (seq === loadSeq) content = "";
     }
@@ -44,7 +58,7 @@
   async function loadChart(dir: string, seq: number) {
     chart = null;
     try {
-      const r = await fetch(`${API}/docs/content?path=${encodeURIComponent(dir + "/data.json")}`);
+      const r = await fetch(`${API}/docs/content?root=session&path=${encodeURIComponent(dir + "/data.json")}`);
       if (!r.ok) return;
       const d = (await r.json()) as { content?: string };
       if (seq !== loadSeq) return; // 过期响应丢弃
@@ -87,6 +101,11 @@
     return heads;
   }
 
+  /** 无标题时隐藏目录列，给内容让位（左侧文档栏已占一定宽度） */
+  let tocHeadings = $derived(html ? extractHeadings() : []);
+  /** 大纲侧边栏（内容右侧，默认收起；右上角「大纲」按钮展开） */
+  let outlineOpen = $state(false);
+
   /** 目录点击 → 渲染区滚动定位到标题 */
   function jumpTo(id: string) {
     activeHeading = id;
@@ -113,55 +132,67 @@
 
 <div class="dr">
   {#if html}
-    <div class="dr-toc">
-      {#each extractHeadings() as h (h.id)}
-        <button
-          class="dr-toc-item"
-          class:active={activeHeading === h.id}
-          style:padding-left={`${(h.level - 1) * 10}px`}
-          title={h.text}
-          onclick={() => jumpTo(h.id)}
-        >
-          {h.text}
-        </button>
-      {/each}
-    </div>
-    <div class="dr-render" bind:this={renderEl} onscroll={onRenderScroll} aria-label="文档内容">
-      {#if chart}
-        <div class="dr-chart">
-          {#if chart.type === "bar"}
-            <div class="dr-bars">
-              {#each chart.labels as label, i (label)}
-                <div class="dr-bar-col">
-                  <div class="dr-bar" style:height={`${Math.max(2, (chart.values[i] ?? 0) / Math.max(...chart.values, 1) * 120)}px`} title={`${label}: ${chart.values[i]}`}></div>
-                  <span class="dr-bar-label">{label}</span>
-                </div>
-              {/each}
-            </div>
-          {:else}
-            <svg class="dr-line" viewBox="0 0 320 140" preserveAspectRatio="none">
-              {#each chart.values as v, i (i)}
-                {@const x = (i / Math.max(1, chart.values.length - 1)) * 300 + 10}
-                {@const y = 130 - (v / Math.max(...chart.values, 1)) * 110}
-                {#if i === 0}
-                  <path d={`M ${x} ${y}`} stroke="var(--primary)" stroke-width="2" fill="none" />
-                {:else}
-                  {@const px = ((i - 1) / Math.max(1, chart.values.length - 1)) * 300 + 10}
-                  {@const py = 130 - (chart.values[i - 1]! / Math.max(...chart.values, 1)) * 110}
-                  <path d={`M ${px} ${py} L ${x} ${y}`} stroke="var(--primary)" stroke-width="2" fill="none" />
-                {/if}
-              {/each}
-            </svg>
-          {/if}
-          <div class="dr-chart-labels">
-            {#each chart.labels as label, i (label)}
-              <span class="dr-chart-v" title={label}>{label}: {chart.values[i]}</span>
-            {/each}
-          </div>
+    <div class="dr-main">
+      {#if tocHeadings.length > 0}
+        <div class="dr-toolbar">
+          <button class="dr-outline-btn" class:active={outlineOpen} title="文档大纲" onclick={() => (outlineOpen = !outlineOpen)}>
+            <ListTree size={12} />
+            大纲
+          </button>
         </div>
       {/if}
-      {@html html}
+      <div class="dr-render" bind:this={renderEl} onscroll={onRenderScroll} aria-label="文档内容">
+        {#if chart}
+          <div class="dr-chart">
+            {#if chart.type === "bar"}
+              <div class="dr-bars">
+                {#each chart.labels as label, i (label)}
+                  <div class="dr-bar-col">
+                    <div class="dr-bar" style:height={`${Math.max(2, (chart.values[i] ?? 0) / Math.max(...chart.values, 1) * 120)}px`} title={`${label}: ${chart.values[i]}`}></div>
+                    <span class="dr-bar-label">{label}</span>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <svg class="dr-line" viewBox="0 0 320 140" preserveAspectRatio="none">
+                {#each chart.values as v, i (i)}
+                  {@const x = (i / Math.max(1, chart.values.length - 1)) * 300 + 10}
+                  {@const y = 130 - (v / Math.max(...chart.values, 1)) * 110}
+                  {#if i === 0}
+                    <path d={`M ${x} ${y}`} stroke="var(--primary)" stroke-width="2" fill="none" />
+                  {:else}
+                    {@const px = ((i - 1) / Math.max(1, chart.values.length - 1)) * 300 + 10}
+                    {@const py = 130 - (chart.values[i - 1]! / Math.max(...chart.values, 1)) * 110}
+                    <path d={`M ${px} ${py} L ${x} ${y}`} stroke="var(--primary)" stroke-width="2" fill="none" />
+                  {/if}
+                {/each}
+              </svg>
+            {/if}
+            <div class="dr-chart-labels">
+              {#each chart.labels as label, i (label)}
+                <span class="dr-chart-v" title={label}>{label}: {chart.values[i]}</span>
+              {/each}
+            </div>
+          </div>
+        {/if}
+        {@html html}
+      </div>
     </div>
+    {#if outlineOpen && tocHeadings.length > 0}
+      <div class="dr-toc">
+        {#each tocHeadings as h (h.id)}
+          <button
+            class="dr-toc-item"
+            class:active={activeHeading === h.id}
+            style:padding-left={`${(h.level - 1) * 10}px`}
+            title={h.text}
+            onclick={() => jumpTo(h.id)}
+          >
+            {h.text}
+          </button>
+        {/each}
+      </div>
+    {/if}
   {:else}
     <div class="dr-empty">加载文档…</div>
   {/if}
@@ -169,9 +200,20 @@
 
 <style>
   .dr { display: flex; height: 100%; gap: 12px; min-height: 0; min-width: 0; }
+  .dr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .dr-toolbar { display: flex; justify-content: flex-end; align-items: center; padding: 0 4px 6px; }
+  .dr-outline-btn {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 10px;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); color: var(--dim);
+    font-family: var(--font-ui); font-size: 11px; font-weight: 500;
+    cursor: pointer; transition: all .15s;
+  }
+  .dr-outline-btn:hover, .dr-outline-btn.active { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
   .dr-toc {
-    width: 130px; flex-shrink: 0; overflow-y: auto;
-    font-size: 11px; color: var(--dim); border-right: 1px solid var(--border); padding-right: 8px;
+    width: 150px; flex-shrink: 0; overflow-y: auto;
+    font-size: 11px; color: var(--dim); border-left: 1px solid var(--border); padding-left: 8px;
   }
   .dr-toc-item {
     display: block; width: 100%; text-align: left;
@@ -185,7 +227,7 @@
   .dr-toc-item.active { background: var(--primary-light); color: var(--primary); font-weight: 600; }
   .dr-render {
     flex: 1; overflow-y: auto; overflow-x: auto; font-size: 13px; line-height: 1.7; padding: 4px 8px;
-    color: var(--text); min-width: 0;
+    color: var(--text); min-width: 0; min-height: 0;
   }
   .dr-chart {
     border: 1px solid var(--border); border-radius: var(--radius-sm);

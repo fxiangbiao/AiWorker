@@ -203,6 +203,8 @@ export interface Task {
   workingDir?: string;
   /** 多模态：随本轮提问附带的图片（data URL 或 https URL；仅当轮上下文，不持久化） */
   images?: string[];
+  /** 技能模式：/技能名 显式激活的技能（正文注入系统提示而非用户消息，避免污染历史与触发词二次注入） */
+  explicitSkill?: { name: string; body: string };
 }
 
 // ===== 工作目录感知 =====
@@ -510,6 +512,56 @@ export interface SessionTelemetryRecord {
   attributes: Record<string, string | number>;
   body: unknown;
 }
+
+// ===== 进化引擎（Sprint 39：观察 + 提议） =====
+
+/** 观察窗口内的单工具聚合统计 */
+export interface EvolutionToolStat {
+  name: string;
+  calls: number;
+  failed: number;
+  successRate: number;
+  avgDurationMs: number;
+  topErrors: { err: string; count: number }[];
+}
+
+/** 观察结果（全部从 session_events / audit 派生，不新增存储） */
+export interface EvolutionObservation {
+  windowStart: number;
+  windowEnd: number;
+  toolStats: EvolutionToolStat[];
+  completion: { sessions: number; ok: number; rate: number; avgTurns: number };
+  repeatedTasks: { pattern: string; count: number; examples: string[] }[];
+  userInterventions: number;
+  generated: { apps: number; docs: number; updates: number };
+}
+
+/** 提案动作（按类型结构化；Sprint 40 扩展 tool-fix/prompt-fix 携带改进内容） */
+export type EvolutionAction =
+  | { kind: "new-skill"; expert: string; body: string }
+  | { kind: "new-tool"; description: string; type: "tool" }
+  | { kind: "new-app"; description: string; type: "app" }
+  | { kind: "config-change"; field: "temperature" | "maxTokens"; value: number }
+  | { kind: "tool-fix"; toolName: string; suggestion: string; newDescription: string }
+  | { kind: "prompt-fix"; agentId: string; suggestion: string; newPrompt: string };
+
+export type EvolutionProposalType = EvolutionAction["kind"];
+
+/** 进化提案（meta-agent 产出；两段式确认：pending→confirmed（采纳，仅确认内容）→applied（确认写入生效）→rolled_back（回滚终态）） */
+export interface EvolutionProposal {
+  id: string;
+  type: EvolutionProposalType;
+  title: string;
+  reason: string;
+  action: EvolutionAction;
+  risk: "low" | "medium" | "high";
+  status: "pending" | "confirmed" | "applied" | "rejected" | "rolled_back";
+  createdAt: number;
+  meta?: { tokens?: number };
+}
+
+/** 采纳确认后的写入预览（= 提案 action，前端/CLI 展示供用户审查） */
+export type EvolutionPreview = EvolutionAction;
 
 // ===== AI OS 应用模型（Sprint 34） =====
 

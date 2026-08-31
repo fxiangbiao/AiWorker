@@ -1,8 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { SkillEvolution } from "../src/core/skill-evolution.js";
 import { skillRegistry } from "../src/core/skill-registry.js";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 
 const skillEvo = new SkillEvolution();
+
+afterEach(() => {
+  skillRegistry.clear();
+});
 
 describe("SkillEvolution", () => {
   describe("validate", () => {
@@ -52,6 +58,42 @@ describe("SkillEvolution", () => {
       const raw = "---\nname: test\ntriggers:\n  - test\nexpert: default\n---\n\n" + body;
       const score = skillEvo.scoreSkill(raw);
       expect(score).toBeGreaterThanOrEqual(3);
+    });
+  });
+
+  describe("register", () => {
+    it("合法技能注册成功：文件落盘 + 注册表可查 + pending 清理", () => {
+      skillRegistry.clear();
+      const pending = resolve(process.cwd(), "data-test-skill-evo", "pending.md");
+      mkdirSync(dirname(pending), { recursive: true });
+      const target = resolve(process.cwd(), "skills", "default", "reg-skill.md");
+      try {
+        writeFileSync(pending, "---\nname: reg-skill\ntriggers:\n  - \"触发\"\nexpert: default\n---\n\n# 正文\n\n足够长的正文内容。\n", "utf-8");
+        const ok = skillEvo.register(pending, "default");
+        expect(ok).toBe(true);
+        expect(skillRegistry.getSkillsForAgent("default").some((s) => s.name === "reg-skill")).toBe(true);
+        expect(existsSync(pending)).toBe(false);
+        expect(existsSync(target)).toBe(true);
+      } finally {
+        try { skillRegistry.unloadSkill("reg-skill"); } catch { /* ignore */ }
+        try { const fs = require("node:fs"); fs.rmSync(target, { force: true }); } catch { /* ignore */ }
+      }
+    });
+
+    it("解析失败（非法 YAML）返回 false 且回滚已写文件", () => {
+      skillRegistry.clear();
+      const pending = resolve(process.cwd(), "data-test-skill-evo", "bad.md");
+      mkdirSync(dirname(pending), { recursive: true });
+      // name 可提取但 YAML 解析失败（未闭合数组）→ reloadSkill 返回 null → register 应返回 false 并清理
+      writeFileSync(pending, "---\nname: bad-skill\nbadkey: [unclosed\nexpert: default\n---\n\n# 正文\n", "utf-8");
+      const target = resolve(process.cwd(), "skills", "default", "bad-skill.md");
+      try {
+        const ok = skillEvo.register(pending, "default");
+        expect(ok).toBe(false);
+        expect(existsSync(target)).toBe(false); // 已回滚，不残留
+      } finally {
+        try { const fs = require("node:fs"); fs.rmSync(target, { force: true }); } catch { /* ignore */ }
+      }
     });
   });
 });

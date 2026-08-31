@@ -6,8 +6,9 @@
   import AppsPanel from "./AppsPanel.svelte";
   import ProcessesPanel from "./ProcessesPanel.svelte";
   import AgentsPanel from "./AgentsPanel.svelte";
+  import EvolutionPanel from "./EvolutionPanel.svelte";
 
-  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents";
+  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents" | "evolution";
   let tab = $state<SystemTab>("context");
   let breakdown: {
     systemPromptBase?: number;
@@ -33,6 +34,8 @@
   }
   let skillList = $state<SkillCard[]>([]);
   let detail: SkillCard | null = $state(null);
+  /** 技能检索（Sprint 37）：名称/描述/专家/触发词过滤 */
+  let skillQuery = $state("");
   let loading = $state(false);
 
   interface McpServer {
@@ -101,6 +104,24 @@
       byExpert.set(key, list);
     }
     return Array.from(byExpert.entries());
+  });
+
+  /** 技能检索：按名称/描述/专家/触发词过滤后分组 */
+  let filteredGroups = $derived.by(() => {
+    const q = skillQuery.trim().toLowerCase();
+    if (!q) return groups;
+    return groups
+      .map(([expert, skills]) => [
+        expert,
+        skills.filter(
+          (s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q) ||
+            s.expert.toLowerCase().includes(q) ||
+            s.triggers.some((t) => t.toLowerCase().includes(q)),
+        ),
+      ] as [string, SkillCard[]])
+      .filter(([, list]) => list.length > 0);
   });
 
   function fmtTok(t?: number): string {
@@ -429,7 +450,6 @@
     else if (t === "schedule") loadSchedule();
     else if (t === "config") loadConfig();
   }
-
   // WS job/done 事件 → 调度 Tab 数据实时刷新
   let unsubWs: (() => void) | null = null;
 
@@ -450,6 +470,7 @@
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
     <button class="sp-nav" class:active={tab === "apps"} onclick={() => switchTab("apps")}>应用</button>
     <button class="sp-nav" class:active={tab === "processes"} onclick={() => switchTab("processes")}>进程</button>
+    <button class="sp-nav" class:active={tab === "evolution"} onclick={() => switchTab("evolution")}>进化</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
     <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
     <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
@@ -472,6 +493,8 @@
       </div>
     {:else if tab === "agents"}
       <AgentsPanel />
+    {:else if tab === "evolution"}
+      <EvolutionPanel />
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}
@@ -706,32 +729,43 @@
           {/if}
         </div>
       {:else}
-        <div class="sp-groups">
-          {#each groups as [expert, skills]}
-            <div class="sp-group">
-              <div class="sp-group-title">{expert || "general"}</div>
-              <div class="sp-cards">
-                {#each skills as s}
-                  <div
-                    class="sp-card"
-                    onclick={() => (detail = s)}
-                    onkeydown={(e) => e.key === "Enter" && (detail = s)}
-                    role="button"
-                    tabindex="0"
-                  >
-                    <div class="sp-card-head">
-                      <span class="sp-card-name">{s.name}</span>
-                      <span class="sp-card-ver">v{s.version}</span>
-                    </div>
-                    {#if s.description}
-                      <div class="sp-card-desc">{s.description}</div>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            </div>
-          {/each}
+        <div class="sp-search-bar">
+          <input
+            class="sp-search-input"
+            bind:value={skillQuery}
+            placeholder="检索技能（名称 / 描述 / 专家 / 触发词）..."
+          />
         </div>
+        {#if filteredGroups.length === 0}
+          <div class="sp-empty">无匹配技能</div>
+        {:else}
+          <div class="sp-groups">
+            {#each filteredGroups as [expert, skills]}
+              <div class="sp-group">
+                <div class="sp-group-title">{expert || "general"}</div>
+                <div class="sp-cards">
+                  {#each skills as s}
+                    <div
+                      class="sp-card"
+                      onclick={() => (detail = s)}
+                      onkeydown={(e) => e.key === "Enter" && (detail = s)}
+                      role="button"
+                      tabindex="0"
+                    >
+                      <div class="sp-card-head">
+                        <span class="sp-card-name">{s.name}</span>
+                        <span class="sp-card-ver">v{s.version}</span>
+                      </div>
+                      {#if s.description}
+                        <div class="sp-card-desc">{s.description}</div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
       {/if}
     {/if}
   </div>
@@ -778,6 +812,20 @@
   .sp-total b { color: var(--primary); }
   .sp-note { font-size: 11px; color: var(--dim); margin-top: 6px; }
   .sp-empty { font-size: 12px; color: var(--dim); padding: 12px 0; text-align: center; }
+  .sp-search-bar { padding: 2px 0 8px; }
+  .sp-search-input {
+    width: 100%;
+    padding: 7px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .sp-search-input:focus { border-color: var(--primary); }
   .sp-groups { display: flex; flex-direction: column; gap: 8px; }
   .sp-group { display: flex; flex-direction: column; gap: 4px; }
   .sp-group-title {

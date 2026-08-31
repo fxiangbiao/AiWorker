@@ -22,6 +22,8 @@ export interface UIMessage {
   _kind?: "chat" | "plan" | "debate" | "gen" | "error";
   /** 生成任务卡片：关联的后台生成 jobId（_kind === "gen"） */
   _genJobId?: string;
+  /** 生成卡片动作（generate/update；决定文案与结果展示） */
+  _genAction?: "generate" | "update";
   /** 生成卡片所属会话 id（终态持久化时定位消息用；刷新后随消息恢复） */
   _genSessionId?: string;
   /** 生成终态（gen/done|failed|canceled 事件写入消息本身，刷新/重开会话后仍可展示） */
@@ -31,6 +33,8 @@ export interface UIMessage {
   _steps?: PlanStep[];
   _meta?: { agentA?: string; agentB?: string; failedSteps?: string[] };
   _activeStep?: string;
+  /** 技能模式：/技能名 激活的技能（SSE skill_activated 事件写入，助手消息顶部徽标） */
+  _skills?: { name: string; description?: string }[];
 }
 
 export interface PlanStep {
@@ -255,18 +259,20 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
         msgs.push(um);
       } else if (role === "tool") {
         const target = pendingTools.find((p) => p.id === m.tool_call_id);
-        const item = target?.msg.timeline?.find((t) => t.type === "tool" && t.id === m.tool_call_id);
-        if (item) {
-          const content = String(m.content || "");
-          const failed = content.startsWith("Error:");
-          item.result = !failed;
-          item.error = failed ? content.slice(6, 300) : undefined;
-          item.resultPreview = failed ? undefined : content.slice(0, 300);
-          item.pending = false;
-          pendingTools.splice(pendingTools.indexOf(target), 1);
-        } else {
-          // 无对应 tool_call（异常数据）：作为独立错误消息展示
-          msgs.push({ role: "assistant", content: m.content || "", _kind: "error" });
+        if (target) {
+          const item = target.msg.timeline?.find((t) => t.type === "tool" && t.id === m.tool_call_id);
+          if (item) {
+            const content = String(m.content || "");
+            const failed = content.startsWith("Error:");
+            item.result = !failed;
+            item.error = failed ? content.slice(6, 300) : undefined;
+            item.resultPreview = failed ? undefined : content.slice(0, 300);
+            item.pending = false;
+            pendingTools.splice(pendingTools.indexOf(target), 1);
+          } else {
+            // 无对应 tool_call（异常数据）：作为独立错误消息展示
+            msgs.push({ role: "assistant", content: m.content || "", _kind: "error" });
+          }
         }
       }
       // 其他角色（system 等）不展示

@@ -32,6 +32,7 @@ import type { SessionStore } from "./memory/session-store.js";
 import type { AppManager, AppActionResult } from "./core/app-manager.js";
 import type { AppFactory } from "./core/app-factory.js";
 import type { GeneratorQueue } from "./core/generator-queue.js";
+import type { EvolutionEngine } from "./core/evolution-engine.js";
 
 interface DelegateAgent {
   runStream(
@@ -100,6 +101,8 @@ interface ServerDeps {
   appFactory?: AppFactory;
   /** 生成任务队列（AI OS：异步生成，Sprint 35 补丁） */
   generatorQueue?: GeneratorQueue;
+  /** 进化引擎（Sprint 39：观察/提议/采纳，未注入则进化端点 503） */
+  evolutionEngine?: EvolutionEngine;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
@@ -154,6 +157,26 @@ function sendJSON(res: ServerResponse, status: number, data: unknown) {
     "Access-Control-Allow-Origin": "*",
   });
   res.end(JSON.stringify(data));
+}
+
+interface SkillLite {
+  name: string;
+  body?: string;
+  description?: string;
+}
+
+/** 技能模式解析：/技能名 [任务] 或 /skill 技能名 [任务]（等价 CLI）；返回激活技能 / 未找到标记 / 非技能指令 */
+function resolveSkillInstruction(message: string, skills: SkillLite[]): { skill: SkillLite } | "not_found" | null {
+  const m = message.match(/^\/([a-zA-Z0-9][\w-]*)(?:\s+|$)/);
+  if (!m) return null;
+  let name = m[1];
+  if (name.toLowerCase() === "skill") {
+    const sub = message.slice(m[0].length).match(/^([a-zA-Z0-9][\w-]*)(?:\s+|$)/);
+    if (!sub) return null;
+    name = sub[1];
+  }
+  const skill = skills.find((s) => s.name.toLowerCase() === name.toLowerCase());
+  return skill ? { skill } : "not_found";
 }
 
 /** 智能体配置校验（POST /agents/<id>/config；type 内置沿用 id，自定义默认 custom） */
@@ -918,8 +941,18 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 400, { error: "Missing 'description'" });
         return;
       }
-      const result = await deps.appFactory.update(appId, payload.description, payload.sessionId);
-      sendJSON(res, result.ok ? 200 : 400, result);
+      // 异步队列优先（立即返回 jobId，进度经 gen/* WS 事件推送）；队列不可用时回退同步执行
+      if (deps.generatorQueue && typeof deps.generatorQueue.submitUpdate === "function") {
+        const jobId = deps.generatorQueue.submitUpdate(appId, payload.description, payload.sessionId);
+        sendJSON(res, 200, { ok: true, jobId });
+        return;
+      }
+      try {
+        const result = await deps.appFactory.update(appId, payload.description, payload.sessionId);
+        sendJSON(res, result.ok ? 200 : 400, result);
+      } catch (err) {
+        sendJSON(res, 500, { error: (err as Error).message });
+      }
       return;
     }
     if (url.startsWith(apiUrl("/apps/")) && url.endsWith("/bridge") && req.method === "POST") {
@@ -1498,38 +1531,158 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    // ─── 文档工作台（Sprint 35：data/docs/ 会话资产） ───
+    // ─── 文档工作台（Sprint 35：data/docs/ 会话资产；Sprint 38：+ 工作目录项目文档） ───
     if (url === apiUrl("/docs") && req.method === "GET") {
-      const docsDir = deps.dataDir ? resolve(deps.dataDir, "docs") : resolve(process.cwd(), "data", "docs");
-      const list: { path: string; title: string; size: number }[] = [];
-      const walk = (dir: string, base: string): void => {
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const docsDir = resolve(dataDir, "docs");
+      const projectDir = deps.workingDir;
+      const docs: { root: string; path: string; title: string; size: number; mtime: number }[] = [];
+      // 会话资产：data/docs/ 全量递归（数量小，无上限）
+      const walkSession = (dir: string, base: string): void => {
         if (!existsSync(dir)) return;
         for (const e of readdirSync(dir, { withFileTypes: true })) {
           const full = resolve(dir, e.name);
-          if (e.isDirectory()) walk(full, join(base, e.name));
+          if (e.isDirectory()) walkSession(full, join(base, e.name));
           else if (e.name.endsWith(".md")) {
-            const rel = join(base, e.name);
-            list.push({ path: rel, title: e.name.replace(/\.md$/, ""), size: statSync(full).size });
+            const st = statSync(full);
+            docs.push({ root: "session", path: join(base, e.name).replace(/\\/g, "/"), title: e.name.replace(/\.md$/, ""), size: st.size, mtime: st.mtimeMs });
           }
         }
       };
-      walk(docsDir, "");
-      list.sort((a, b) => b.path.localeCompare(a.path));
-      sendJSON(res, 200, { docs: list });
+      walkSession(docsDir, "");
+      // 项目文档：workingDir 递归（排除系统目录 + 应用自身 dataDir；深度/数量/大小上限；mtime 降序）
+      const excludedDirNames = new Set([
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".next",
+        "coverage",
+        "out",
+      ]);
+      const projectAbs = resolve(projectDir);
+      const dataDirAbs = resolve(dataDir);
+      const relData = relative(projectAbs, dataDirAbs);
+      const excludeDataAbs =
+        projectAbs !== dataDirAbs && relData !== "" && !relData.startsWith("..") && !isAbsolute(relData) ? dataDirAbs : null;
+      const projectDocs: typeof docs = [];
+      let scanStopped = false;
+      const walkProject = (dir: string, base: string, depth: number): void => {
+        if (scanStopped || depth > 4 || !existsSync(dir)) return;
+        for (const e of readdirSync(dir, { withFileTypes: true })) {
+          if (scanStopped) return;
+          const full = resolve(dir, e.name);
+          if (e.isDirectory()) {
+            if (excludedDirNames.has(e.name)) continue;
+            if (excludeDataAbs && full === excludeDataAbs) continue;
+            walkProject(full, join(base, e.name), depth + 1);
+          } else if (e.name.endsWith(".md")) {
+            let st;
+            try {
+              st = statSync(full);
+            } catch {
+              continue;
+            }
+            if (st.size > 1_000_000) continue;
+            projectDocs.push({ root: "project", path: join(base, e.name).replace(/\\/g, "/"), title: e.name.replace(/\.md$/, ""), size: st.size, mtime: st.mtimeMs });
+            if (projectDocs.length >= 200) {
+              scanStopped = true;
+              return;
+            }
+          }
+        }
+      };
+      walkProject(projectDir, "", 0);
+      projectDocs.sort((a, b) => b.mtime - a.mtime);
+      docs.push(...projectDocs);
+      sendJSON(res, 200, {
+        roots: [
+          { root: "session", dir: docsDir },
+          { root: "project", dir: projectDir },
+        ],
+        docs,
+      });
       return;
     }
     if (url.startsWith(apiUrl("/docs/content")) && req.method === "GET") {
-      const docsDir = deps.dataDir ? resolve(deps.dataDir, "docs") : resolve(process.cwd(), "data", "docs");
       const u = new URL(req.url ?? "", "http://localhost");
+      const root = u.searchParams.get("root") ?? "session";
       const rel = u.searchParams.get("path") ?? "";
-      const abs = resolve(docsDir, rel);
-      const relCheck = relative(docsDir, abs);
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const baseDir = root === "project" ? deps.workingDir : resolve(dataDir, "docs");
+      const abs = resolve(baseDir, rel);
+      const relCheck = relative(baseDir, abs);
       if (!relCheck.startsWith("..") && !isAbsolute(relCheck) && existsSync(abs) && statSync(abs).isFile()) {
-        sendJSON(res, 200, { path: rel, content: readFileSync(abs, "utf-8") });
+        sendJSON(res, 200, { root, path: rel, content: readFileSync(abs, "utf-8") });
       } else {
         sendJSON(res, 404, { error: "Doc not found" });
       }
       return;
+    }
+
+    // ─── 进化引擎（Sprint 39/40：观察/提议/两段式确认/回滚/台账） ───
+    if (deps.evolutionEngine && url.startsWith(apiUrl("/evolution"))) {
+      const evo = deps.evolutionEngine;
+      if (url === apiUrl("/evolution/observe") && req.method === "GET") {
+        sendJSON(res, 200, evo.observe());
+        return;
+      }
+      if (url === apiUrl("/evolution/propose") && req.method === "POST") {
+        const result = await evo.propose();
+        sendJSON(res, 200, result);
+        return;
+      }
+      if (url === apiUrl("/evolution/proposals") && req.method === "GET") {
+        sendJSON(res, 200, { proposals: evo.list() });
+        return;
+      }
+      if (url.startsWith(apiUrl("/evolution/ledger")) && req.method === "GET") {
+        const u = new URL(req.url ?? "", "http://localhost");
+        const limit = Number(u.searchParams.get("limit") ?? "20");
+        sendJSON(res, 200, { entries: evo.ledger(Number.isFinite(limit) ? limit : 20) });
+        return;
+      }
+      if (url.startsWith(apiUrl("/evolution/proposals/"))) {
+        const rest = url.slice(apiUrl("/evolution/proposals/").length);
+        const id = decodeURIComponent(rest.split("/")[0] ?? "");
+        if (!id) {
+          sendJSON(res, 400, { error: "缺少提案 id" });
+          return;
+        }
+        if (rest.endsWith("/change")) {
+          if (req.method === "GET") {
+            sendJSON(res, 200, evo.change(id));
+          } else {
+            sendJSON(res, 405, { error: "Method Not Allowed" });
+          }
+          return;
+        }
+        if (req.method !== "POST") {
+          sendJSON(res, 405, { error: "Method Not Allowed" });
+          return;
+        }
+        if (rest.endsWith("/adopt")) {
+          sendJSON(res, 200, evo.adopt(id));
+          return;
+        }
+        if (rest.endsWith("/apply")) {
+          sendJSON(res, 200, await evo.apply(id));
+          return;
+        }
+        if (rest.endsWith("/rollback")) {
+          sendJSON(res, 200, evo.rollback(id));
+          return;
+        }
+        if (rest.endsWith("/reject")) {
+          sendJSON(res, 200, evo.reject(id));
+          return;
+        }
+        sendJSON(res, 404, { error: "未知操作（change|adopt|apply|rollback|reject）" });
+        return;
+      }
     }
 
     if (url === apiUrl("/chat") && req.method === "POST") {
@@ -1570,8 +1723,11 @@ export function startServer(deps: ServerDeps, port: number) {
         return;
       }
 
+      // 技能模式：/技能名 [任务] 或 /skill 技能名 [任务]（等价 CLI；未知技能不建会话、不跑智能体）
+      const skillAction = resolveSkillInstruction(chatReq.message, deps.getSkills?.() ?? []);
+
       let sessionId = chatReq.sessionId;
-      if (!sessionId && deps.sessionStore) {
+      if (skillAction !== "not_found" && !sessionId && deps.sessionStore) {
         sessionId = deps.sessionStore.createSession(agentId).id;
         eventBus.broadcast({ type: "session/update", sessionId, kind: "create" });
       }
@@ -1590,10 +1746,20 @@ export function startServer(deps: ServerDeps, port: number) {
       };
 
       try {
+        if (skillAction === "not_found") {
+          const name = chatReq.message.match(/^\/([a-zA-Z0-9][\w-]*)/)?.[1] ?? "";
+          write({ type: "skill_not_found", name, available: (deps.getSkills?.() ?? []).map((s) => s.name) });
+          return;
+        }
+
         if (deps.sessionStore && sessionId) {
           deps.sessionStore.ensureSession(sessionId, agentId);
-          deps.sessionStore.appendMessage(sessionId, { role: "user", content: chatReq.message });
+          // 用户消息持久化由 base-agent.runStream 统一负责（此处不 append，避免双写）
           eventBus.broadcast({ type: "session/update", sessionId, kind: "message" });
+        }
+
+        if (skillAction) {
+          write({ type: "skill_activated", name: skillAction.skill.name, description: skillAction.skill.description ?? "" });
         }
 
         // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
@@ -1617,6 +1783,7 @@ export function startServer(deps: ServerDeps, port: number) {
             sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
             mode: chatReq.mode as PermissionMode | undefined,
             images,
+            ...(skillAction ? { explicitSkill: { name: skillAction.skill.name, body: skillAction.skill.body ?? "" } } : {}),
           };
 
           await agent.runStream(task, deps.workingDir, callbacks, abort.signal);

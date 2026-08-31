@@ -195,12 +195,22 @@ export class AppFactory {
     }
   }
 
-  /** 迭代生成：只重生成逻辑文件，保留沙箱数据（同一应用串行化执行） */
-  async update(id: string, description: string, sessionId?: string): Promise<GenerateResult> {
-    return this.withUpdateLock(id, () => this.updateInner(id, description, sessionId));
+  /** 迭代生成：只重生成逻辑文件，保留沙箱数据（同一应用串行化执行；onProgress 报告轨迹） */
+  async update(
+    id: string,
+    description: string,
+    sessionId?: string,
+    onProgress?: GenerateProgress,
+  ): Promise<GenerateResult> {
+    return this.withUpdateLock(id, () => this.updateInner(id, description, sessionId, onProgress));
   }
 
-  private async updateInner(id: string, description: string, sessionId?: string): Promise<GenerateResult> {
+  private async updateInner(
+    id: string,
+    description: string,
+    sessionId?: string,
+    onProgress?: GenerateProgress,
+  ): Promise<GenerateResult> {
     const app = this.manager.get(id);
     if (!app) return { ok: false, error: `应用不存在: ${id}` };
     const templateId = app.type === "app" ? "webapp" : app.type;
@@ -229,6 +239,13 @@ export class AppFactory {
     try {
       const config = this.buildConfig(def, { ...spec, type: app.type });
       const taskMsg = def.buildFileTaskPrompt(spec, targetFile, existingDesc);
+      onProgress?.("更新", 0, MAX_GEN_ITERATIONS, "读取现有应用结构…");
+      // 写入轨迹（与生成一致）：fs_write 调用实时上报 step/detail
+      const pending = new Map<string, string>();
+      let calls = 0;
+      const emit = (detail: string, index = calls): void => {
+        onProgress?.("更新", Math.min(index, MAX_GEN_ITERATIONS), MAX_GEN_ITERATIONS, detail);
+      };
       const result = await runAgentLoopStream(
         config,
         taskMsg,
@@ -242,8 +259,27 @@ export class AppFactory {
           toolScope: AGENT_ID,
           processManager: this.deps.processManager,
         },
-        {},
+        {
+          onToolCall: (name, argsRaw, toolId) => {
+            if (name !== "fs_write") return;
+            let path = "";
+            try {
+              path = (JSON.parse(argsRaw) as { path?: string }).path ?? "";
+            } catch {
+              /* 参数解析失败忽略 */
+            }
+            pending.set(toolId, path);
+            emit(path ? `正在重写 ${path}…` : "正在写入文件…");
+          },
+          onToolResult: (name, success, _summary, toolId) => {
+            if (name !== "fs_write") return;
+            calls++;
+            const path = pending.get(toolId ?? "") ?? "";
+            emit(success ? `${path} 已更新` : `${path || "文件"} 写入失败`);
+          },
+        },
       );
+      onProgress?.("更新", MAX_GEN_ITERATIONS - 1, MAX_GEN_ITERATIONS, "校验语法、递增版本并重启…");
       if (result.truncated) {
         return { ok: false, error: `迭代更新未完成（agent 达迭代上限）: ${result.text.slice(0, 200)}` };
       }

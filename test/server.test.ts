@@ -81,7 +81,7 @@ function mockCoordinator() {
 function mockAgent() {
   return {
     runStream: async (
-      task: { mode?: string },
+      task: { mode?: string; instruction?: string; explicitSkill?: { name: string; body: string } },
       _wd: string,
       callbacks: { onTextDelta?: (t: string) => void; onToolResult?: (n: string, s: boolean, m: string) => void },
     ) => {
@@ -95,7 +95,7 @@ function mockAgent() {
 
 let server: Server | undefined;
 let base: string;
-let capturedTask: { mode?: string } | undefined;
+let capturedTask: { mode?: string; instruction?: string; explicitSkill?: { name: string; body: string } } | undefined;
 
 function mockDeps() {
   return {
@@ -529,6 +529,239 @@ describe("HTTP Server", () => {
     expect(blocked.message).toContain("拦截");
   });
 
+  it("/chat 技能模式：/技能名 激活（skill_activated 事件 + explicitSkill + instruction 保持原始）", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "code-review", version: "1.0", description: "代码审查", expert: "coding", triggers: [], body: "审查步骤：逐文件检查", raw: "" },
+      { name: "debug", version: "1.0", description: "调试", expert: "coding", triggers: [], body: "调试步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/code-review 修复主流程", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("skill_activated");
+    expect(types).toContain("text");
+    const act = events.find((e) => (e as { type: string }).type === "skill_activated") as {
+      name: string;
+      description: string;
+    };
+    expect(act.name).toBe("code-review");
+    expect(act.description).toBe("代码审查");
+    expect(capturedTask).toMatchObject({
+      instruction: "/code-review 修复主流程",
+      explicitSkill: { name: "code-review", body: "审查步骤：逐文件检查" },
+    });
+    local.close();
+  });
+
+  it("/chat 技能模式：未知技能返回 skill_not_found 且不执行智能体", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "code-review", version: "1.0", description: "代码审查", expert: "coding", triggers: [], body: "审查步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/ghost 任务", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("skill_not_found");
+    expect(types).not.toContain("text");
+    expect(types).not.toContain("done");
+    expect(capturedTask).toBeUndefined();
+    const nf = events.find((e) => (e as { type: string }).type === "skill_not_found") as {
+      name: string;
+      available: string[];
+    };
+    expect(nf.name).toBe("ghost");
+    expect(nf.available).toEqual(["code-review"]);
+    local.close();
+  });
+
+  it("/chat 技能模式：/skill <名称> 形式", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "debug", version: "1.0", description: "调试", expert: "coding", triggers: [], body: "调试步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "/skill debug 追踪报错", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("skill_activated");
+    expect(capturedTask?.explicitSkill).toEqual({ name: "debug", body: "调试步骤" });
+    expect(capturedTask?.instruction).toBe("/skill debug 追踪报错");
+    local.close();
+  });
+
+  it("/chat 技能模式：非斜杠消息不受影响", async () => {
+    const deps = mockDeps();
+    deps.getSkills = () => [
+      { name: "debug", version: "1.0", description: "调试", expert: "coding", triggers: [], body: "调试步骤", raw: "" },
+    ];
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    capturedTask = undefined;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "你好，帮我看看", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const types = events.map((e) => (e as { type: string }).type);
+    expect(types).toContain("text");
+    expect(types).toContain("done");
+    expect(capturedTask?.instruction).toBe("你好，帮我看看");
+    expect(capturedTask?.explicitSkill).toBeUndefined();
+    local.close();
+  });
+
+  it("/apps/:id/update 异步入队返回 jobId（进度经 gen/* WS 推送）", async () => {
+    const deps = mockDeps();
+    deps.appFactory = {} as never;
+    let updatedAppId = "";
+    deps.generatorQueue = {
+      submitUpdate: (appId: string) => {
+        updatedAppId = appId;
+        return "genjob-upd-1";
+      },
+    } as never;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/apps/my-app/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "加暂停按钮" }),
+    });
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { ok?: boolean; jobId?: string };
+    expect(data).toEqual({ ok: true, jobId: "genjob-upd-1" });
+    expect(updatedAppId).toBe("my-app");
+    local.close();
+  });
+
+  it("/apps/:id/update 队列不可用时同步回退（直接返回结果）", async () => {
+    const deps = mockDeps();
+    deps.appFactory = {
+      update: async (id: string, desc: string) => ({
+        ok: true,
+        app: { id, name: "Mock", version: "1.0.1", type: "app", status: "running" },
+      }),
+    } as never;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/apps/my-app/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description: "换主题色" }),
+    });
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { ok?: boolean; app?: { version?: string } };
+    expect(data.ok).toBe(true);
+    expect(data.app?.version).toBe("1.0.1");
+    local.close();
+  });
+
+  it("/apps/:id/update 缺失 description 返回 400", async () => {
+    const deps = mockDeps();
+    deps.appFactory = {} as never;
+    deps.generatorQueue = { submitUpdate: () => "genjob-x" } as never;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/apps/my-app/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(resp.status).toBe(400);
+    local.close();
+  });
+
+  it("/docs 返回会话资产与项目文档（排除 node_modules/.git 等系统目录）", async () => {
+    const projDir = resolve(testDir, "proj-docs");
+    mkdirSync(resolve(projDir, "docs"), { recursive: true });
+    mkdirSync(resolve(projDir, "node_modules", "pkg"), { recursive: true });
+    mkdirSync(resolve(projDir, ".git"), { recursive: true });
+    mkdirSync(resolve(testDir, "docs", "sess"), { recursive: true });
+    writeFileSync(resolve(projDir, "README.md"), "# 项目说明", "utf-8");
+    writeFileSync(resolve(projDir, "docs", "design.md"), "# 设计方案", "utf-8");
+    writeFileSync(resolve(projDir, "node_modules", "pkg", "README.md"), "# 依赖说明", "utf-8");
+    writeFileSync(resolve(projDir, ".git", "notes.md"), "# git notes", "utf-8");
+    writeFileSync(resolve(testDir, "docs", "sess", "report.md"), "# 会话报告", "utf-8");
+    const deps = mockDeps();
+    deps.workingDir = projDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/docs`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      roots: { root: string; dir: string }[];
+      docs: { root: string; path: string; title: string }[];
+    };
+    expect(data.roots.some((r) => r.root === "project")).toBe(true);
+    expect(data.docs.some((d) => d.root === "session" && d.path === "sess/report.md")).toBe(true);
+    expect(data.docs.some((d) => d.root === "project" && d.path === "README.md")).toBe(true);
+    expect(data.docs.some((d) => d.root === "project" && d.path === "docs/design.md")).toBe(true);
+    expect(data.docs.some((d) => d.path === "node_modules/pkg/README.md")).toBe(false);
+    expect(data.docs.some((d) => d.path === ".git/notes.md")).toBe(false);
+    local.close();
+  });
+
+  it("/docs/content root=project 读取项目文档且拒绝路径穿越", async () => {
+    const projDir = resolve(testDir, "proj-content");
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(resolve(projDir, "design.md"), "# 设计方案内容", "utf-8");
+    writeFileSync(resolve(testDir, "secret.md"), "# 不应泄露", "utf-8");
+    const deps = mockDeps();
+    deps.workingDir = projDir;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const ok = await fetch(`http://127.0.0.1:${port}${API}/docs/content?root=project&path=${encodeURIComponent("design.md")}`);
+    expect(ok.status).toBe(200);
+    const d = (await ok.json()) as { root: string; content: string };
+    expect(d.root).toBe("project");
+    expect(d.content).toContain("设计方案内容");
+    const bad = await fetch(`http://127.0.0.1:${port}${API}/docs/content?root=project&path=${encodeURIComponent("../secret.md")}`);
+    expect(bad.status).toBe(404);
+    local.close();
+  });
+
+  it("/docs/content 无 root 参数兼容旧行为（视为 session）", async () => {
+    const resp = await fetch(`${base}${API}/docs/content?path=${encodeURIComponent("sess/report.md")}`);
+    expect(resp.status).toBe(200);
+    const d = (await resp.json()) as { root: string; content: string };
+    expect(d.root).toBe("session");
+    expect(d.content).toContain("会话报告");
+  });
+
   it("/plan SSE 流式返回 plan + step + done", async () => {
     const resp = await fetch(`${base}${API}/plan`, {
       method: "POST",
@@ -666,6 +899,40 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(found).toBeDefined();
     expect(found!.turnCount).toBe(2);
     expect(found!.messageCount).toBe(4);
+  });
+
+  it("/chat 用户消息只持久化一次（server 不重复 append，由 base-agent 统一负责）", async () => {
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () =>
+        ({
+          runStream: async (task: { sessionId?: string; instruction: string }) => {
+            store.ensureSession(task.sessionId!, "default");
+            store.appendMessage(task.sessionId!, { role: "user", content: task.instruction });
+            return { success: true, text: "ok" } as never;
+          },
+        }) as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store,
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const sessId = `sess-dup-${Date.now().toString(36)}`;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "你好", agentId: "default", sessionId: sessId }),
+    });
+    expect(resp.status).toBe(200);
+    await resp.text();
+    const messages = store.getMessages(sessId);
+    expect(messages.filter((m) => m.role === "user")).toHaveLength(1);
+    local.close();
   });
 
   it("删除不存在的会话返回 404", async () => {
@@ -1147,5 +1414,159 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     // 原字段保留
     expect(cfg.profiles["coding"]).toBeDefined();
     local.close();
+  });
+});
+
+describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
+  let server5: Server | undefined;
+  let base5: string;
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = makeTestDir("server-evolution");
+    setupEnv(dir);
+    const store = new SessionStore(resolve(dir, "sessions.db"));
+    // 注入有数据的会话，观察端点可聚合
+    const sess = store.createSession("default");
+    store.setSummary(sess.id, "测试会话");
+    store.appendMessage(sess.id, { role: "user", content: "帮我写一份周报" });
+
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: dir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: dir,
+      sessionStore: store,
+      evolutionEngine: {
+        observe: () => ({
+          windowStart: 0,
+          windowEnd: 1,
+          toolStats: [{ name: "fs_read", calls: 10, failed: 5, successRate: 0.5, avgDurationMs: 50, topErrors: [] }],
+          completion: { sessions: 1, ok: 1, rate: 1, avgTurns: 1 },
+          repeatedTasks: [],
+          userInterventions: 0,
+          generated: { apps: 0, docs: 0, updates: 0 },
+        }),
+        propose: async () => ({ ok: true, proposals: [] }),
+        list: () => [
+          {
+            id: "evo-abc",
+            type: "new-tool",
+            title: "生成周报工具",
+            reason: "重复任务 5 次",
+            action: { kind: "new-tool", description: "自动生成周报", type: "tool" },
+            risk: "low",
+            status: "pending",
+            createdAt: 123,
+          },
+        ],
+        adopt: (id: string) => ({ ok: true, preview: { kind: "new-tool", description: "自动生成周报", type: "tool" } }),
+        apply: async (id: string) => ({ ok: true, jobId: `job-${id}` }),
+        rollback: (id: string) => ({ ok: true, detail: `已恢复 ${id}` }),
+        reject: (id: string) => ({ ok: true }),
+        ledger: () => [{ at: 123, event: "proposed", id: "evo-abc", type: "new-tool", title: "生成周报工具" }],
+        change: (id: string) => ({
+          ok: true,
+          view: { proposalId: id, kind: "new-tool", title: "生成周报工具", after: "生成工具：自动生成周报", lines: [{ type: "add", text: "生成工具：自动生成周报" }] },
+        }),
+      } as never,
+    };
+    server5 = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => server5!.once("listening", () => resolve()));
+    const port = (server5!.address() as AddressInfo).port;
+    base5 = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(() => {
+    if (server5) {
+      server5.close();
+      server5 = undefined;
+    }
+    teardownEnv();
+  });
+
+  it("GET /evolution/observe 返回观察指标", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/observe`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.toolStats).toHaveLength(1);
+    expect(data.toolStats[0]).toMatchObject({ name: "fs_read", successRate: 0.5 });
+  });
+
+  it("POST /evolution/propose 触发提议", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/propose`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.proposals).toEqual([]);
+  });
+
+  it("GET /evolution/proposals 返回提案列表", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.proposals).toHaveLength(1);
+    expect(data.proposals[0]).toMatchObject({ id: "evo-abc", status: "pending" });
+  });
+
+  it("POST /evolution/proposals/:id/adopt 确认提案并返回预览（不写入）", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/adopt`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.preview).toEqual({ kind: "new-tool", description: "自动生成周报", type: "tool" });
+    expect(data.jobId).toBeUndefined();
+  });
+
+  it("POST /evolution/proposals/:id/apply 确认写入并返回 jobId", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/apply`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.jobId).toBe("job-evo-abc");
+  });
+
+  it("POST /evolution/proposals/:id/reject 成功", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/reject`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+  });
+
+  it("POST /evolution/proposals/:id/rollback 回滚成功", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/rollback`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.detail).toContain("已恢复");
+  });
+
+  it("GET /evolution/ledger 返回台账时间线", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/ledger?limit=20`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.entries).toHaveLength(1);
+    expect(data.entries[0]).toMatchObject({ event: "proposed", id: "evo-abc" });
+  });
+
+  it("GET /evolution/proposals/:id/change 返回变更对比", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/change`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.view).toMatchObject({ proposalId: "evo-abc", kind: "new-tool" });
+  });
+
+  it("POST /evolution/proposals/:id/change 返回 405（change 仅 GET）", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/change`, { method: "POST" });
+    expect(resp.status).toBe(405);
+  });
+
+  it("未知操作返回 404", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/frobnicate`, { method: "POST" });
+    expect(resp.status).toBe(404);
   });
 });

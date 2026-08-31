@@ -3,7 +3,7 @@
    * 应用管理面板（Sprint 34）
    * 应用列表（类型/状态/权限）+ 生命周期操作（start/stop/destroy）+ 销毁确认
    */
-  import { apps, loadApps, appAction, updateApp, openAppInPreview, type AppInfo } from "$lib/stores/apps.svelte";
+  import { apps, loadApps, appAction, spawnUpdateCard, openAppInPreview, type AppInfo } from "$lib/stores/apps.svelte";
   import { Play, Square, Trash2, Box, Wrench, BookOpen, UserRound, Server, RefreshCw, Sparkles, PenLine } from "lucide-svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
   import GenWizard from "./GenWizard.svelte";
@@ -67,22 +67,14 @@
     busy = null;
   }
 
-  /** 迭代更新：agent-loop 重写逻辑文件，保留应用数据（变更描述由输入框提供） */
+  /** 迭代更新：提交异步队列，进度/结果以聊天流状态卡片呈现（不再阻塞等待） */
   async function confirmUpdate(target: AppInfo, desc?: string) {
     updateTarget = null;
     if (!desc || !desc.trim()) return;
-    busy = target.id;
     error = null;
     notice = "";
-    const r = await updateApp(target.id, desc.trim());
-    if (!r.ok) {
-      error = r.error ?? "更新失败";
-    } else {
-      notice = `✓ 已更新: ${target.name} v${r.app?.version ?? ""}`;
-      setTimeout(() => (notice = ""), 4000);
-    }
-    await loadApps();
-    busy = null;
+    const r = await spawnUpdateCard(target, desc.trim());
+    if (!r.ok && !r.jobId) error = r.error ?? "更新提交失败";
   }
 </script>
 
@@ -172,7 +164,7 @@
 {#if updateTarget}
   <ConfirmModal
     title={`更新应用「${updateTarget.name}」`}
-    message="描述本次变更（模型将重写逻辑文件，应用数据保留）。"
+    message="描述本次变更（模型将重写逻辑文件，应用数据保留）。提交后实时进度与结果将显示在对话流中。"
     mode="input"
     inputLabel="变更描述（例：加暂停按钮 / 让宠物自适应窗口）"
     confirmText="更新"

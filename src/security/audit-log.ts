@@ -65,6 +65,12 @@ export class AuditLog {
     return stmt.all(sessionId) as AuditEntry[];
   }
 
+  /** 按 action 精确匹配计数（进化观察的生成统计用） */
+  countByAction(action: string): number {
+    const stmt = this.db.prepare(`SELECT COUNT(*) AS c FROM audit_log WHERE action = ?`);
+    return (stmt.get(action) as { c: number }).c;
+  }
+
   close(): void {
     this.db.close();
   }

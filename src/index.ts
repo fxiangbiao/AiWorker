@@ -47,6 +47,8 @@ import { pluginManager } from "./core/plugin-manager.js";
 import { AppManager } from "./core/app-manager.js";
 import { AppFactory } from "./core/app-factory.js";
 import { generatorQueue } from "./core/generator-queue.js";
+import { EvolutionEngine } from "./core/evolution-engine.js";
+import { auditLogger } from "./core/audit-logger.js";
 import { appRuntime } from "./core/app-runtime.js";
 import { processManager } from "./core/process-manager.js";
 import { getAppVersion } from "./core/version.js";
@@ -58,6 +60,7 @@ import { buildCliCommands } from "./commands/registry.js";
 import { renderCommandHelp, hasRequiredArgs } from "./commands/misc.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
+import { eventBus } from "./server/event-bus.js";
 import { setAskProvider, isAskWaiting, requestAsk } from "./tools/ask-channel.js";
 import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider, AgentConfig } from "./types.js";
 
@@ -364,6 +367,156 @@ program
     const appFactory = new AppFactory(deps, appManager);
     generatorQueue.init(appFactory);
 
+    // server 与 CLI 共用：思考展示开关（server 经配置端点可改）
+    let showThinking = !!options.showThinking;
+    // 持久化运行时配置（server 配置端点与 CLI /config 共用；迭代上限由 YAML 管理，不写入）
+    const persistRuntimeConfig = () => {
+      try {
+        writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
+      } catch {
+        /* 持久化失败静默 */
+      }
+    };
+    // Web 配置端点与进化引擎共用：应用并持久化单个配置项
+    const applyConfigField = (field: string, value: unknown): { ok: boolean; error?: string } => {
+      try {
+        switch (field) {
+          case "model": {
+            const v = String(value);
+            const valid = modelRouter.getAvailableModels().find((m) => m.key === v);
+            if (!valid) return { ok: false, error: `未知模型: ${v}` };
+            modelRouter.setDefaultModel(v);
+            break;
+          }
+          case "addModel": {
+            const v = value as { key?: string; model?: string; baseURL?: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number };
+            const m = v?.model;
+            const b = v?.baseURL;
+            if (!v?.key || !m || !b) {
+              return { ok: false, error: "添加模型需 key/model/baseURL" };
+            }
+            if (!modelRouter.addProfile(v.key, { model: m, baseURL: b, provider: v.provider, apiKey: v.apiKey, temperature: v.temperature, maxTokens: v.maxTokens })) {
+              return { ok: false, error: `添加失败: key「${v.key}」已存在或非法` };
+            }
+            // 写回 config/models.json（保留 default/pricing/routing 等字段）
+            const modelsPath = resolve(process.cwd(), "config", "models.json");
+            const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & { profiles?: Record<string, unknown> };
+            if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
+            cfg.profiles[v.key.trim().toLowerCase()] = modelRouter.getProfileRaw(v.key);
+            writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+            break;
+          }
+          case "temperature": {
+            const t = Number(value);
+            if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
+            modelRouter.setTemperature(t);
+            break;
+          }
+          case "maxTokens": {
+            const n = Number(value);
+            if (Number.isNaN(n) || n < 100) return { ok: false, error: "max-tokens 需 ≥ 100" };
+            modelRouter.setMaxTokens(n);
+            break;
+          }
+          case "thinking":
+            showThinking = value === true;
+            break;
+          case "skillEvo":
+            if (hookManager.has("onTaskComplete:evaluateSkillCreation")) {
+              hookManager.off("onTaskComplete:evaluateSkillCreation");
+            } else {
+              hookManager.on(
+                "onTaskComplete",
+                createEvaluateSkillCreation({ sessionStore, modelRouter }),
+                { id: "onTaskComplete:evaluateSkillCreation", priority: 10 },
+              );
+            }
+            break;
+          case "reset":
+            modelRouter.setDefaultModel("");
+            modelRouter.setTemperature(null);
+            modelRouter.setMaxTokens(null);
+            break;
+          default:
+            return { ok: false, error: `未知配置项: ${field}` };
+        }
+        persistRuntimeConfig();
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    };
+
+    // ─── 进化引擎（Sprint 39/40：观察 + 提议 + 两段式确认 + 快照回滚） ───
+    const evolutionEngine = new EvolutionEngine({
+      dataDir,
+      observation: {
+        listSessions: (limit) => sessionStore.listSessions(limit),
+        getEvents: (sessionId) => sessionStore.getEvents(sessionId),
+        auditCount: (action) => auditLogger.countByAction(action),
+      },
+      modelRouter,
+      submitGenerate: (spec) =>
+        generatorQueue.submit({
+          description: spec.description,
+          type: spec.type,
+          sessionId: spec.sessionId ?? "evolution",
+        }),
+      setConfigField: applyConfigField,
+      // tool-fix：热覆盖工具描述（保留原 handler，仅换 description；本次运行生效，重启回内置默认）
+      patchToolDescription: (toolName, newDescription) => {
+        if (!newDescription) return { ok: false, error: "工具描述不能为空" };
+        const cur = toolRegistry
+          .getAll()
+          .find((t) => t.definition.function.name === toolName);
+        if (!cur) return { ok: false, error: `工具不存在: ${toolName}` };
+        toolRegistry.register(toolName, {
+          ...cur.definition,
+          function: { ...cur.definition.function, description: newDescription },
+        }, cur.handler, { enabled: cur.enabled, availabilityCheck: cur.availabilityCheck, plugin: cur.plugin });
+        return { ok: true };
+      },
+      // prompt-fix：替换智能体提示词 + 热重载（复用智能体 Tab 保存管线）
+      applyPromptFix: (agentId, newPrompt) => {
+        const agent = agents[agentId];
+        if (!agent) return { ok: false, error: `智能体不存在: ${agentId}` };
+        const cfg = agent.getConfig();
+        return saveAgentConfig(agentId, { ...cfg, systemPrompt: newPrompt });
+      },
+      snapshot: {
+        dataDir,
+        skillsDir: resolve(process.cwd(), "skills"),
+        agentsDir: resolve(process.cwd(), "config", "agents"),
+        runtimeConfigPath: resolve(dataDir, "runtime-config.json"),
+        getToolDefinition: (name) =>
+          toolRegistry.getAll().find((t) => t.definition.function.name === name)?.definition,
+      },
+      restoreHooks: {
+        registerTool: (name, definition) => {
+          const cur = toolRegistry.getAll().find((t) => t.definition.function.name === name);
+          if (cur) {
+            toolRegistry.register(name, definition, cur.handler, {
+              enabled: cur.enabled,
+              availabilityCheck: cur.availabilityCheck,
+              plugin: cur.plugin,
+            });
+          }
+        },
+        reloadSkill: (filePath) => {
+          skillRegistry.reloadSkill(filePath);
+        },
+        unloadSkill: (name) => skillRegistry.unloadSkill(name),
+        reloadAgent: (id) => reloadAgent(id),
+      },
+    });
+    // 生成结果回写：gen/done|failed|canceled → 进化台账（new-tool/new-app 提案）
+    eventBus.subscribe((data) => {
+      const d = data as { type?: string; jobId?: string; result?: { app?: { id?: string } } };
+      if ((d.type === "gen/done" || d.type === "gen/failed" || d.type === "gen/canceled") && d.jobId) {
+        evolutionEngine.onGenResult(d.jobId, d.type === "gen/done", d.result?.app?.id, d.type === "gen/canceled");
+      }
+    });
+
     // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───
     jobRunner.init({
       createAgent: (agentId) => agents[agentId] ?? agents["default"],
@@ -434,17 +587,6 @@ program
       }
     }
     stdout.write("\n");
-
-    // server 与 CLI 共用：思考展示开关（server 经配置端点可改）
-    let showThinking = !!options.showThinking;
-    // 持久化运行时配置（server 配置端点与 CLI /config 共用；迭代上限由 YAML 管理，不写入）
-    const persistRuntimeConfig = () => {
-      try {
-        writeFileSync(runtimeConfigPath, JSON.stringify(modelRouter.getOverrides(), null, 2));
-      } catch {
-        /* 持久化失败静默 */
-      }
-    };
 
     if (options.server) {
       const port = parseInt(options.port, 10);
@@ -521,74 +663,8 @@ program
             skillEvo: hookManager.has("onTaskComplete:evaluateSkillCreation"),
             appVersion: getAppVersion(),
           }),
-          setConfigField: (field, value) => {
-            try {
-              switch (field) {
-                case "model": {
-                  const v = String(value);
-                  const valid = modelRouter.getAvailableModels().find((m) => m.key === v);
-                  if (!valid) return { ok: false, error: `未知模型: ${v}` };
-                  modelRouter.setDefaultModel(v);
-                  break;
-                }
-                case "addModel": {
-                  const v = value as { key?: string; model?: string; baseURL?: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number };
-                  const m = v?.model;
-                  const b = v?.baseURL;
-                  if (!v?.key || !m || !b) {
-                    return { ok: false, error: "添加模型需 key/model/baseURL" };
-                  }
-                  if (!modelRouter.addProfile(v.key, { model: m, baseURL: b, provider: v.provider, apiKey: v.apiKey, temperature: v.temperature, maxTokens: v.maxTokens })) {
-                    return { ok: false, error: `添加失败: key「${v.key}」已存在或非法` };
-                  }
-                  // 写回 config/models.json（保留 default/pricing/routing 等字段）
-                  const modelsPath = resolve(process.cwd(), "config", "models.json");
-                  const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & { profiles?: Record<string, unknown> };
-                  if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
-                  cfg.profiles[v.key.trim().toLowerCase()] = modelRouter.getProfileRaw(v.key);
-                  writeFileSync(modelsPath, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
-                  break;
-                }
-                case "temperature": {
-                  const t = Number(value);
-                  if (Number.isNaN(t) || t < 0 || t > 2) return { ok: false, error: "温度需在 0-2 之间" };
-                  modelRouter.setTemperature(t);
-                  break;
-                }
-                case "maxTokens": {
-                  const n = Number(value);
-                  if (Number.isNaN(n) || n < 100) return { ok: false, error: "max-tokens 需 ≥ 100" };
-                  modelRouter.setMaxTokens(n);
-                  break;
-                }
-                case "thinking":
-                  showThinking = value === true;
-                  break;
-                case "skillEvo":
-                  if (hookManager.has("onTaskComplete:evaluateSkillCreation")) {
-                    hookManager.off("onTaskComplete:evaluateSkillCreation");
-                  } else {
-                    hookManager.on(
-                      "onTaskComplete",
-                      createEvaluateSkillCreation({ sessionStore, modelRouter }),
-                      { id: "onTaskComplete:evaluateSkillCreation", priority: 10 },
-                    );
-                  }
-                  break;
-                case "reset":
-                  modelRouter.setDefaultModel("");
-                  modelRouter.setTemperature(null);
-                  modelRouter.setMaxTokens(null);
-                  break;
-                default:
-                  return { ok: false, error: `未知配置项: ${field}` };
-              }
-              persistRuntimeConfig();
-              return { ok: true };
-            } catch (err) {
-              return { ok: false, error: (err as Error).message };
-            }
-          },
+          setConfigField: applyConfigField,
+          evolutionEngine,
         },
         port,
       );
@@ -666,6 +742,7 @@ program
       listCommands: () => cliCommands,
       appManager,
       appFactory,
+      evolutionEngine,
       write: (text) => stdout.write(text),
       writeLine: (line) => renderer.writeLine(line),
       ask: (q) => (tui.isActive() ? tui.ask(q, [], 60000, false) : Promise.resolve(null)),

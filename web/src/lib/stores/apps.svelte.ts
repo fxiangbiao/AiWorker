@@ -182,19 +182,19 @@ export async function appAction(id: string, action: "start" | "stop" | "destroy"
   }
 }
 
-/** 迭代更新应用（agent-loop 重写逻辑文件，保留数据；Sprint 35） */
+/** 迭代更新应用：优先异步队列（返回 jobId，进度经 gen/* WS 事件推送），兼容同步回退（直接返回 app） */
 export async function updateApp(
   id: string,
   description: string,
-): Promise<{ ok: boolean; error?: string; app?: AppInfo }> {
+): Promise<{ ok: boolean; jobId?: string; error?: string; app?: AppInfo }> {
   try {
     const r = await fetch(`${API}/apps/${encodeURIComponent(id)}/update`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ description }),
     });
-    const d = (await r.json()) as { ok?: boolean; error?: string; app?: AppInfo };
-    return { ok: d.ok === true, error: d.error, app: d.app };
+    const d = (await r.json()) as { ok?: boolean; jobId?: string; error?: string; app?: AppInfo };
+    return { ok: d.ok === true, jobId: d.jobId, error: d.error, app: d.app };
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
@@ -288,6 +288,45 @@ export async function spawnGenCard(
   return r;
 }
 
+/** 应用迭代更新卡片（与生成同流程）：插入用户消息 + 状态卡片，异步队列后台执行。
+ * 进度经 genJobs store（WS gen/* 事件）驱动，由 GenCard 渲染；终态写回卡片消息持久化。
+ */
+export async function spawnUpdateCard(
+  app: AppInfo,
+  description: string,
+): Promise<{ ok: boolean; jobId?: string; error?: string }> {
+  const sessionId = ensureActiveChat();
+  const userText = `更新应用「${app.name}」（v${app.version}）：${description}`;
+  store.messages.push({ role: "user", content: userText });
+  // 注意：必须经 store.messages 代理引用回写（Svelte 5 深响应），直接改局部对象不触发更新
+  const cardIdx = store.messages.push({
+    role: "assistant",
+    content: "已提交更新任务，正在重写…",
+    _kind: "gen",
+    _genSessionId: sessionId,
+    _genAction: "update",
+  }) - 1;
+  bumpChatTurn(userText);
+  saveMessages(sessionId, store.messages);
+  const r = await updateApp(app.id, description);
+  if (store.activeChatId !== sessionId) return r; // 期间已切走会话：放弃回写
+  const card = store.messages[cardIdx];
+  if (card && card._kind === "gen") {
+    if (r.ok && r.jobId) {
+      card._genJobId = r.jobId;
+    } else if (r.ok && r.app) {
+      // 同步回退（无队列）：直接写终态
+      card._genStatus = "done";
+      card._genResult = { app: r.app };
+      card.content = `✓ 应用已更新：${r.app.name}`;
+    } else {
+      card.content = `更新提交失败：${r.error ?? "未知错误"}`;
+    }
+  }
+  saveMessages(sessionId, store.messages);
+  return r;
+}
+
 /** WS 订阅：应用/进程事件实时刷新 + 窗口自动打开 */
 export function initAppsWs(): void {
   onWsEvent((data) => {    const type = data.type;
@@ -367,7 +406,7 @@ function handleGenEvent(type: string, data: Record<string, unknown>): void {
       }
       if (next.result?.docPath) {
         const rel = next.result.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? next.result.docPath;
-        docViewer.set(rel);
+        docViewer.set(`session:${rel}`);
         rightPanelVisible.set(true);
         rightTab.set("docs");
       }
@@ -412,14 +451,17 @@ function syncGenCard(jobId: string): void {
     ? { app: job.result.app ?? undefined, docPath: job.result.docPath }
     : undefined;
   card._genError = job.error;
+  const isUpdate = card._genAction === "update";
   if (job.status === "done") {
     card.content = job.result?.app
-      ? `✓ 应用已生成：${job.result.app.name}`
+      ? isUpdate
+        ? `✓ 应用已更新：${job.result.app.name} v${job.result.app.version ?? ""}`
+        : `✓ 应用已生成：${job.result.app.name}`
       : job.result?.docPath
         ? "✓ 文档已生成"
         : card.content;
   } else if (job.status === "failed") {
-    card.content = `✗ 生成失败：${job.error ?? "未知错误"}`;
+    card.content = `✗ ${isUpdate ? "更新" : "生成"}失败：${job.error ?? "未知错误"}`;
   } else {
     card.content = "已取消";
   }
