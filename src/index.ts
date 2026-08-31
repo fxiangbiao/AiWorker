@@ -60,6 +60,7 @@ import { buildCliCommands } from "./commands/registry.js";
 import { renderCommandHelp, hasRequiredArgs } from "./commands/misc.js";
 import type { CommandContext } from "./commands/types.js";
 import { startServer } from "./server.js";
+import { eventBus } from "./server/event-bus.js";
 import { setAskProvider, isAskWaiting, requestAsk } from "./tools/ask-channel.js";
 import type { PermissionMode, PermissionConfig, StreamCallbacks, ModelProvider, AgentConfig } from "./types.js";
 
@@ -446,7 +447,7 @@ program
       }
     };
 
-    // ─── 进化引擎（Sprint 39 第一期：观察 + 提议 + 采纳/拒绝） ───
+    // ─── 进化引擎（Sprint 39/40：观察 + 提议 + 两段式确认 + 快照回滚） ───
     const evolutionEngine = new EvolutionEngine({
       dataDir,
       observation: {
@@ -462,6 +463,58 @@ program
           sessionId: spec.sessionId ?? "evolution",
         }),
       setConfigField: applyConfigField,
+      // tool-fix：热覆盖工具描述（保留原 handler，仅换 description；本次运行生效，重启回内置默认）
+      patchToolDescription: (toolName, newDescription) => {
+        if (!newDescription) return { ok: false, error: "工具描述不能为空" };
+        const cur = toolRegistry
+          .getAll()
+          .find((t) => t.definition.function.name === toolName);
+        if (!cur) return { ok: false, error: `工具不存在: ${toolName}` };
+        toolRegistry.register(toolName, {
+          ...cur.definition,
+          function: { ...cur.definition.function, description: newDescription },
+        }, cur.handler, { enabled: cur.enabled, availabilityCheck: cur.availabilityCheck, plugin: cur.plugin });
+        return { ok: true };
+      },
+      // prompt-fix：替换智能体提示词 + 热重载（复用智能体 Tab 保存管线）
+      applyPromptFix: (agentId, newPrompt) => {
+        const agent = agents[agentId];
+        if (!agent) return { ok: false, error: `智能体不存在: ${agentId}` };
+        const cfg = agent.getConfig();
+        return saveAgentConfig(agentId, { ...cfg, systemPrompt: newPrompt });
+      },
+      snapshot: {
+        dataDir,
+        skillsDir: resolve(process.cwd(), "skills"),
+        agentsDir: resolve(process.cwd(), "config", "agents"),
+        runtimeConfigPath: resolve(dataDir, "runtime-config.json"),
+        getToolDefinition: (name) =>
+          toolRegistry.getAll().find((t) => t.definition.function.name === name)?.definition,
+      },
+      restoreHooks: {
+        registerTool: (name, definition) => {
+          const cur = toolRegistry.getAll().find((t) => t.definition.function.name === name);
+          if (cur) {
+            toolRegistry.register(name, definition, cur.handler, {
+              enabled: cur.enabled,
+              availabilityCheck: cur.availabilityCheck,
+              plugin: cur.plugin,
+            });
+          }
+        },
+        reloadSkill: (filePath) => {
+          skillRegistry.reloadSkill(filePath);
+        },
+        unloadSkill: (name) => skillRegistry.unloadSkill(name),
+        reloadAgent: (id) => reloadAgent(id),
+      },
+    });
+    // 生成结果回写：gen/done|failed|canceled → 进化台账（new-tool/new-app 提案）
+    eventBus.subscribe((data) => {
+      const d = data as { type?: string; jobId?: string; result?: { app?: { id?: string } } };
+      if ((d.type === "gen/done" || d.type === "gen/failed" || d.type === "gen/canceled") && d.jobId) {
+        evolutionEngine.onGenResult(d.jobId, d.type === "gen/done", d.result?.app?.id, d.type === "gen/canceled");
+      }
     });
 
     // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───

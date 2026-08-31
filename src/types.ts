@@ -536,18 +536,18 @@ export interface EvolutionObservation {
   generated: { apps: number; docs: number; updates: number };
 }
 
-/** 提案动作（按类型结构化，采纳时可直接执行） */
+/** 提案动作（按类型结构化；Sprint 40 扩展 tool-fix/prompt-fix 携带改进内容） */
 export type EvolutionAction =
   | { kind: "new-skill"; expert: string; body: string }
   | { kind: "new-tool"; description: string; type: "tool" }
   | { kind: "new-app"; description: string; type: "app" }
-  | { kind: "config-change"; field: "model" | "temperature" | "maxTokens" | "thinking" | "skillEvo"; value: unknown }
-  | { kind: "tool-fix"; toolName: string; suggestion: string }
-  | { kind: "prompt-fix"; agentId: string; suggestion: string };
+  | { kind: "config-change"; field: "temperature" | "maxTokens"; value: number }
+  | { kind: "tool-fix"; toolName: string; suggestion: string; newDescription: string }
+  | { kind: "prompt-fix"; agentId: string; suggestion: string; newPrompt: string };
 
 export type EvolutionProposalType = EvolutionAction["kind"];
 
-/** 进化提案（meta-agent 产出；两段式确认：pending→confirmed（采纳，仅确认内容）→applied（确认写入生效）） */
+/** 进化提案（meta-agent 产出；两段式确认：pending→confirmed（采纳，仅确认内容）→applied（确认写入生效）→rolled_back（回滚终态）） */
 export interface EvolutionProposal {
   id: string;
   type: EvolutionProposalType;
@@ -555,7 +555,7 @@ export interface EvolutionProposal {
   reason: string;
   action: EvolutionAction;
   risk: "low" | "medium" | "high";
-  status: "pending" | "confirmed" | "applied" | "rejected";
+  status: "pending" | "confirmed" | "applied" | "rejected" | "rolled_back";
   createdAt: number;
   meta?: { tokens?: number };
 }

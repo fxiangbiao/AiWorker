@@ -29,9 +29,9 @@ const PROPOSER_PROMPT = `你是 AiWorker 的进化分析师。基于以下「观
 - new-skill: 发现重复任务模式 → 沉淀技能。action = {"kind":"new-skill","expert":"<agentId>","body":"<SKILL.md 全文：frontmatter 含 name/version/triggers/expert/tools_required + 正文>"}
 - new-tool: 重复任务可工具化。action = {"kind":"new-tool","description":"<一句话描述>","type":"tool"}
 - new-app: 重复任务可应用化。action = {"kind":"new-app","description":"<一句话描述>","type":"app"}
-- config-change: 配置可调优（如温度/模型）。action = {"kind":"config-change","field":"temperature|maxTokens|thinking","value":<number|boolean>}
-- tool-fix: 某工具失败率高。action = {"kind":"tool-fix","toolName":"<工具名>","suggestion":"<改进建议>"}
-- prompt-fix: 某智能体完成率低。action = {"kind":"prompt-fix","agentId":"<agentId>","suggestion":"<提示词改进建议>"}
+- config-change: 配置可调优（仅 temperature/maxTokens，可持久化可回滚）。action = {"kind":"config-change","field":"temperature|maxTokens","value":<number>}
+- tool-fix: 某工具失败率高。action = {"kind":"tool-fix","toolName":"<工具名>","suggestion":"<改进建议>","newDescription":"<改进后的工具 description（一句话，说明更准确的能力/用法，让 LLM 调用更正确）>"}
+- prompt-fix: 某智能体完成率低。action = {"kind":"prompt-fix","agentId":"<agentId>","suggestion":"<提示词改进建议>","newPrompt":"<改进后的完整 systemPrompt（基于原提示词修改，保持角色与风格）>"}
 
 # 输出 JSON schema
 {
@@ -59,7 +59,8 @@ export function validateProposal(raw: unknown): EvolutionProposal | null {
 
   switch (type) {
     case "new-skill":
-      if (typeof action.expert !== "string" || typeof action.body !== "string" || action.body.length < 100) return null;
+      if (typeof action.expert !== "string" || action.expert.includes("..") || action.expert.includes("/") || action.expert.includes("\\")) return null;
+      if (typeof action.body !== "string" || action.body.length < 100) return null;
       break;
     case "new-tool":
       if (typeof action.description !== "string" || action.description.length === 0) return null;
@@ -69,17 +70,21 @@ export function validateProposal(raw: unknown): EvolutionProposal | null {
       break;
     case "config-change": {
       const field = action.field as string;
-      if (!["temperature", "maxTokens", "thinking"].includes(field)) return null;
+      // 仅允许可持久化+可回滚的字段（thinking 是内存开关，不落盘、回滚无效，交配置 Tab 管理）
+      if (!["temperature", "maxTokens"].includes(field)) return null;
       const v = action.value;
-      if (field === "thinking" && typeof v !== "boolean") return null;
-      if ((field === "temperature" || field === "maxTokens") && (typeof v !== "number" || !Number.isFinite(v))) return null;
+      if (typeof v !== "number" || !Number.isFinite(v)) return null;
       break;
     }
     case "tool-fix":
-      if (typeof action.toolName !== "string" || typeof action.suggestion !== "string") return null;
+      if (typeof action.toolName !== "string" || action.toolName.includes("..") || action.toolName.includes("/") || action.toolName.includes("\\")) return null;
+      if (typeof action.suggestion !== "string" || action.suggestion.length === 0) return null;
+      if (typeof action.newDescription !== "string" || action.newDescription.length === 0) return null;
       break;
     case "prompt-fix":
-      if (typeof action.agentId !== "string" || typeof action.suggestion !== "string") return null;
+      if (typeof action.agentId !== "string" || action.agentId.includes("..") || action.agentId.includes("/") || action.agentId.includes("\\")) return null;
+      if (typeof action.suggestion !== "string" || action.suggestion.length === 0) return null;
+      if (typeof action.newPrompt !== "string" || action.newPrompt.length === 0) return null;
       break;
   }
   return {
@@ -140,6 +145,24 @@ export class EvolutionProposer {
 
   appendLedger(entry: Record<string, unknown>): void {
     appendFileSync(this.ledgerPath(), `${JSON.stringify(entry)}\n`, "utf-8");
+  }
+
+  /** 台账尾部 N 条（Web 台账视图；文件缺失返回 []） */
+  readLedger(limit = 20): Record<string, unknown>[] {
+    const path = this.ledgerPath();
+    if (!existsSync(path)) return [];
+    try {
+      const lines = readFileSync(path, "utf-8").split("\n").filter((l) => l.trim().length > 0);
+      return lines.slice(-limit).map((l) => {
+        try {
+          return JSON.parse(l) as Record<string, unknown>;
+        } catch {
+          return { event: "corrupt", raw: l.slice(0, 100) };
+        }
+      });
+    } catch {
+      return [];
+    }
   }
 
   /** meta-agent 提议（观察为空/限频直接短路；解析失败重试 ≤2 次） */

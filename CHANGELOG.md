@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.11.0 (2026-08-30)
+
+### 进化引擎第二期：补丁生效 + 快照回滚（Sprint 40）
+
+- **快照回滚（硬能力）**：apply 写入前自动快照受影响目标（`data/evolution/snapshots/<id>.json`）——技能文件/配置 YAML/runtime-config.json 存原内容（原不存在记 null）、tool-fix 存完整 ToolDefinition（函数不可序列化，restore 时从当前注册表取 handler）；`POST /evolution/proposals/:id/rollback` + CLI `/evo rollback <id>` + Web「回滚」按钮一键还原；状态机加 `rolled_back` 终态（applied 才可回滚，回滚后再改需重新 propose）
+- **tool-fix 真正生效**：meta-agent 产出改进后的工具描述（`newDescription`）→ apply 时热覆盖注册（保留原 handler，仅换 description；本次运行生效，重启回内置默认）；回滚用快照完整定义重注册
+- **prompt-fix 真正生效**：meta-agent 产出改进后的完整 systemPrompt（`newPrompt`）→ apply 写 `config/agents/<id>.yaml` + `reloadAgent` 热重载（复用智能体 Tab 保存管线）；回滚恢复原 YAML + 热重载
+- **技能注册表卸载**：`skillRegistry.unloadSkill(name)` 按名移除内存条目（回滚删除技能文件后同步，防残留仍被触发词激活——审核发现的漏洞）
+- **台账视图**：`GET /evolution/ledger?limit=N` 返回 ledger 尾部条目；Web 进化 Tab 新增「进化台账」时间线（提议/确认/写入/回滚/拒绝/生成结果）
+- **变更对比展示**（`evolution-diff`）：applied/rolled_back 提案可查看「进化前后对比」——before 从快照提取、after 从提案 action 派生，行级 LCS diff 高亮（红删绿增）；`GET /evolution/proposals/:id/change` + CLI `/evo diff <id>` + Web 卡片「查看变更」按钮；纯新增类（new-tool/new-app）显示全绿 add
+- **生成结果回写**：apply new-tool/new-app 记 `generated-submitted` + jobId；index.ts 桥接 `gen/done|failed` 事件 → `onGenResult` 按 jobId 匹配提案 → ledger 记 `generated`（ok/appId）+ 广播 `evolution/generated`
+- 两段式确认保留：adopt 预览新增 newDescription/newPrompt 全文；schema 强制新字段必填 + **路径穿越防护**（expert/toolName/agentId 仅拒绝 / \ ..，允许中文名）
+- 修复：prompt-fix 旧格式提案（缺 newPrompt）apply 被拒不污染提示词；快照 capture/restore 越界路径拒绝（安全加固）；**config-change 白名单收紧为 temperature/maxTokens**（thinking 是内存开关不落盘、回滚无效，交配置 Tab 管理——review 发现）；diffLines/extractAfter 参数防御旧数据缺失；**tool-fix 回滚依赖 registerTool 缺失时明确报错**（不虚假成功）；Web「查看变更」支持展开/收起切换 + 加载失败提示；**skill-evolution.register 校验 reloadSkill 结果**（解析失败返回 false 并回滚文件，防技能"虚假生效"）；生成任务 **canceled** 也回写台账
+- 测试 +36（snapshot 六态/restore 联动/unloadSkill/engine rollback 七例/端点 4/CLI 3/schema 4/diff 13/中文技能名/onGenResult 2/registerTool 缺失/register 2）；全量 655 全绿
+
 ## 0.10.0 (2026-08-30)
 
 ### 进化引擎第一期：观察 + 提议（Sprint 39）

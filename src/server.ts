@@ -1623,7 +1623,7 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    // ─── 进化引擎（Sprint 39：观察/提议/采纳/拒绝） ───
+    // ─── 进化引擎（Sprint 39/40：观察/提议/两段式确认/回滚/台账） ───
     if (deps.evolutionEngine && url.startsWith(apiUrl("/evolution"))) {
       const evo = deps.evolutionEngine;
       if (url === apiUrl("/evolution/observe") && req.method === "GET") {
@@ -1639,11 +1639,29 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 200, { proposals: evo.list() });
         return;
       }
-      if (url.startsWith(apiUrl("/evolution/proposals/")) && req.method === "POST") {
+      if (url.startsWith(apiUrl("/evolution/ledger")) && req.method === "GET") {
+        const u = new URL(req.url ?? "", "http://localhost");
+        const limit = Number(u.searchParams.get("limit") ?? "20");
+        sendJSON(res, 200, { entries: evo.ledger(Number.isFinite(limit) ? limit : 20) });
+        return;
+      }
+      if (url.startsWith(apiUrl("/evolution/proposals/"))) {
         const rest = url.slice(apiUrl("/evolution/proposals/").length);
         const id = decodeURIComponent(rest.split("/")[0] ?? "");
         if (!id) {
           sendJSON(res, 400, { error: "缺少提案 id" });
+          return;
+        }
+        if (rest.endsWith("/change")) {
+          if (req.method === "GET") {
+            sendJSON(res, 200, evo.change(id));
+          } else {
+            sendJSON(res, 405, { error: "Method Not Allowed" });
+          }
+          return;
+        }
+        if (req.method !== "POST") {
+          sendJSON(res, 405, { error: "Method Not Allowed" });
           return;
         }
         if (rest.endsWith("/adopt")) {
@@ -1654,11 +1672,15 @@ export function startServer(deps: ServerDeps, port: number) {
           sendJSON(res, 200, await evo.apply(id));
           return;
         }
+        if (rest.endsWith("/rollback")) {
+          sendJSON(res, 200, evo.rollback(id));
+          return;
+        }
         if (rest.endsWith("/reject")) {
           sendJSON(res, 200, evo.reject(id));
           return;
         }
-        sendJSON(res, 404, { error: "未知操作（adopt|apply|reject）" });
+        sendJSON(res, 404, { error: "未知操作（change|adopt|apply|rollback|reject）" });
         return;
       }
     }

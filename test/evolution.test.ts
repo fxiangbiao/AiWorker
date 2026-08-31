@@ -202,13 +202,13 @@ describe("validateProposal", () => {
     ).toBeNull();
   });
 
-  it("拒绝 thinking 字段非布尔", () => {
+  it("拒绝 thinking 字段（内存开关不可持久化/回滚，交配置 Tab 管理）", () => {
     expect(
       validateProposal({
         type: "config-change",
         title: "x",
         reason: "y",
-        action: { kind: "config-change", field: "thinking", value: "yes" },
+        action: { kind: "config-change", field: "thinking", value: true },
         risk: "low",
       }),
     ).toBeNull();
@@ -262,7 +262,7 @@ describe("EvolutionProposer", () => {
               type: "tool-fix",
               title: "修复 fs_read",
               reason: "成功率 50%",
-              action: { kind: "tool-fix", toolName: "fs_read", suggestion: "补充错误处理" },
+              action: { kind: "tool-fix", toolName: "fs_read", suggestion: "补充错误处理", newDescription: "读取文件内容，若不存在返回明确错误" },
               risk: "medium",
             }),
             usage: { totalTokens: 123 },
@@ -311,7 +311,7 @@ describe("EvolutionProposer", () => {
           type: "prompt-fix",
           title: "优化提示词",
           reason: "完成率低",
-          action: { kind: "prompt-fix", agentId: "default", suggestion: "补充工具说明" },
+          action: { kind: "prompt-fix", agentId: "default", suggestion: "补充工具说明", newPrompt: "你是通用助手。\n\n# 工具\n- 优先使用 fs_read 读取文件。" },
           risk: "low",
         }),
       });

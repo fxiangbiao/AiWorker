@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import { API } from "$lib/stores/chat.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
-  import { Sparkles, RefreshCw, Check, X, BrainCircuit } from "lucide-svelte";
+  import { Sparkles, RefreshCw, Check, X, BrainCircuit, FileDiff } from "lucide-svelte";
 
   interface ToolStat {
     name: string;
@@ -40,17 +40,44 @@
       toolName?: string;
       suggestion?: string;
       agentId?: string;
+      newDescription?: string;
+      newPrompt?: string;
     };
     risk: "low" | "medium" | "high";
-    status: "pending" | "confirmed" | "applied" | "rejected";
+    status: "pending" | "confirmed" | "applied" | "rejected" | "rolled_back";
     createdAt: number;
+  }
+
+  interface LedgerEntry {
+    at?: number;
+    event?: string;
+    id?: string;
+    type?: string;
+    title?: string;
+    detail?: string;
+    jobId?: string;
   }
 
   let obs = $state<Observation | null>(null);
   let proposals = $state<Proposal[]>([]);
+  let ledger = $state<LedgerEntry[]>([]);
+  let changes = $state<Record<string, ChangeView>>({});
   let loading = $state(false);
   let busy = $state(false);
   let msg = $state<{ kind: "ok" | "err" | "info"; text: string } | null>(null);
+
+  interface DiffLine {
+    type: "same" | "add" | "del";
+    text: string;
+  }
+  interface ChangeView {
+    proposalId: string;
+    kind: string;
+    title: string;
+    before?: string;
+    after: string;
+    lines: DiffLine[];
+  }
 
   const TYPE_LABEL: Record<string, string> = {
     "new-skill": "新技能",
@@ -61,7 +88,16 @@
     "prompt-fix": "提示词修复",
   };
   const RISK_LABEL: Record<string, string> = { low: "低", medium: "中", high: "高" };
-  const STATUS_LABEL: Record<string, string> = { pending: "待确认", confirmed: "已确认·待写入", applied: "已写入", rejected: "已拒绝" };
+  const STATUS_LABEL: Record<string, string> = { pending: "待确认", confirmed: "已确认·待写入", applied: "已写入", rejected: "已拒绝", rolled_back: "已回滚" };
+  const EVENT_LABEL: Record<string, string> = {
+    proposed: "提议",
+    confirmed: "确认",
+    applied: "写入",
+    rolled_back: "回滚",
+    rejected: "拒绝",
+    "generated-submitted": "生成提交",
+    generated: "生成结果",
+  };
 
   function pct(v?: number): string {
     return v === undefined ? "-" : `${Math.round(v * 100)}%`;
@@ -115,7 +151,38 @@
     }
   }
 
-  async function act(id: string, action: "adopt" | "apply" | "reject") {
+  async function loadLedger() {
+    try {
+      const r = await fetch(`${API}/evolution/ledger?limit=20`);
+      if (r.ok) ledger = ((await r.json()) as { entries: LedgerEntry[] }).entries ?? [];
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  /** 加载/切换提案变更对比（已缓存则收起；未缓存则加载并展开） */
+  async function toggleChange(id: string) {
+    if (changes[id]) {
+      const next = { ...changes };
+      delete next[id];
+      changes = next;
+      return;
+    }
+    try {
+      const r = await fetch(`${API}/evolution/proposals/${id}/change`);
+      if (r.ok) {
+        const d = (await r.json()) as { ok: boolean; view?: ChangeView };
+        if (d.ok && d.view) changes = { ...changes, [id]: d.view };
+        else if (d.error) msg = { kind: "err", text: d.error };
+      } else {
+        msg = { kind: "err", text: `变更加载失败（HTTP ${r.status}）` };
+      }
+    } catch {
+      msg = { kind: "err", text: "变更加载失败（网络错误）" };
+    }
+  }
+
+  async function act(id: string, action: "adopt" | "apply" | "rollback" | "reject") {
     msg = null;
     try {
       const r = await fetch(`${API}/evolution/proposals/${id}/${action}`, { method: "POST" });
@@ -129,10 +196,19 @@
           kind: "ok",
           text: `已写入${d.jobId ? `，生成任务 ${d.jobId}（进度见右侧「应用」Tab）` : ""}${d.detail ? ` · ${d.detail}` : ""}`,
         };
+        // apply 后快照出现，清缓存使「查看变更」刷新为 before/after 对照
+        if (changes[id]) {
+          const next = { ...changes };
+          delete next[id];
+          changes = next;
+        }
+      } else if (action === "rollback") {
+        msg = { kind: "ok", text: `已回滚${d.detail ? ` · ${d.detail}` : ""}` };
       } else {
         msg = { kind: "ok", text: "已拒绝" };
       }
       await loadProposals();
+      await loadLedger();
     } catch (e) {
       msg = { kind: "err", text: (e as Error).message };
     }
@@ -151,12 +227,18 @@
       case "config-change":
         return `配置项: ${a.field} = ${JSON.stringify(a.value)}`;
       case "tool-fix":
-        return `工具: ${a.toolName}\n建议: ${a.suggestion}`;
+        return `工具: ${a.toolName}\n建议: ${a.suggestion}\n新描述: ${a.newDescription ?? ""}`;
       case "prompt-fix":
-        return `智能体: ${a.agentId}\n建议: ${a.suggestion}`;
+        return `智能体: ${a.agentId}\n建议: ${a.suggestion}\n新提示词:\n${a.newPrompt ?? ""}`;
       default:
         return "";
     }
+  }
+
+  function fmtAt(at?: number): string {
+    if (!at) return "-";
+    const d = new Date(at);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   }
 
   let unsubWs: (() => void) | null = null;
@@ -164,11 +246,13 @@
   onMount(() => {
     loadObserve();
     loadProposals();
+    loadLedger();
     unsubWs = onWsEvent((d) => {
       const t = (d as { type?: string }).type ?? "";
       if (t.startsWith("evolution/") || t === "gen/done" || t === "gen/failed") {
         loadProposals();
         loadObserve();
+        loadLedger();
       }
     });
   });
@@ -271,6 +355,30 @@
               <pre class="evo-preview-body">{previewText(p)}</pre>
             </div>
           {/if}
+          {#if changes[p.id]}
+            <div class="evo-diff">
+              <div class="evo-diff-title">变更对比（{changes[p.id].before === undefined ? "纯新增" : "修改"}）：</div>
+              {#if changes[p.id].before !== undefined}
+                <div class="evo-diff-cols">
+                  <div class="evo-diff-col">
+                    <div class="evo-diff-col-title">修改前</div>
+                    <pre class="evo-diff-before">{changes[p.id].before}</pre>
+                  </div>
+                  <div class="evo-diff-col">
+                    <div class="evo-diff-col-title">修改后</div>
+                    <pre class="evo-diff-after">{changes[p.id].after}</pre>
+                  </div>
+                </div>
+              {/if}
+              <div class="evo-diff-lines">
+                {#each changes[p.id].lines as line}
+                  {#if line.type !== "same"}
+                    <div class="evo-diff-line evo-diff-{line.type}"><span class="evo-diff-mark">{line.type === "add" ? "+" : "−"}</span>{line.text || "␣"}</div>
+                  {/if}
+                {/each}
+              </div>
+            </div>
+          {/if}
           <div class="evo-prop-actions">
             {#if p.status === "pending"}
               <button class="evo-btn evo-sm evo-adopt" onclick={() => act(p.id, "adopt")}><Check size={12} /> 采纳</button>
@@ -278,12 +386,38 @@
             {:else if p.status === "confirmed"}
               <button class="evo-btn evo-sm evo-adopt" onclick={() => act(p.id, "apply")}><Check size={12} /> 确认写入</button>
               <button class="evo-btn evo-sm evo-reject" onclick={() => act(p.id, "reject")}><X size={12} /> 撤销</button>
+            {:else if p.status === "applied" || p.status === "rolled_back"}
+              <button class="evo-btn evo-sm evo-ghost" onclick={() => toggleChange(p.id)}><FileDiff size={12} /> {changes[p.id] ? "收起变更" : "查看变更"}</button>
+              {#if p.status === "applied"}
+                <button class="evo-btn evo-sm evo-rollback" onclick={() => act(p.id, "rollback")}><RefreshCw size={12} /> 回滚</button>
+              {/if}
+              <span class="evo-prop-id">{p.id}</span>
             {:else}
               <span class="evo-prop-id">{p.id}</span>
             {/if}
           </div>
         </div>
       {/each}
+    {/if}
+  </div>
+
+  <div class="evo-section">
+    <div class="evo-title"><RefreshCw size={14} /> 进化台账（最近 {ledger.length} 条）</div>
+    {#if ledger.length === 0}
+      <div class="evo-empty">暂无台账记录</div>
+    {:else}
+      <div class="evo-ledger">
+        {#each ledger as e}
+          <div class="evo-ledger-row">
+            <span class="evo-ledger-at">{fmtAt(e.at)}</span>
+            <span class="evo-ledger-event">{EVENT_LABEL[e.event ?? ""] ?? e.event}</span>
+            <span class="evo-ledger-title">{e.title ?? e.id ?? ""}</span>
+            {#if e.jobId}
+              <span class="evo-ledger-job">{e.jobId}</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
     {/if}
   </div>
 </div>
@@ -335,6 +469,10 @@
   .evo-reject {
     border-color: var(--error);
     color: var(--error);
+  }
+  .evo-rollback {
+    border-color: var(--warn);
+    color: var(--warn);
   }
   .evo-msg {
     font-size: 12px;
@@ -531,6 +669,10 @@
   .evo-status-applied {
     color: var(--success);
   }
+  .evo-status-rolled_back {
+    color: var(--dim);
+    text-decoration: line-through;
+  }
   .evo-status-rejected {
     color: var(--dim);
   }
@@ -560,6 +702,77 @@
     max-height: 180px;
     overflow: auto;
   }
+  .evo-diff {
+    border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+    border-radius: 6px;
+    padding: 8px;
+    background: color-mix(in srgb, var(--primary) 6%, transparent);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .evo-diff-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary);
+  }
+  .evo-diff-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .evo-diff-col-title {
+    font-size: 11px;
+    color: var(--dim);
+    margin-bottom: 2px;
+  }
+  .evo-diff-before,
+  .evo-diff-after {
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+    max-height: 120px;
+    overflow: auto;
+    border-radius: 4px;
+    padding: 6px;
+  }
+  .evo-diff-before {
+    background: color-mix(in srgb, var(--error) 8%, transparent);
+    color: var(--text);
+  }
+  .evo-diff-after {
+    background: color-mix(in srgb, var(--success) 8%, transparent);
+    color: var(--text);
+  }
+  .evo-diff-lines {
+    display: flex;
+    flex-direction: column;
+    max-height: 160px;
+    overflow: auto;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .evo-diff-line {
+    padding: 0 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .evo-diff-add {
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+    color: var(--success);
+  }
+  .evo-diff-del {
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+    color: var(--error);
+    text-decoration: line-through;
+  }
+  .evo-diff-mark {
+    display: inline-block;
+    width: 14px;
+    font-weight: 700;
+  }
   .evo-prop-actions {
     display: flex;
     gap: 6px;
@@ -568,5 +781,45 @@
   .evo-prop-id {
     font-size: 11px;
     color: var(--dim);
+  }
+  .evo-ledger {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 200px;
+    overflow: auto;
+  }
+  .evo-ledger-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 4px;
+  }
+  .evo-ledger-row:hover {
+    background: var(--hover-bg);
+  }
+  .evo-ledger-at {
+    color: var(--dim);
+    width: 72px;
+    flex-shrink: 0;
+  }
+  .evo-ledger-event {
+    color: var(--primary);
+    width: 60px;
+    flex-shrink: 0;
+    font-weight: 600;
+  }
+  .evo-ledger-title {
+    color: var(--text);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .evo-ledger-job {
+    color: var(--dim);
+    font-size: 10px;
   }
 </style>

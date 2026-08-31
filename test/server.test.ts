@@ -1465,7 +1465,13 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
         ],
         adopt: (id: string) => ({ ok: true, preview: { kind: "new-tool", description: "自动生成周报", type: "tool" } }),
         apply: async (id: string) => ({ ok: true, jobId: `job-${id}` }),
+        rollback: (id: string) => ({ ok: true, detail: `已恢复 ${id}` }),
         reject: (id: string) => ({ ok: true }),
+        ledger: () => [{ at: 123, event: "proposed", id: "evo-abc", type: "new-tool", title: "生成周报工具" }],
+        change: (id: string) => ({
+          ok: true,
+          view: { proposalId: id, kind: "new-tool", title: "生成周报工具", after: "生成工具：自动生成周报", lines: [{ type: "add", text: "生成工具：自动生成周报" }] },
+        }),
       } as never,
     };
     server5 = startServer(deps as never, 0);
@@ -1528,6 +1534,35 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
     expect(resp.status).toBe(200);
     const data = await resp.json();
     expect(data.ok).toBe(true);
+  });
+
+  it("POST /evolution/proposals/:id/rollback 回滚成功", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/rollback`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.detail).toContain("已恢复");
+  });
+
+  it("GET /evolution/ledger 返回台账时间线", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/ledger?limit=20`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.entries).toHaveLength(1);
+    expect(data.entries[0]).toMatchObject({ event: "proposed", id: "evo-abc" });
+  });
+
+  it("GET /evolution/proposals/:id/change 返回变更对比", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/change`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.view).toMatchObject({ proposalId: "evo-abc", kind: "new-tool" });
+  });
+
+  it("POST /evolution/proposals/:id/change 返回 405（change 仅 GET）", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/change`, { method: "POST" });
+    expect(resp.status).toBe(405);
   });
 
   it("未知操作返回 404", async () => {

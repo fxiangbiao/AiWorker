@@ -26,7 +26,10 @@ function renderProposal(p: EvolutionProposal): string {
   const risk = RISK_COLOR[p.risk]?.(p.risk) ?? chalk.gray(p.risk);
   const type = chalk.cyan(TYPE_LABEL[p.type] ?? p.type);
   const status =
-    p.status === "pending" ? chalk.yellow("待确认") : p.status === "confirmed" ? chalk.blue("已确认") : p.status === "applied" ? chalk.green("已写入") : chalk.gray("已拒绝");
+    p.status === "pending" ? chalk.yellow("待确认") :
+    p.status === "confirmed" ? chalk.blue("已确认") :
+    p.status === "applied" ? chalk.green("已写入") :
+    p.status === "rolled_back" ? chalk.gray("已回滚") : chalk.gray("已拒绝");
   return `  ${status} ${type} ${chalk.white(p.title)} ${chalk.dim(`[${risk}]`)} ${chalk.gray(p.id)}
      ${chalk.dim(p.reason)}`;
 }
@@ -46,18 +49,21 @@ function renderPreview(a: EvolutionProposal["action"]): string {
     case "config-change":
       return `    ${chalk.dim("配置项")}: ${a.field} = ${JSON.stringify(a.value)}`;
     case "tool-fix":
-      return `    ${chalk.dim("工具")}: ${a.toolName}\n    ${chalk.dim("建议")}: ${a.suggestion}`;
+      return `    ${chalk.dim("工具")}: ${a.toolName}\n    ${chalk.dim("建议")}: ${a.suggestion}\n    ${chalk.dim("新描述")}: ${a.newDescription}`;
     case "prompt-fix":
-      return `    ${chalk.dim("智能体")}: ${a.agentId}\n    ${chalk.dim("建议")}: ${a.suggestion}`;
+      return `    ${chalk.dim("智能体")}: ${a.agentId}\n    ${chalk.dim("建议")}: ${a.suggestion}\n    ${chalk.dim("新提示词")}:\n${a.newPrompt
+        .split("\n")
+        .map((l) => `      ${l}`)
+        .join("\n")}`;
   }
 }
 
 export const evolutionCommands: CliCommand[] = [
   {
     name: "evo",
-    usage: "evo <observe|propose|list|adopt|apply|reject> [id]",
-    description: "AI OS 进化引擎（观察/提议/两段式确认）",
-    detail: "observe 观察指标 / propose 生成提案（每日 ≤3 条）/ list 提案列表 / adopt <id> 确认提案（预览写入内容，不写入）/ apply <id> 确认写入（真正执行）/ reject <id> 拒绝",
+    usage: "evo <observe|propose|list|adopt|apply|rollback|diff|reject> [id]",
+    description: "AI OS 进化引擎（观察/提议/两段式确认/回滚/对比）",
+    detail: "observe 观察指标 / propose 生成提案（每日 ≤3 条）/ list 提案列表 / adopt <id> 确认提案（预览写入内容，不写入）/ apply <id> 确认写入（真正执行）/ rollback <id> 回滚快照还原 / diff <id> 查看变更前后对比 / reject <id> 拒绝",
     handler: async (ctx, arg) => {
       const evo = ctx.evolutionEngine;
       if (!evo) {
@@ -118,8 +124,8 @@ export const evolutionCommands: CliCommand[] = [
               ctx.writeLine(renderProposal(p));
               if (p.status === "confirmed") {
                 ctx.writeLine(chalk.dim("     （已确认，/evo apply <id> 确认写入）"));
-              } else if (p.status === "applied" && p.type === "tool-fix") {
-                ctx.writeLine(chalk.dim("     （建议人工执行，未自动改写）"));
+              } else if (p.status === "applied") {
+                ctx.writeLine(chalk.dim("     （/evo rollback <id> 可回滚快照还原）"));
               }
             }
             ctx.writeLine("");
@@ -156,6 +162,47 @@ export const evolutionCommands: CliCommand[] = [
           }
           break;
         }
+        case "rollback": {
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /evo rollback <id>"));
+            break;
+          }
+          ctx.writeLine(chalk.cyan(`\n↩️  回滚: ${id}（快照还原）…`));
+          const result = evo.rollback(id);
+          if (result.ok) {
+            ctx.writeLine(chalk.green(`✓ 已回滚: ${id}${result.detail ? ` · ${result.detail}` : ""}`));
+          } else {
+            ctx.writeLine(chalk.red(`✗ 回滚失败: ${result.error}`));
+          }
+          break;
+        }
+        case "diff": {
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /evo diff <id>"));
+            break;
+          }
+          const result = evo.change(id);
+          if (!result.ok || !result.view) {
+            ctx.writeLine(chalk.red(`✗ 获取变更失败: ${result.error}`));
+            break;
+          }
+          const v = result.view;
+          ctx.writeLine(chalk.cyan(`\n📋 变更对比: ${v.title}（${id}）`));
+          if (v.before === undefined) {
+            ctx.writeLine(chalk.green("  （纯新增内容）"));
+          } else {
+            ctx.writeLine(chalk.dim("  ── 修改前 ──"));
+            ctx.writeLine(chalk.dim(v.before.split("\n").map((l) => `  ${l}`).join("\n")));
+            ctx.writeLine(chalk.dim("  ── 修改后 ──"));
+            ctx.writeLine(chalk.green(v.after.split("\n").map((l) => `  ${l}`).join("\n")));
+          }
+          ctx.writeLine(chalk.dim("  行级差异:"));
+          for (const line of v.lines) {
+            if (line.type === "add") ctx.writeLine(chalk.green(`  + ${line.text}`));
+            else if (line.type === "del") ctx.writeLine(chalk.red(`  - ${line.text}`));
+          }
+          break;
+        }
         case "reject": {
           if (!id) {
             ctx.writeLine(chalk.gray("用法: /evo reject <id>"));
@@ -170,7 +217,7 @@ export const evolutionCommands: CliCommand[] = [
           break;
         }
         default:
-          ctx.writeLine(chalk.gray("用法: /evo observe|propose|list|adopt <id>|apply <id>|reject <id>"));
+          ctx.writeLine(chalk.gray("用法: /evo observe|propose|list|adopt <id>|apply <id>|rollback <id>|diff <id>|reject <id>"));
           break;
       }
       ctx.printStatus();
