@@ -1,0 +1,68 @@
+:root {
+  --tomato: #e74c3c;
+  --break: #27ae60;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1e1f24;
+  color: #f2f3f5;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.tomato {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+.ring {
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  border: 8px solid var(--tomato);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: border-color 0.3s;
+}
+.ring.break {
+  border-color: var(--break);
+}
+.time {
+  font-size: 44px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.phase {
+  font-size: 14px;
+  color: #9aa0aa;
+}
+.controls {
+  display: flex;
+  gap: 10px;
+}
+.btn {
+  padding: 8px 22px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  background: #33363d;
+  color: #f2f3f5;
+}
+.btn.primary {
+  background: var(--tomato);
+}
+.btn:hover {
+  opacity: 0.9;
+}
+.rounds {
+  font-size: 13px;
+  color: #9aa0aa;
+  min-height: 18px;
+}

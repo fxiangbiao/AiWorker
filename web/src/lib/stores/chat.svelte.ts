@@ -4,6 +4,8 @@ export interface ChatItem {
   agentId: string;
   turns: number;
   createdAt: number;
+  /** 会话自定义项目目录（Sprint 42；null=默认全局） */
+  workingDir?: string | null;
 }
 
 export const API = "/api/v1";
@@ -189,6 +191,7 @@ export async function syncServerSessions(): Promise<boolean> {
       turnCount?: number;
       firstUserMsg?: string | null;
       summary?: string | null;
+      workingDir?: string | null;
     }) => {
       const title = (s.firstUserMsg || s.summary || s.id).slice(0, 50);
       return {
@@ -197,6 +200,7 @@ export async function syncServerSessions(): Promise<boolean> {
         agentId: s.agentId || s.agent_id || "default",
         turns: s.turnCount ?? 0,
         createdAt: s.createdAt || s.created_at || 0,
+        workingDir: s.workingDir ?? null,
       };
     });
     const merged = [...store.chats];
@@ -206,7 +210,7 @@ export async function syncServerSessions(): Promise<boolean> {
     for (let i = 0; i < merged.length; i++) {
       const remoteItem = remoteById.get(merged[i]!.id);
       if (remoteItem) {
-        merged[i] = { ...merged[i]!, turns: remoteItem.turns };
+        merged[i] = { ...merged[i]!, turns: remoteItem.turns, workingDir: remoteItem.workingDir };
         remoteById.delete(merged[i]!.id);
       }
     }

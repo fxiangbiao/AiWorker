@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.11.0-blue)
+![version](https://img.shields.io/badge/version-1.1.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -11,7 +11,7 @@
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP、技能库、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种界面。
 
-正在升级为 **AI OS**（个人 AI 操作系统）：AI 是大脑、Harness 是手脚、应用模型即插即用、自进化引擎闭环——规划见 [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md)。
+已升级为 **AI OS**（个人 AI 操作系统）**1.0**：AI 是大脑、Harness 是手脚、应用是进程、自进化引擎闭环、每会话项目目录——正式架构见 [docs/ai-os-architecture.md](docs/ai-os-architecture.md)，演进规划见 [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md)。
 
 ## 目录
 
@@ -37,7 +37,10 @@
 - **记忆与上下文**：三层记忆（工作 / 情景 FTS5 / 语义 MEMORY.md）+ 会话事件溯源（replay + `/trace`）+ 超长结果 spill 落盘 + 自动标题 + 上下文压缩
 - **后台与调度**：`/bg` 后台任务（不阻塞交互，完成 WS 推送）；`/schedule` 定时任务（**支持自然语言添加**，如"每天早上8点生成早报"）
 - **资产分发**：技能/MCP/插件统一 `.aw` 包（zip+manifest，`scripts/pack-aw.mjs` 打包）及**裸格式**（SKILL.md / MCP .json / 插件目录）导入导出；`/install`、`/pkg export`、Web 三 Tab 支持
-- **AI OS 应用模型**（0.7.0）：`data/apps/<id>/app.json` manifest（tool/skill/agent/service）+ 生命周期状态机 + 子进程能力桥（JSON-RPC 隔离，无 terminal 权限）+ 崩溃自动重启 + `/app` 命令 + Web 应用/进程视图
+- **AI OS 应用模型**（0.7.0）：`data/apps/<id>/app.json` manifest（tool/skill/agent/service/app）+ 生命周期状态机 + 子进程能力桥（JSON-RPC 隔离，无 terminal 权限）+ 崩溃自动重启 + `/app` 命令 + Web 应用/进程视图
+- **自进化引擎**（1.0.0）：观察（7 天派生指标）→ 提议（meta-agent，每日 ≤3）→ 两段式确认 → 写入生效 + 快照回滚 → 变更对比 → **黄金用例评测 + A/B 验证 + 回归阈值自动回滚**；`/evo` + Web「进化」Tab（提案/台账/用例/评测）
+- **每会话项目目录**（1.0.0）：`/dir <绝对路径>` 或 Web 会话控制条设置；fs 工具/沙箱/文档面板跟随会话目录，未设置回退全局
+- **AI OS 控制台**（1.0.0）：SystemPanel 13 Tab 含「审计」（全量操作可查，action 前缀过滤）、「设备」（TTS/媒体通道/模型多模态）；进程视图 token 资源仪表；示例应用包（`examples/`：番茄钟 webapp / 批量替换 tool / 待办 service，`.aw` 打包分发 `/pkg export app`）
 - **界面**：TUI 自研帧缓冲渲染引擎；Web（Svelte 5 + SSE + WebSocket 实时总线 + lucide 图标 + 暗色模式）；HTTP Server 托管
 
 ## 界面预览

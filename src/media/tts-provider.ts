@@ -1,13 +1,13 @@
 /**
- * TTS provider（Sprint 36）— adapter 化文字转语音
- * 优先级：edge-tts 在线（默认，微软接口，无 key）→ sherpa-onnx 本地（P1，模型就绪时自动启用）
+ * TTS provider（Sprint 36；Sprint 43 补齐 sherpa 离线实现）— adapter 化文字转语音
+ * 优先级：sherpa-onnx 本地（模型就绪时启用，离线）→ edge-tts 在线（微软接口，无 key）
  * 注意：edge-tts 走第三方微软在线接口，特定网络/地区可能 403；Web 主战场语音输出
  * 优先用浏览器内置 speechSynthesis（零依赖、离线），本模块服务后端/未来非浏览器客户端。
  */
 
 import { edgeTtsSynthesize, type EdgeTtsOptions } from "./edge-tts.js";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import sherpa from "sherpa-onnx-node";
+import { isModelReady, modelDir } from "./model-manager.js";
 
 export type TtsEngine = "edge-tts" | "sherpa";
 
@@ -37,22 +37,76 @@ class EdgeTtsProvider implements TtsProvider {
   }
 }
 
-// ── sherpa-onnx 本地实现（P1：模型就绪时启用；未实现时 synthesize 抛错触发降级） ──
+// ── sherpa-onnx 本地实现（Sprint 43：vits-zh-ll 真实现；模型未就绪时由 resolve 降级 edge-tts） ──
+
+type SherpaTts = InstanceType<typeof sherpa.OfflineTts>;
+
+function pcm16FromF32(samples: Float32Array): Buffer {
+  const buf = Buffer.alloc(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]!));
+    buf.writeInt16LE(Math.round(v * 32767), i * 2);
+  }
+  return buf;
+}
+
+/** 16k 单声道 16-bit PCM → WAV（自描述格式；与 edge-tts 的 mp3 输出格式不同，消费端按 engine 区分） */
+function wavFromPcm16(pcm: Buffer, sampleRate: number): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
 
 class SherpaTtsProvider implements TtsProvider {
   readonly engine: TtsEngine = "sherpa";
-  async synthesize(_req: TtsRequest): Promise<Buffer> {
-    throw new Error("sherpa-onnx 本地 TTS 未安装（P1）；请在 data/media/models/ 放置模型并确认原生绑定可用");
+  private tts: SherpaTts | null = null;
+
+  constructor(private dataDir: string) {}
+
+  private ensure(): SherpaTts {
+    if (this.tts) return this.tts;
+    const dir = modelDir(this.dataDir, "tts");
+    this.tts = new sherpa.OfflineTts({
+      model: {
+        vits: {
+          model: `${dir}/model.onnx`,
+          tokens: `${dir}/tokens.txt`,
+          lexicon: `${dir}/lexicon.txt`,
+          dictDir: `${dir}/dict`,
+        },
+        numThreads: 2,
+        debug: 0,
+      },
+      ruleFsts: `${dir}/phone.fst,${dir}/date.fst,${dir}/number.fst,${dir}/new_heteronym.fst`,
+      maxNumSentences: 1,
+    });
+    return this.tts;
+  }
+
+  async synthesize(req: TtsRequest): Promise<Buffer> {
+    const tts = this.ensure();
+    const speed = parseFloat(req.rate ?? "1.0") || 1.0;
+    const audio = tts.generate({ text: req.text, sid: 0, speed });
+    if (!audio.samples || audio.samples.length === 0) throw new Error("sherpa TTS 合成失败（空音频）");
+    return wavFromPcm16(pcm16FromF32(audio.samples), audio.sampleRate);
   }
 }
 
-/** 数据目录下的模型目录（sherpa 模型就绪探测） */
-const modelDir = (dataDir: string) => resolve(dataDir, "media", "models");
-
-/** 按可用性解析 TTS provider：sherpa 模型就绪优先，否则 edge-tts，最后抛错 */
+/** 按模型就绪解析 TTS provider：sherpa 模型就绪优先，否则 edge-tts，最后抛错 */
 export function resolveTtsProvider(dataDir: string): TtsProvider {
-  const sherpaReady = existsSync(resolve(modelDir(dataDir), "tts"));
-  return sherpaReady ? new SherpaTtsProvider() : new EdgeTtsProvider();
+  return isModelReady(dataDir, "tts") ? new SherpaTtsProvider(dataDir) : new EdgeTtsProvider();
 }
 
 export { EdgeTtsProvider, SherpaTtsProvider };

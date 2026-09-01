@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { buildCliCommands } from "../src/commands/registry.js";
+import { modelDir, modelManifest } from "../src/media/model-manager.js";
 import { pluginManager } from "../src/core/plugin-manager.js";
 import type { CommandContext, CliCommand } from "../src/commands/types.js";
 import type { ModelRouter } from "../src/core/model-router.js";
@@ -181,6 +182,68 @@ describe("会话命令", () => {
     expect(parsed.sessionId).toBe(sessionId);
     expect(parsed.items.length).toBeGreaterThan(0);
     expect(parsed.stats.turnCount).toBe(0);
+  });
+
+  it("/dir 无参数展示生效目录（自定义 ?? 默认）", async () => {
+    const { ctx, writeLines, store } = makeCtx();
+    const sessionId = store.createSession("default").id;
+    const dirCtx = { ...ctx, currentSessionId: () => sessionId };
+    await find("dir").handler(dirCtx, "", "/dir");
+    expect(writeLines.join("\n")).toContain("默认");
+    // 设置后再无参查看：显示自定义
+    const proj = resolve(dirCtx.workingDir, "proj");
+    mkdirSync(proj, { recursive: true });
+    await find("dir").handler(dirCtx, proj, `/dir ${proj}`);
+    expect(store.getWorkingDir(sessionId)).toBe(proj);
+    await find("dir").handler(dirCtx, "", "/dir");
+    expect(writeLines.join("\n")).toContain("自定义");
+    // empty 恢复默认
+    await find("dir").handler(dirCtx, "empty", "/dir empty");
+    expect(store.getWorkingDir(sessionId)).toBeNull();
+  });
+
+  it("/dir 校验：相对路径/不存在拒绝；无会话提示", async () => {
+    const { ctx, writeLines, store } = makeCtx();
+    const sessionId = store.createSession("default").id;
+    const dirCtx = { ...ctx, currentSessionId: () => sessionId };
+    await find("dir").handler(dirCtx, "relative/path", "/dir relative/path");
+    expect(writeLines.join("\n")).toContain("绝对路径");
+    await find("dir").handler(dirCtx, resolve(ctx.workingDir, "no-such-dir"), "/dir no-such");
+    expect(writeLines.join("\n")).toContain("不存在");
+    expect(store.getWorkingDir(sessionId)).toBeNull();
+    // 无会话
+    const noSessCtx = { ...ctx, currentSessionId: () => undefined };
+    const writes2: string[] = [];
+    await find("dir").handler({ ...noSessCtx, writeLine: (l) => writes2.push(l) }, resolve(ctx.workingDir), "/dir set");
+    expect(writes2.join("\n")).toContain("无会话");
+  });
+});
+
+describe("语音模型命令（Sprint 43）", () => {
+  it("/media status 空模型 → 未就绪并列出缺失", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("media").handler(ctx, "status", "/media status");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("未就绪");
+    expect(joined).toContain("model.onnx");
+  });
+
+  it("/media download asr 已就绪 → 无需下载（不触网）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    const base = modelDir(ctx.dataDir, "asr");
+    for (const f of modelManifest("asr").files) {
+      const p = resolve(base, f.local);
+      mkdirSync(resolve(p, ".."), { recursive: true });
+      writeFileSync(p, f.minSize > 0 ? "x".repeat(4) : "", "utf-8");
+    }
+    await find("media").handler(ctx, "download asr", "/media download asr");
+    expect(writeLines.join("\n")).toContain("无需下载");
+  });
+
+  it("/media download 非法 kind → 用法提示", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("media").handler(ctx, "download xxx", "/media download xxx");
+    expect(writeLines.join("\n")).toContain("asr|tts");
   });
 });
 

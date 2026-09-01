@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { RefreshCw } from "lucide-svelte";
   import { API } from "$lib/stores/chat.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
@@ -8,7 +9,7 @@
   import AgentsPanel from "./AgentsPanel.svelte";
   import EvolutionPanel from "./EvolutionPanel.svelte";
 
-  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents" | "evolution";
+  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents" | "evolution" | "audit" | "devices";
   let tab = $state<SystemTab>("context");
   let breakdown: {
     systemPromptBase?: number;
@@ -37,6 +38,84 @@
   /** 技能检索（Sprint 37）：名称/描述/专家/触发词过滤 */
   let skillQuery = $state("");
   let loading = $state(false);
+
+  // ── 审计 Tab（Sprint 42 A1：全量操作审计可查） ──
+  interface AuditEntry {
+    timestamp: number;
+    agentId: string;
+    sessionId: string;
+    action: string;
+    target?: string;
+    result: "success" | "blocked" | "error";
+    detail?: string;
+  }
+  let auditEntries = $state<AuditEntry[]>([]);
+  let auditFilter = $state("");
+  const AUDIT_CHIPS = [
+    { id: "", label: "全部" },
+    { id: "app:", label: "应用" },
+    { id: "evolution:", label: "进化" },
+    { id: "session:", label: "会话" },
+    { id: "tool:", label: "工具" },
+  ];
+  const filteredAudit = $derived(auditFilter ? auditEntries.filter((e) => e.action.startsWith(auditFilter)) : auditEntries);
+
+  async function loadAudit() {
+    try {
+      const r = await fetch(`${API}/audit?limit=200`);
+      if (r.ok) auditEntries = ((await r.json()) as { entries: AuditEntry[] }).entries ?? [];
+    } catch {
+      auditEntries = [];
+    }
+  }
+
+  function fmtAuditAt(ts?: number): string {
+    if (!ts) return "-";
+    const d = new Date(ts);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  // ── 设备 Tab（Sprint 42 A2：媒体通道 + 模型能力，只读；Sprint 43：一键下载语音模型） ──
+  interface DeviceStatus {
+    asr: { enabled: boolean; engine: string; detail: string };
+    tts: { engine: string; localModelReady: boolean; detail: string };
+    mediaServer: { active: boolean; path?: string; clients?: number };
+    model: { current: string; vision: boolean; detail: string };
+  }
+  let deviceStatus = $state<DeviceStatus | null>(null);
+  let mediaBusy = $state<"" | "asr" | "tts">("");
+  let msg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  async function loadDevices() {
+    try {
+      const r = await fetch(`${API}/devices`);
+      if (r.ok) deviceStatus = (await r.json()) as DeviceStatus;
+    } catch {
+      deviceStatus = null;
+    }
+  }
+
+  /** 一键下载语音模型（hf-mirror；约 232MB(ASR)/118MB(TTS)，本地 fetch 等待完成） */
+  async function downloadMedia(kind: "asr" | "tts") {
+    if (mediaBusy) return;
+    mediaBusy = kind;
+    try {
+      const r = await fetch(`${API}/media/download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      });
+      const d = (await r.json()) as { ok?: boolean; downloaded?: string[]; skipped?: string[]; error?: string };
+      if (!r.ok || !d.ok) msg = { kind: "err", text: d.error ?? `下载失败（HTTP ${r.status}）` };
+      else msg = { kind: "ok", text: `模型下载完成（新增 ${d.downloaded?.length ?? 0} · 跳过 ${d.skipped?.length ?? 0}）` };
+      await loadDevices();
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    } finally {
+      mediaBusy = "";
+    }
+  }
 
   interface McpServer {
     name: string;
@@ -440,7 +519,7 @@
     }
   }
 
-  function switchTab(t: "context" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace") {
+  function switchTab(t: "context" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace" | "audit" | "devices") {
     tab = t;
     detail = null;
     if (t === "context") loadContext();
@@ -449,6 +528,8 @@
     else if (t === "plugins") loadPlugins();
     else if (t === "schedule") loadSchedule();
     else if (t === "config") loadConfig();
+    else if (t === "audit") loadAudit();
+    else if (t === "devices") loadDevices();
   }
   // WS job/done 事件 → 调度 Tab 数据实时刷新
   let unsubWs: (() => void) | null = null;
@@ -470,9 +551,11 @@
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
     <button class="sp-nav" class:active={tab === "apps"} onclick={() => switchTab("apps")}>应用</button>
     <button class="sp-nav" class:active={tab === "processes"} onclick={() => switchTab("processes")}>进程</button>
+    <button class="sp-nav" class:active={tab === "devices"} onclick={() => switchTab("devices")}>设备</button>
     <button class="sp-nav" class:active={tab === "evolution"} onclick={() => switchTab("evolution")}>进化</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
     <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
+    <button class="sp-nav" class:active={tab === "audit"} onclick={() => switchTab("audit")}>审计</button>
     <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
   </div>
 
@@ -495,6 +578,87 @@
       <AgentsPanel />
     {:else if tab === "evolution"}
       <EvolutionPanel />
+    {:else if tab === "devices"}
+      <div class="sp-section">
+        <div class="sp-io-bar"><button class="sp-io-btn" onclick={loadDevices}>刷新</button></div>
+        {#if msg}
+          <div class="sp-msg sp-msg-{msg.kind}">{msg.text}</div>
+        {/if}
+        {#if !deviceStatus}
+          <div class="sp-empty">设备状态不可用</div>
+        {:else}
+          <div class="sp-dev-grid">
+            <div class="sp-dev-card">
+              <div class="sp-dev-head"><span class="sp-dev-dot {deviceStatus.asr.enabled ? "ok" : "off"}"></span>语音输入（ASR）</div>
+              <div class="sp-dev-detail">{deviceStatus.asr.detail}</div>
+              {#if !deviceStatus.asr.enabled}
+                <button class="sp-dev-btn" onclick={() => downloadMedia("asr")} disabled={mediaBusy !== ""}>
+                  {mediaBusy === "asr" ? "下载中…（约 232MB）" : "下载 ASR 模型"}
+                </button>
+              {/if}
+            </div>
+            <div class="sp-dev-card">
+              <div class="sp-dev-head">
+                <span class="sp-dev-dot ok"></span>语音输出（TTS）
+                <span class="sp-dev-engine">{deviceStatus.tts.engine}</span>
+                {#if deviceStatus.tts.localModelReady}<span class="sp-dev-badge">离线就绪</span>{/if}
+              </div>
+              <div class="sp-dev-detail">{deviceStatus.tts.detail}</div>
+              {#if !deviceStatus.tts.localModelReady}
+                <button class="sp-dev-btn" onclick={() => downloadMedia("tts")} disabled={mediaBusy !== ""}>
+                  {mediaBusy === "tts" ? "下载中…（约 118MB）" : "下载 TTS 模型"}
+                </button>
+              {/if}
+            </div>
+            <div class="sp-dev-card">
+              <div class="sp-dev-head">
+                <span class="sp-dev-dot {deviceStatus.mediaServer.active ? "ok" : "off"}"></span>媒体服务器（WS 音频通道）
+                {#if deviceStatus.mediaServer.clients}<span class="sp-dev-badge">{deviceStatus.mediaServer.clients} 连接</span>{/if}
+              </div>
+              <div class="sp-dev-detail">
+                {deviceStatus.mediaServer.active ? `${deviceStatus.mediaServer.path ?? ""}（运行中）` : "未启用（浏览器端用 speechSynthesis，本通道供后端/非浏览器客户端）"}
+              </div>
+            </div>
+            <div class="sp-dev-card">
+              <div class="sp-dev-head"><span class="sp-dev-dot {deviceStatus.model.vision ? "ok" : "off"}"></span>模型能力</div>
+              <div class="sp-dev-detail">
+                <b>{deviceStatus.model.current}</b> · {deviceStatus.model.vision ? "🖼 支持图片输入" : "不支持视觉"}
+                <div class="sp-dev-note">{deviceStatus.model.detail}</div>
+              </div>
+            </div>
+          </div>
+        {/if}
+      </div>
+    {:else if tab === "audit"}
+      <div class="sp-section sp-audit-section">
+        <div class="sp-io-bar sp-audit-bar">
+          <div class="sp-audit-chips">
+            {#each AUDIT_CHIPS as chip (chip.id)}
+              <button class="sp-io-btn" class:sp-chip-active={auditFilter === chip.id} onclick={() => (auditFilter = chip.id)}>{chip.label}</button>
+            {/each}
+          </div>
+          <div class="sp-audit-right">
+            <span class="sp-audit-count">{filteredAudit.length} 条</span>
+            <button class="sp-io-btn sp-io-icon" title="刷新审计记录" onclick={loadAudit}><RefreshCw size={13} /></button>
+          </div>
+        </div>
+        {#if filteredAudit.length === 0}
+          <div class="sp-empty">暂无审计记录（操作后自动写入）</div>
+        {:else}
+          <div class="sp-audit-list">
+            {#each filteredAudit as e}
+              <div class="sp-audit-row">
+                <span class="sp-audit-at">{fmtAuditAt(e.timestamp)}</span>
+                <span class="sp-audit-result sp-result-{e.result}">{e.result === "success" ? "✓" : e.result === "blocked" ? "⛔" : "✗"}</span>
+                <span class="sp-audit-action" title={e.action}>{e.action}</span>
+                <span class="sp-audit-target" title={e.target}>{e.target ?? ""}</span>
+                <span class="sp-audit-detail" title={e.detail}>{e.detail ?? ""}</span>
+                <span class="sp-audit-session">{e.sessionId ? e.sessionId.slice(0, 8) : ""}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {:else if tab === "trace"}
       <TracePanel />
     {:else if tab === "mcp"}
@@ -922,8 +1086,54 @@
   .sp-sched-btn:hover { filter: brightness(1.1); }
   .sp-del { padding: 2px 8px; font-size: 11px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
   .sp-del:hover { color: var(--error); border-color: var(--error); }
-  .sp-io-bar { margin-bottom: 8px; display: flex; justify-content: flex-end; }
+  .sp-io-bar { margin-bottom: 8px; display: flex; justify-content: flex-end; gap: 6px; align-items: center; }
   .sp-io-btn { padding: 5px 12px; font-size: 11px; background: var(--primary-light); color: var(--primary); border: none; border-radius: var(--radius-sm); cursor: pointer; font-weight: 600; }
+  .sp-chip-active { background: var(--primary); color: var(--panel); }
+  /* 审计 Tab：chips 左、计数+刷新图标右；列表铺满弹窗剩余高度 */
+  .sp-audit-bar { justify-content: space-between; }
+  .sp-audit-chips,
+  .sp-audit-right { display: flex; gap: 6px; align-items: center; }
+  .sp-io-icon { padding: 4px 6px; background: transparent; color: var(--dim); border: 1px solid transparent; font-weight: 400; }
+  .sp-io-icon:hover { color: var(--primary); background: var(--hover-bg); }
+  .sp-audit-section { height: 100%; min-height: 0; }
+  .sp-audit-count { font-size: 11px; color: var(--dim); }
+  .sp-audit-list { display: flex; flex-direction: column; gap: 2px; flex: 1; min-height: 0; overflow: auto; }
+  .sp-audit-row { display: flex; align-items: center; gap: 8px; font-size: 11px; padding: 3px 6px; border-radius: 4px; }
+  .sp-audit-row:hover { background: var(--hover-bg); }
+  .sp-audit-at { color: var(--dim); width: 58px; flex-shrink: 0; }
+  .sp-audit-result { width: 14px; flex-shrink: 0; font-weight: 700; }
+  .sp-result-success { color: var(--success); }
+  .sp-result-blocked { color: var(--warn); }
+  .sp-result-error { color: var(--error); }
+  .sp-audit-action { color: var(--primary); width: 130px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-audit-target { color: var(--text); width: 110px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-audit-detail { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-audit-session { color: var(--dim); width: 60px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-dev-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+  .sp-dev-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); display: flex; flex-direction: column; gap: 4px; }
+  .sp-dev-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text); flex-wrap: wrap; }
+  .sp-dev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sp-dev-dot.ok { background: var(--success); }
+  .sp-dev-dot.off { background: var(--dim); }
+  .sp-dev-engine { font-size: 10px; color: var(--primary); border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent); border-radius: 4px; padding: 0 5px; }
+  .sp-dev-badge { font-size: 10px; color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 40%, transparent); border-radius: 4px; padding: 0 5px; }
+  .sp-dev-detail { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .sp-dev-note { margin-top: 2px; }
+  .sp-dev-btn {
+    margin-top: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    border: 1px solid color-mix(in srgb, var(--primary) 50%, transparent);
+    background: transparent;
+    color: var(--primary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .sp-dev-btn:hover:not(:disabled) { background: var(--primary-light); }
+  .sp-dev-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .sp-msg { font-size: 12px; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; }
+  .sp-msg-ok { color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
+  .sp-msg-err { color: var(--error); background: color-mix(in srgb, var(--error) 10%, transparent); }
   .sp-io-btn:hover { filter: brightness(1.05); }
   .sp-io-mini { padding: 1px 8px; font-size: 10px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
   .sp-io-mini:hover { color: var(--primary); border-color: var(--primary); }

@@ -8,7 +8,7 @@
   import { ListTree } from "lucide-svelte";
   import { API } from "$lib/stores/chat.svelte";
 
-  let { path }: { path: string } = $props();
+  let { path, sessionId }: { path: string; sessionId?: string | null } = $props();
 
   let content = $state("");
   let html = $state("");
@@ -40,7 +40,8 @@
     outlineOpen = false; // 每篇文档默认收起大纲
     const { root, rel } = parseDocKey(p);
     try {
-      const r = await fetch(`${API}/docs/content?root=${root}&path=${encodeURIComponent(rel)}`);
+      const sidParam = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
+      const r = await fetch(`${API}/docs/content?root=${root}&path=${encodeURIComponent(rel)}${sidParam}`);
       if (!r.ok) return;
       const d = (await r.json()) as { content?: string };
       if (seq !== loadSeq) return; // 过期响应丢弃

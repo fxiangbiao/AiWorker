@@ -31,13 +31,13 @@
 
   let agents: { id: string; name: string }[] = $state([]);
   let leftHidden = $state(false);
-  let rightWidth = $state<number | null>(null); // null = 默认 50%（对话区:右侧栏 ≈ 1:1）
+  let rightWidth = $state<number | null>(null); // null = 默认 3/7（对话区:右侧栏 ≈ 4:3）
   let systemOpen = $state(false);
 
   function startDrag(e: PointerEvent) {
     e.preventDefault();
     const startX = e.clientX;
-    const startW = rightWidth ?? window.innerWidth * 0.5;
+    const startW = rightWidth ?? window.innerWidth * (3 / 7);
     const onMove = (ev: PointerEvent) => {
       const delta = startX - ev.clientX;
       const w = Math.min(Math.max(startW + delta, 280), window.innerWidth * 0.7);
@@ -142,7 +142,7 @@
   <ChatPanel {agents} />
   {#if $rightPanelVisible}
     <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={startDrag}></div>
-    <div class="right-panel" id="right-panel" style:width={rightWidth ? `${rightWidth}px` : "50%"}>
+    <div class="right-panel" id="right-panel" style:width={rightWidth ? `${rightWidth}px` : "42.857%"}>
       <div class="rp-tabs">
         <button class="rp-tab" class:active={$rightTab === "files"} onclick={() => rightTab.set("files")}>
           <span class="rp-ico"><FileText size={13} /></span>文件变更

@@ -19,7 +19,7 @@ const MANIFEST_FILE = "manifest.json";
 /** .aw 包 manifest 结构 */
 export interface AwManifest {
   formatVersion: number;
-  type: "plugin" | "skill" | "mcp";
+  type: "plugin" | "skill" | "mcp" | "app";
   name: string;
   version: string;
   description?: string;
@@ -35,7 +35,7 @@ export interface AwManifest {
 /** 安装结果 */
 export interface InstallResult {
   success: boolean;
-  type: "plugin" | "skill" | "mcp" | "unknown";
+  type: "plugin" | "skill" | "mcp" | "app" | "unknown";
   name: string;
   version: string;
   targetDir: string;
@@ -49,6 +49,8 @@ export interface PackageInstallerOptions {
   skillsDir: string;
   /** MCP 配置文件路径（默认 config/mcp.json） */
   mcpConfigPath?: string;
+  /** 应用安装根目录（app 类型 .aw 用；默认 data/apps） */
+  appsDir?: string;
   /** 当前应用版本（用于 minAppVersion 校验；可选） */
   appVersion?: string;
 }
@@ -106,6 +108,9 @@ function statIsDir(p: string): boolean {
 }
 
 export class PackageInstaller {
+  /** app 类型 .aw 安装目标（index.ts 注入 appManager；缺省不可装 app 包） */
+  appManager?: { installFromDir(dir: string, opts?: { force?: boolean }): { ok: boolean; error?: string } };
+
   constructor(private opts: PackageInstallerOptions) {}
 
   /** 从 .aw 文件解析 manifest（不落盘） */
@@ -121,7 +126,7 @@ export class PackageInstaller {
     if (manifest.formatVersion !== AW_FORMAT_VERSION) {
       throw new Error(`不支持的包格式版本: ${manifest.formatVersion}`);
     }
-    if (manifest.type !== "plugin" && manifest.type !== "skill" && manifest.type !== "mcp") {
+    if (manifest.type !== "plugin" && manifest.type !== "skill" && manifest.type !== "mcp" && manifest.type !== "app") {
       throw new Error(`未知包类型: ${manifest.type}`);
     }
     if (!manifest.name || !isValidName(manifest.name)) {
@@ -298,6 +303,11 @@ export class PackageInstaller {
         return this.installMcp(manifest, pkgPath, opts);
       }
 
+      // app 包：解压临时目录 → appManager.installFromDir（复用应用安装管线）
+      if (manifest.type === "app") {
+        return this.installApp(manifest, pkgPath, opts);
+      }
+
       const baseDir = manifest.type === "plugin" ? this.opts.pluginsDir : this.opts.skillsDir;
       const targetDir = resolve(baseDir, manifest.name);
       const fail = (error: string): InstallResult => ({
@@ -347,6 +357,52 @@ export class PackageInstaller {
     }
   }
 
+  /** app 类型 .aw 安装：解压 → appManager.installFromDir（失败清理临时目录） */
+  private installApp(manifest: AwManifest, pkgPath: string, opts?: { force?: boolean }): InstallResult {
+    const fail = (error: string): InstallResult => ({
+      success: false,
+      type: "app",
+      name: manifest.name,
+      version: manifest.version,
+      targetDir: "",
+      error,
+    });
+    if (!this.appManager) return fail("app 包安装需要 appManager 注入（服务器环境）");
+    const appsDir = this.opts.appsDir ?? resolve(process.cwd(), "data", "apps");
+    const tmpDir = resolve(appsDir, `.install-${manifest.name}-${Date.now().toString(36)}`);
+    mkdirSync(tmpDir, { recursive: true });
+    try {
+      this.extract(readZipFile(pkgPath), tmpDir);
+      const appJsonPath = resolve(tmpDir, "app.json");
+      if (!existsSync(appJsonPath)) return fail("app 包缺少 app.json（应用清单）");
+      // targetDir 以 app.json 的 id 为准（手打 .aw 的 manifest.name 可能与 id 不一致）
+      let appId = manifest.name;
+      try {
+        const appMeta = JSON.parse(readFileSync(appJsonPath, "utf-8").replace(/^\uFEFF/, "")) as { id?: string };
+        if (appMeta.id) appId = appMeta.id;
+      } catch {
+        /* 保留 manifest.name */
+      }
+      const result = this.appManager.installFromDir(tmpDir, { force: opts?.force });
+      if (!result.ok) return fail(result.error ?? "应用安装失败");
+      return {
+        success: true,
+        type: "app",
+        name: manifest.name,
+        version: manifest.version,
+        targetDir: resolve(appsDir, appId),
+      };
+    } catch (err) {
+      return fail((err as Error).message);
+    } finally {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        /* 清理失败不影响 */
+      }
+    }
+  }
+
   /** MCP 包安装：解压 mcp.json 条目 → 合并到 config/mcp.json（冲突需 force） */
   private installMcp(manifest: AwManifest, pkgPath: string, opts?: { force?: boolean }): InstallResult {
     const fail = (error: string): InstallResult => ({
@@ -389,7 +445,7 @@ export class PackageInstaller {
   // ── 导出（打包 .aw） ──
 
   /** 从资产导出 .aw 包二进制（不落盘）；找不到返回 null */
-  exportPackage(type: "plugin" | "skill" | "mcp", name: string): { data: Buffer; manifest: AwManifest } | null {
+  exportPackage(type: "plugin" | "skill" | "mcp" | "app", name: string): { data: Buffer; manifest: AwManifest } | null {
     const manifest: AwManifest = {
       formatVersion: AW_FORMAT_VERSION,
       type,
@@ -417,6 +473,25 @@ export class PackageInstaller {
         const dir = resolve(this.opts.pluginsDir, name);
         if (!existsSync(dir) || !statIsDir(dir)) return null;
         manifest.entry = "plugin.ts";
+        files.push({ name: "manifest.json", data: Buffer.from(JSON.stringify(manifest), "utf-8") });
+        for (const f of collectDir(dir)) {
+          files.push({ name: f.rel, data: readFileSync(f.full) });
+        }
+      } else if (type === "app") {
+        // 应用包：打包 data/apps/<id>/ 全部文件 + 路由 manifest
+        const appsDir = this.opts.appsDir ?? resolve(process.cwd(), "data", "apps");
+        const dir = resolve(appsDir, name);
+        if (!existsSync(dir) || !statIsDir(dir)) return null;
+        const appJsonPath = resolve(dir, "app.json");
+        if (!existsSync(appJsonPath)) return null;
+        const appMeta = JSON.parse(readFileSync(appJsonPath, "utf-8").replace(/^\uFEFF/, "")) as {
+          name?: string;
+          version?: string;
+          description?: string;
+        };
+        // 路由 manifest 的 name 用 id（kebab，过 isValidName）；应用显示名保留在 app.json
+        manifest.version = appMeta.version ?? "1.0.0";
+        manifest.description = appMeta.description;
         files.push({ name: "manifest.json", data: Buffer.from(JSON.stringify(manifest), "utf-8") });
         for (const f of collectDir(dir)) {
           files.push({ name: f.rel, data: readFileSync(f.full) });

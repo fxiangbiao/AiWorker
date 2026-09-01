@@ -73,7 +73,8 @@ export class SessionStore {
         agent_id TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        summary TEXT
+        summary TEXT,
+        working_dir TEXT
       );
 
       -- 消息表 (工作记忆持久化)
@@ -150,6 +151,12 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(type);
     `);
+    // 迁移：旧库补 working_dir 列（Sprint 42 每会话项目目录；旧行 null = 回退全局）
+    // 注：必须在上方 exec 之后单独执行——模板插值在 exec 前求值，同字符串内查表会误判
+    const sessionCols = this.db.prepare(`PRAGMA table_info(sessions)`).all() as { name: string }[];
+    if (!sessionCols.some((c) => c.name === "working_dir")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN working_dir TEXT`);
+    }
   }
 
   /** 创建新会话 */
@@ -353,7 +360,7 @@ export class SessionStore {
     return { ok: mismatches.length === 0, eventCount: events.length, messageCount: stored.length, mismatches };
   }
 
-  /** 列出最近会话（含消息数 + 用户轮数 + 首条用户消息摘要） */
+  /** 列出最近会话（含消息数 + 用户轮数 + 首条用户消息摘要 + 项目目录） */
   listSessions(limit = 20): Array<{
     id: string;
     agentId: string;
@@ -363,10 +370,11 @@ export class SessionStore {
     messageCount: number;
     turnCount: number;
     firstUserMsg: string | null;
+    workingDir: string | null;
   }> {
     const rows = this.db
       .prepare(
-        `SELECT s.id, s.agent_id, s.created_at, s.updated_at, s.summary,
+        `SELECT s.id, s.agent_id, s.created_at, s.updated_at, s.summary, s.working_dir,
                 (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
                 (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id AND m3.role = 'user') AS turn_count,
                 (SELECT content FROM messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.seq ASC LIMIT 1) AS first_user
@@ -380,6 +388,7 @@ export class SessionStore {
       created_at: number;
       updated_at: number;
       summary: string | null;
+      working_dir: string | null;
       msg_count: number;
       turn_count: number;
       first_user: string | null;
@@ -394,7 +403,21 @@ export class SessionStore {
       messageCount: r.msg_count,
       turnCount: r.turn_count,
       firstUserMsg: r.first_user ? r.first_user.replace(/\s+/g, " ").slice(0, 60) : null,
+      workingDir: r.working_dir,
     }));
+  }
+
+  /** 会话项目目录（未设置返回 null → 调用方回退全局默认） */
+  getWorkingDir(sessionId: string): string | null {
+    const row = this.db.prepare(`SELECT working_dir FROM sessions WHERE id = ?`).get(sessionId) as
+      | { working_dir: string | null }
+      | undefined;
+    return row?.working_dir ?? null;
+  }
+
+  /** 设置会话项目目录（null 清除恢复默认）；返回是否生效 */
+  setWorkingDir(sessionId: string, dir: string | null): boolean {
+    return this.db.prepare(`UPDATE sessions SET working_dir = ? WHERE id = ?`).run(dir, sessionId).changes > 0;
   }
 
   /** 保存会话摘要 */

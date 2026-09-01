@@ -8,14 +8,14 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { packageInstaller, AW_EXTENSION } from "../core/package-installer.js";
 import type { CliCommand } from "./types.js";
 
-const TYPES = ["skill", "mcp", "plugin"] as const;
+const TYPES = ["skill", "mcp", "plugin", "app"] as const;
 
 export const packageCommands: CliCommand[] = [
   {
     name: "pkg",
-    usage: "pkg export <skill|mcp|plugin> <名称> [路径] [--raw] | pkg list",
-    description: "打包导出技能/MCP/插件（.aw 或裸格式）",
-    detail: "默认 .aw；--raw 输出裸格式（skill→.md、mcp→.json、plugin→复制目录）；安装用 /install",
+    usage: "pkg export <skill|mcp|plugin|app> <名称> [路径] [--raw] | pkg list",
+    description: "打包导出技能/MCP/插件/应用（.aw 或裸格式）",
+    detail: "默认 .aw；--raw 输出裸格式（skill→.md、mcp→.json、plugin→复制目录）；安装用 /install；app 从 data/apps/<id> 打包（含 app.json 全目录）",
     handler: async (ctx, _arg, line) => {
       const parts = line.split(/\s+/).slice(1);
       const sub = parts[0] ?? "";
@@ -44,12 +44,16 @@ export const packageCommands: CliCommand[] = [
         const type = posArgs[0] as (typeof TYPES)[number];
         const name = posArgs[1];
         if (!TYPES.includes(type) || !name) {
-          ctx.writeLine(chalk.gray("用法: /pkg export <skill|mcp|plugin> <名称> [路径] [--raw]"));
+          ctx.writeLine(chalk.gray("用法: /pkg export <skill|mcp|plugin|app> <名称> [路径] [--raw]"));
           return "continue";
         }
 
         if (raw) {
           // 裸格式导出
+          if (type === "app") {
+            ctx.writeLine(chalk.red("✗ app 仅支持 .aw 打包（多文件目录），不支持裸导出"));
+            return "continue";
+          }
           if (type === "plugin") {
             const dest = posArgs[2] ? resolve(posArgs[2]) : null;
             if (!dest) {
@@ -90,7 +94,7 @@ export const packageCommands: CliCommand[] = [
         return "continue";
       }
 
-      ctx.writeLine(chalk.gray("用法: /pkg export <skill|mcp|plugin> <名称> [路径] [--raw] | /pkg list"));
+      ctx.writeLine(chalk.gray("用法: /pkg export <skill|mcp|plugin|app> <名称> [路径] [--raw] | /pkg list"));
       return "continue";
     },
   },

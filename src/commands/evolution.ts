@@ -6,6 +6,7 @@
 import chalk from "chalk";
 import type { CliCommand } from "./types.js";
 import type { EvolutionProposal } from "../types.js";
+import type { EvalReport } from "../core/evolution-eval.js";
 
 const TYPE_LABEL: Record<string, string> = {
   "new-skill": "新技能",
@@ -58,12 +59,43 @@ function renderPreview(a: EvolutionProposal["action"]): string {
   }
 }
 
+/** 渲染 A/B 评测报告（CLI） */
+function renderEvalReport(ctx: { writeLine: (s: string) => void }, r: EvalReport): void {
+  if (r.verdict === "not-evaluable") {
+    ctx.writeLine(chalk.gray(`  ⛔ 不可评测: ${r.reason ?? ""}`));
+    return;
+  }
+  const badge =
+    r.verdict === "pass" ? chalk.green("✅ 通过") :
+    r.verdict === "regress" ? chalk.red("🔻 回归") : chalk.yellow("⚠️ 未知");
+  ctx.writeLine(`  ${badge}  计分用例 ${r.total} · 跳过 ${r.skipped}${r.hasBaseline ? "" : " · 无基线"}`);
+  if (r.hasBaseline) {
+    const base = Math.round(r.baselinePassRate * 100);
+    const cand = Math.round(r.candidatePassRate * 100);
+    const delta = cand - base;
+    ctx.writeLine(`  旧 ${chalk.dim(`${base}%`)} → 新 ${chalk.white(`${cand}%`)}（Δ${delta > 0 ? "+" : ""}${delta}%）`);
+  } else {
+    ctx.writeLine(`  候选成功率 ${chalk.white(`${Math.round(r.candidatePassRate * 100)}%`)}`);
+  }
+  if (r.beforeLatencyMs !== undefined || r.afterLatencyMs !== undefined) {
+    ctx.writeLine(chalk.dim(`  裁判耗时(参考): 旧 ${r.beforeLatencyMs?.toFixed(0) ?? "-"}ms · 新 ${r.afterLatencyMs?.toFixed(0) ?? "-"}ms`));
+  }
+  for (const res of r.results) {
+    const mark = r.hasBaseline
+      ? res.afterOk === res.beforeOk ? "·" : res.afterOk ? chalk.green("↑") : chalk.red("↓")
+      : res.afterOk ? "✓" : "✗";
+    ctx.writeLine(
+      `    ${mark} ${res.caseId}${r.hasBaseline ? ` 旧:${res.beforeOk ? "✓" : "✗"}` : ""} 新:${res.afterOk ? "✓" : "✗"}${res.reason ? chalk.dim(` ${res.reason.slice(0, 60)}`) : ""}`,
+    );
+  }
+}
+
 export const evolutionCommands: CliCommand[] = [
   {
     name: "evo",
-    usage: "evo <observe|propose|list|adopt|apply|rollback|diff|reject> [id]",
-    description: "AI OS 进化引擎（观察/提议/两段式确认/回滚/对比）",
-    detail: "observe 观察指标 / propose 生成提案（每日 ≤3 条）/ list 提案列表 / adopt <id> 确认提案（预览写入内容，不写入）/ apply <id> 确认写入（真正执行）/ rollback <id> 回滚快照还原 / diff <id> 查看变更前后对比 / reject <id> 拒绝",
+    usage: "evo <observe|propose|list|adopt|apply|rollback|diff|reject|eval|verify|case> [id]",
+    description: "AI OS 进化引擎（观察/提议/两段式确认/回滚/对比/评测）",
+    detail: "observe 观察指标 / propose 生成提案（每日 ≤3 条）/ list 提案列表 / adopt <id> 确认提案（预览写入内容，不写入）/ apply <id> 确认写入（真正执行）/ rollback <id> 回滚快照还原 / diff <id> 查看变更前后对比 / reject <id> 拒绝 / eval <id> A/B 量化评测（不动作）/ verify <id> 推广后验证（回归自动回滚）/ case add <任务> [期望] 手工补录用例 / case list 用例列表 / case delete <id> 删用例 / case extract 从成功会话提取用例",
     handler: async (ctx, arg) => {
       const evo = ctx.evolutionEngine;
       if (!evo) {
@@ -216,8 +248,91 @@ export const evolutionCommands: CliCommand[] = [
           }
           break;
         }
+        case "eval": {
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /evo eval <id>"));
+            break;
+          }
+          ctx.writeLine(chalk.cyan("\n🧪 A/B 量化评测（不动作，仅评估）…"));
+          const result = await evo.eval(id);
+          if (!result.ok) {
+            ctx.writeLine(chalk.red(`✗ 评测失败: ${result.error}`));
+            break;
+          }
+          renderEvalReport(ctx, result.report!);
+          break;
+        }
+        case "verify": {
+          if (!id) {
+            ctx.writeLine(chalk.gray("用法: /evo verify <id>"));
+            break;
+          }
+          ctx.writeLine(chalk.cyan("\n🔍 推广后验证（完整 A/B，回归自动回滚）…"));
+          const result = await evo.verify(id);
+          if (!result.ok) {
+            ctx.writeLine(chalk.red(`✗ 验证失败: ${result.error}`));
+            break;
+          }
+          renderEvalReport(ctx, result.report!);
+          if (result.rolledBack) {
+            ctx.writeLine(chalk.yellow(`↩️  评测回归，已自动回滚${result.detail ? ` · ${result.detail}` : ""}`));
+          } else {
+            ctx.writeLine(
+              result.report!.verdict === "pass"
+                ? chalk.green("✓ 未回归，可继续使用")
+                : result.report!.verdict === "unknown"
+                  ? chalk.gray("✓ 无足够数据，未动作（可补充用例后重试）")
+                  : chalk.gray("✓ 不可评测（无文本可比对）"),
+            );
+          }
+          break;
+        }
+        case "case": {
+          const sub2 = parts[1] ?? "";
+          if (sub2 === "add") {
+            const task = parts[2] ?? "";
+            const expected = parts.slice(3).join(" ");
+            if (!task) {
+              ctx.writeLine(chalk.gray("用法: /evo case add <任务> [期望]"));
+              break;
+            }
+            const result = evo.addCase(task, expected || undefined);
+            if (result.ok) {
+              ctx.writeLine(chalk.green(`✓ 已补录用例: ${result.case?.id}`));
+            } else {
+              ctx.writeLine(chalk.red(`✗ 补录失败: ${result.error}`));
+            }
+          } else if (sub2 === "list") {
+            const list = evo.listCases();
+            if (list.length === 0) {
+              ctx.writeLine(chalk.gray("黄金用例库为空（/evo case extract 从成功会话提取，或 case add 手工补录）"));
+            } else {
+              ctx.writeLine("");
+              for (const c of list) {
+                ctx.writeLine(
+                  `  ${chalk.dim(c.source === "session" ? "📜" : "✍️")} ${chalk.white(c.input.slice(0, 50))}${c.input.length > 50 ? "…" : ""} ${chalk.dim(`[${c.id}]${c.expected ? " · 有期望" : ""}`)}`,
+                );
+              }
+              ctx.writeLine("");
+            }
+          } else if (sub2 === "delete") {
+            const cid = parts[2] ?? "";
+            if (!cid) {
+              ctx.writeLine(chalk.gray("用法: /evo case delete <id>"));
+              break;
+            }
+            ctx.writeLine(evo.deleteCase(cid).ok ? chalk.green(`✓ 已删除用例: ${cid}`) : chalk.red(`✗ 用例不存在: ${cid}`));
+          } else if (sub2 === "extract") {
+            ctx.writeLine(chalk.cyan("\n📜 从最近 7 天成功会话提取黄金用例…"));
+            const result = evo.extractCases();
+            ctx.writeLine(chalk.green(`✓ 提取完成: 新增 ${result.added} 条 · 去重跳过 ${result.skipped} 条`));
+          } else {
+            ctx.writeLine(chalk.gray("用法: /evo case add <任务> [期望] | list | delete <id> | extract"));
+          }
+          break;
+        }
         default:
-          ctx.writeLine(chalk.gray("用法: /evo observe|propose|list|adopt <id>|apply <id>|rollback <id>|diff <id>|reject <id>"));
+          ctx.writeLine(chalk.gray("用法: /evo observe|propose|list|adopt <id>|apply <id>|rollback <id>|diff <id>|reject <id>|eval <id>|verify <id>|case <add|list|delete|extract>"));
           break;
       }
       ctx.printStatus();

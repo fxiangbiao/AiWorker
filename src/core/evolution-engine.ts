@@ -21,7 +21,20 @@ import {
   type SnapshotDeps,
 } from "./evolution-snapshot.js";
 import { skillEvolution } from "./skill-evolution.js";
-import { buildChangeView, type ChangeView } from "./evolution-diff.js";
+import { buildChangeView, extractBefore, type ChangeView } from "./evolution-diff.js";
+import {
+  EvolutionCases,
+  extractCasesFromSessions,
+  type CasesStore,
+  type EvolutionCase,
+} from "./evolution-cases.js";
+import {
+  MAX_EVAL_CASES,
+  notEvaluableReport,
+  runEval,
+  type EvalReport,
+  type ScoreCase,
+} from "./evolution-eval.js";
 import { auditLogger } from "./audit-logger.js";
 import { eventBus } from "../server/event-bus.js";
 
@@ -58,15 +71,26 @@ export interface EvolutionEngineDeps {
   snapshot?: SnapshotDeps;
   /** 回滚联动钩子（skill/agent 热重载；缺省 no-op） */
   restoreHooks?: RestoreHooks;
+  /** 评测裁判（tool-fix/prompt-fix A/B；未注入则 eval/verify 返回不可用） */
+  scoreCase?: ScoreCase;
+  /** 黄金用例库（缺省内部创建文件版；测试注入 mock） */
+  cases?: CasesStore;
+  /** tool-fix before 实时定义（pending/confirmed 无快照时取当前工具描述） */
+  getToolDescription?: (toolName: string) => string | undefined;
+  /** prompt-fix before 实时定义（pending/confirmed 无快照时取当前 systemPrompt） */
+  getAgentSystemPrompt?: (agentId: string) => string | undefined;
 }
 
 export class EvolutionEngine {
   private proposer: ProposalStore;
+  private cases: CasesStore;
 
   constructor(private deps: EvolutionEngineDeps) {
     const dir = resolve(deps.dataDir, "evolution");
     mkdirSync(resolve(dir, "proposals"), { recursive: true });
+    mkdirSync(resolve(dir, "cases"), { recursive: true });
     mkdirSync(snapshotDir(deps.dataDir), { recursive: true });
+    this.cases = deps.cases ?? new EvolutionCases(resolve(dir, "cases"));
     this.proposer =
       deps.proposer ??
       new EvolutionProposer({
@@ -285,8 +309,16 @@ export class EvolutionEngine {
     return { ok: true, jobId, detail };
   }
 
-  /** 回滚（快照还原）：applied → rolled_back（终态）；仅 applied 可回滚 */
+  /** 回滚（快照还原）：applied → rolled_back（终态）；仅 applied 可回滚；manual/auto 共用单路径 */
   rollback(id: string): { ok: boolean; error?: string; detail?: string; jobId?: string } {
+    return this.doRollback(id, "manual");
+  }
+
+  private doRollback(
+    id: string,
+    source: "manual" | "auto",
+    report?: EvalReport,
+  ): { ok: boolean; error?: string; detail?: string; jobId?: string } {
     const p = this.proposer.get(id);
     if (!p) return { ok: false, error: `提案不存在: ${id}` };
     if (p.status !== "applied") {
@@ -324,17 +356,25 @@ export class EvolutionEngine {
       type: p.type,
       title: p.title,
       detail: finalDetail,
+      source,
     });
+    const evalNote = report
+      ? ` | 评测回归: 旧 ${Math.round(report.baselinePassRate * 100)}% → 新 ${Math.round(report.candidatePassRate * 100)}%`
+      : "";
     auditLogger.log({
       timestamp: Date.now(),
       agentId: "evolution",
       sessionId: "",
-      action: "evolution:rollback",
+      action: source === "auto" ? "evolution:auto_rolled_back" : "evolution:rollback",
       target: id,
       result: "success",
-      detail: `${p.type}: ${p.title} | ${finalDetail}`,
+      detail: `${p.type}: ${p.title} | ${finalDetail}${evalNote}`,
     });
-    eventBus.broadcast({ type: "evolution/rolled_back", proposalId: id, detail: finalDetail });
+    eventBus.broadcast(
+      source === "auto"
+        ? { type: "evolution/auto_rolled_back", proposalId: id, detail: finalDetail, evalNote: evalNote.trim() }
+        : { type: "evolution/rolled_back", proposalId: id, detail: finalDetail },
+    );
     return { ok: true, detail: finalDetail };
   }
 
@@ -368,6 +408,135 @@ export class EvolutionEngine {
     if (!p) return { ok: false, error: `提案不存在: ${id}` };
     const snap = readSnapshot(this.deps.dataDir, id);
     return { ok: true, view: buildChangeView(p, snap) };
+  }
+
+  /** 黄金用例库透传 */
+  listCases(limit = 100): EvolutionCase[] {
+    return this.cases.list(limit);
+  }
+
+  addCase(input: string, expected?: string): { ok: boolean; error?: string; case?: EvolutionCase } {
+    const text = input.trim();
+    if (!text) return { ok: false, error: "用例任务不能为空" };
+    return {
+      ok: true,
+      case: this.cases.add({
+        input: text.slice(0, 500),
+        expected: expected?.trim() || undefined,
+        source: "manual",
+      }),
+    };
+  }
+
+  deleteCase(id: string): { ok: boolean } {
+    return { ok: this.cases.delete(id) };
+  }
+
+  /** 从会话轨迹提取黄金用例（手动触发，确定性） */
+  extractCases(now = Date.now()): { added: number; skipped: number } {
+    return extractCasesFromSessions(this.deps.observation, this.cases, now);
+  }
+
+  /** A/B 评测（不动作）：pending/confirmed/applied 可调；ledger 记摘要 */
+  async eval(id: string): Promise<{ ok: boolean; error?: string; report?: EvalReport }> {
+    const p = this.proposer.get(id);
+    if (!p) return { ok: false, error: `提案不存在: ${id}` };
+    if (p.status === "rolled_back" || p.status === "rejected") {
+      return { ok: false, error: "提案已终态（回滚/拒绝），请重新提议后再评测" };
+    }
+    const after = this.evalAfter(p);
+    if (after === "not-evaluable") return { ok: true, report: notEvaluableReport(p.action.kind) };
+    const result = await this.runEvalFor(p, after);
+    if (!result.ok) return result;
+    const report = result.report!;
+    this.proposer.appendLedger({
+      at: Date.now(),
+      event: "eval",
+      id,
+      type: p.type,
+      title: p.title,
+      verdict: report.verdict,
+      total: report.total,
+      skipped: report.skipped,
+      baselinePassRate: report.baselinePassRate,
+      candidatePassRate: report.candidatePassRate,
+    });
+    return { ok: true, report };
+  }
+
+  /** 推广后验证（仅 applied）：完整 A/B；regress 且快照存在 → 自动回滚（doRollback 单路径） */
+  async verify(id: string): Promise<{ ok: boolean; error?: string; report?: EvalReport; rolledBack?: boolean; detail?: string }> {
+    const p = this.proposer.get(id);
+    if (!p) return { ok: false, error: `提案不存在: ${id}` };
+    if (p.status !== "applied") return { ok: false, error: `仅已写入（applied）提案可验证（当前 ${p.status}）` };
+    const after = this.evalAfter(p);
+    if (after === "not-evaluable") return { ok: true, report: notEvaluableReport(p.action.kind) };
+    const result = await this.runEvalFor(p, after);
+    if (!result.ok) return result;
+    const report = result.report!;
+    if (report.verdict === "regress") {
+      const rb = this.doRollback(id, "auto", report);
+      if (!rb.ok) return { ok: false, error: rb.error, report };
+      return { ok: true, report, rolledBack: true, detail: rb.detail };
+    }
+    this.proposer.appendLedger({
+      at: Date.now(),
+      event: "verified",
+      id,
+      type: p.type,
+      title: p.title,
+      verdict: report.verdict,
+      total: report.total,
+      skipped: report.skipped,
+      baselinePassRate: report.baselinePassRate,
+      candidatePassRate: report.candidatePassRate,
+    });
+    return { ok: true, report };
+  }
+
+  /** 评测范围：仅 tool-fix/prompt-fix 有可比文本（after 取自提案 action） */
+  private evalAfter(p: EvolutionProposal): string | "not-evaluable" {
+    switch (p.action.kind) {
+      case "tool-fix":
+        return p.action.newDescription;
+      case "prompt-fix":
+        return p.action.newPrompt;
+      default:
+        return "not-evaluable";
+    }
+  }
+
+  /** before 双轨：applied 走快照（extractBefore 现成逻辑），否则实时定义；皆无 → 无基线 */
+  private resolveBefore(p: EvolutionProposal): string | undefined {
+    if (p.status === "applied") {
+      const snap = readSnapshot(this.deps.dataDir, p.id);
+      const before = snap ? extractBefore(snap, p.action) : undefined;
+      if (before !== undefined) return before;
+    }
+    if (p.action.kind === "tool-fix") return this.deps.getToolDescription?.(p.action.toolName);
+    if (p.action.kind === "prompt-fix") return this.deps.getAgentSystemPrompt?.(p.action.agentId);
+    return undefined;
+  }
+
+  private async runEvalFor(
+    p: EvolutionProposal,
+    after: string,
+  ): Promise<{ ok: boolean; error?: string; report?: EvalReport }> {
+    if (!this.deps.scoreCase) {
+      return { ok: false, error: "评测裁判未初始化（scoreCase 缺失）" };
+    }
+    const cases = this.cases.list(1000);
+    if (cases.length === 0) {
+      return { ok: false, error: "黄金用例库为空，无法评测（先提取或手工补录用例）" };
+    }
+    const report = await runEval({
+      before: this.resolveBefore(p),
+      after,
+      cases,
+      scoreCase: this.deps.scoreCase,
+      maxCases: MAX_EVAL_CASES,
+    });
+    return { ok: true, report };
   }
 
   /** 从 ledger 反查提案关联的 jobId（new-tool/new-app 回滚提示用） */

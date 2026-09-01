@@ -1,0 +1,10 @@
+{
+  "id": "todo-service",
+  "type": "service",
+  "name": "待办清单服务",
+  "version": "1.0.0",
+  "description": "常驻后台服务：用能力桥 storage 持久化待办清单，支持增/查（示例演示 service 生命周期）",
+  "entry": "index.js",
+  "permissions": [],
+  "autostart": false
+}

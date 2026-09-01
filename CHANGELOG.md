@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.1.0 (2026-08-30)
+
+### 语音输入（离线 ASR）+ TTS 补齐（Sprint 43）
+
+- **离线中文语音输入**：Web 输入区 🎤 **按住说话 → 松开识别 → 文本回填输入框**（可编辑后发送）；采集（getUserMedia + ScriptProcessor）→ 前端降采样 16k → 独立 WS 连 `/api/v1/audio` 上行 base64 PCM → 识别结果回填；录音中红点脉冲/识别中状态/错误分级提示（权限拒绝/模型缺失/识别失败）
+- **ASR 服务**（`src/media/asr.ts`）：`AsrProvider` 接口 + `SherpaAsrProvider`（sherpa-onnx **paraformer-zh 非流式**，spike 实测逐字精准；懒加载 232MB 模型 + 进程内缓存）；16kHz 输入守卫（非 16k 明确报错）；`resolveAsrProvider`/`getAsrProvider` 就绪解析
+- **模型管理**（`src/media/model-manager.ts`）：`data/media/models/{asr,tts}/` 就绪探测（缺失文件清单）；**hf-mirror 一键下载**（镜像实测可达，huggingface.co 直连超时；幂等跳过已就绪文件；`minSize` 处理仓库 0 字节的 `user.dict.utf8`）；CLI `/media status|download` + HTTP `POST /api/v1/media/download`（Web 设备 Tab 一键下载按钮）
+- **WS 双向通道**（media-server 扩展）：`{type:"asr", audio: base64(16k PCM), sampleRate}` → `asr:result/asr:error`；一次性整段（按住说话 ≤60s）；模型未装/非 16k/坏 base64 分别明确报错；TTS 协议不变
+- **TTS 补齐**：`SherpaTtsProvider` 真实现（**vits-zh-ll**，lexicon/dict/fst 内层配置，`generate()` → 16k 16-bit WAV），替换 P1 抛错桩；`resolveTtsProvider` 按模型就绪解析（sherpa 优先，edge-tts 降级保留）
+- **设备 Tab 真实化**：asr/tts 状态按模型就绪动态展示 + 一键下载按钮（约 232MB ASR / 118MB TTS）
+- **依赖**：`sherpa-onnx-node@1.10.46` 锁定（1.13.x 流式路径本环境原生崩溃；1.10.46 非流式全链路验证）+ `src/media/sherpa-onnx-node.d.ts` 类型声明
+- 冒烟：`RUN_MEDIA_SMOKE=1` 且模型就绪时本地跑真实识别（不进 CI）
+- 测试 +19（model-manager 就绪/幂等/404、asr 守卫/缓存、WS asr 协议 4 例、CLI media 3、端点 1）；全量 757 全绿
+
+## 1.0.0 (2026-08-30)
+
+### AI OS 1.0 整合 + 每会话项目目录（Sprint 42）
+
+- **每会话项目目录**：`sessions` 表加 `working_dir` 列（旧库自动 ALTER 迁移）+ `getWorkingDir`/`setWorkingDir`；`/chat` 透传 `task.workingDir`（base-agent 既有优先逻辑，fs 工具/沙箱根/审批基线全链路跟随）；`GET/POST /sessions/:id/working-dir`（绝对路径+存在+目录+非 dataDir 校验，null 恢复默认，审计 `session:working-dir` + 广播）；CLI `/dir`（查看/设置/empty 恢复）；`/docs`+`/docs/content` 支持 `?sessionId=` 项目根跟随；**Web**：会话控制条 📁 徽标（**默认时显示实际默认目录名如 ai_default_project**，自定义显示目录名+「自定义」标记，tooltip 含完整生效路径与来源）+ 编辑器弹层（校验内联红字 + **「浏览…」目录选择弹窗**——浏览器无法取得本机绝对路径，故用服务端 `GET /api/v1/dirs` 只读浏览：面包屑导航/上级/子目录列表/路径跳转，选择后回填保存）、Sidebar 📁 标记、**StatusBar 移除全局 💻 工作目录**（目录已会话化，回归纯系统状态）；WS `session/update` 跨端联动
+- **审计 Tab**：`AuditLog.queryRecent(limit, actionPrefix?)`（最新在前 + 前缀过滤 + limit 收敛）+ `GET /api/v1/audit`；Web SystemPanel「审计」Tab（时间/动作/目标/结果/详情/会话表格 + 应用/进化/会话/工具前缀 chips + success/blocked/error 着色）
+- **设备 Tab**：`src/media/status.ts` 只读汇总三通道（ASR 未启用 / TTS engine+本地模型就绪 / 媒体服务器 WS 通道状态含连接数）+ 当前模型多模态（vision）能力；`GET /api/v1/devices`；Web「设备」Tab（通道状态卡 + 模型能力）
+- **进程资源仪表**：`/processes` 附带全局 token 占用（总/入/出）；ProcessesPanel 资源条 + 每进程运行时长；顶栏 tokens/cost 即预算占用条
+- **示例应用包 + .aw app 类型**：`.aw` 扩展支持 **app** 类型（打包 `data/apps/<id>/` 全目录；安装解压 → `appManager.installFromDir` 复用应用管线，临时目录自动清理，缺 app.json/appManager 明确报错）；`/pkg export app <id>`（app 仅 .aw 不支持裸导出）；`examples/` 三个高质量示例：**番茄钟**（webapp 纯前端）、**批量替换工具**（tool，能力桥 fs 实现）、**待办清单服务**（service，storage 持久化）
+- **正式文档**：`docs/ai-os-architecture.md`（分层架构/进程模型/应用安全/进化闭环/会话项目目录/快速开始/目录结构）；README 更新为 1.0 徽章 + 功能矩阵
+- 修复（评审）：新会话（Web 本地草稿）服务端尚无 sessions 行，保存目录报 "Session not found" → POST 时与 `/chat` 同策略 `ensureSession` 自动补建（body 带 agentId，默认 default）；CLI `/dir` 设置校验返回值；目录浏览弹窗挂载缺失修复
+- 测试 +26（working-dir 端点/校验/透传/**新会话自动补建回归**/docs 跟随/迁移、**/dirs 浏览端点**、audit 查询/端点、devices 端点、示例包 6 例：导出结构/appManager 链路/缺 app.json/未注入/3 manifest 校验/webapp 结构语法）；全量 737 全绿
+
+## 0.12.0 (2026-08-30)
+
+### 进化引擎第三期：测试 + 推广（Sprint 41）
+
+- **黄金用例库**（`data/evolution/cases/`）：成功会话轨迹沉淀评测用例——按 turn 提取（`turn/end reason=stop` 的 turn 取末条用户消息为 input、末条助手消息为 expected 截断 200 字符，多轮会话产出多用例，复用 `messageText` 兼容 parts 数组）；`normalizeTaskText` 完全一致去重（记 skipped）；手工补录（CLI `/evo case add <任务> [期望]` 期望为剩余参数 join + Web/API）；`/evo case list|delete|extract` + API 四端点；存储目录注入测试隔离
+- **A/B 量化评测**（`evolution-eval`）：tool-fix/prompt-fix 在用例集上对比「旧文本 vs 新文本」→ 成功率/耗时报告 + 通过/回归裁决；裁判注入（生产=modelRouter 判断文本是否足以引导正确完成，输出非 JSON 抛错按用例跳过；测试 mock）；**before 双轨**（applied 走快照 `extractBefore` 现成逻辑，pending/confirmed 走实时定义 `getToolDescription`/`getAgentSystemPrompt`，按 status 选源——apply 失败残留快照不误用，旧数据无基线仅绝对线）；护栏 MAX_EVAL_CASES=5、裁判失败不计分母、**耗时仅报告不裁决**（裁判调用耗时≠工具执行耗时）、阈值含浮点 epsilon（恰等于 -0.2 不算回归）
+- **推广后验证 + 自动回滚**：`/evo verify <id>` + Web「推广验证」仅 applied 可调 → 完整 A/B → regress（相对 -20% 或绝对 <50% 且 ≥2 用例）且快照存在 → **自动回滚**（`doRollback(id,"auto")` 单路径复用 rollback 状态机，审计 `evolution:auto_rolled_back` + 广播 `evolution/auto_rolled_back`，detail 含评测回归摘要）；pass/unknown 记 `verified` 不动作；无快照明确报错不虚假回滚；manual rollback 不受影响
+- **API**：`GET/POST /evolution/cases`、`POST /evolution/cases/extract`、`DELETE /evolution/cases/:id`、`POST /evolution/proposals/:id/eval|verify`（POST-only 405 沿用）；台账补 `eval`/`verified` 事件（摘要含 verdict/passRates）
+- **Web 进化 Tab**：提案卡片「评测」（pending/confirmed/applied）+「推广验证」（applied）按钮；A/B 结果视图（旧/新成功率对比条、✅/🔻/⚠️/⛔ 徽标、无基线/skipped 标注，报告仅当次展示重跑即刷新）；「黄金用例」卡（补录输入框/从会话提取/删除）
+- **CLI**：`/evo eval <id>`（A/B 报告：成功率/Δ/裁判耗时参考/每用例明细）、`/evo verify <id>`（回归自动回滚提示）、`/evo case add|list|delete|extract`
+- 修复：「从会话提取」崩溃——`user/message` 事件 data 即 Message **本体**（误按 assistant 的 `{message}` 包装解析）→ 对齐 session-store 真实形状，并对畸形/旧数据防御（形状不符按跳过处理不抛错）；测试夹具同步修正（旧夹具形状错误致漏测）
+- 测试 +61（cases 提取/切分/去重/截断/形状回归、decideVerdict 阈值边界、runEval 调用次数/skipped/超限/expected 传入、engine before 双轨/eval 状态门/verify 三态/自动回滚审计广播、端点 7、CLI 7）；全量 716 全绿
+
 ## 0.11.0 (2026-08-30)
 
 ### 进化引擎第二期：补丁生效 + 快照回滚（Sprint 40）

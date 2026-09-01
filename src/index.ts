@@ -46,8 +46,10 @@ import { TeamCoordinator } from "./core/team-coordinator.js";
 import { pluginManager } from "./core/plugin-manager.js";
 import { AppManager } from "./core/app-manager.js";
 import { AppFactory } from "./core/app-factory.js";
+import { packageInstaller } from "./core/package-installer.js";
 import { generatorQueue } from "./core/generator-queue.js";
 import { EvolutionEngine } from "./core/evolution-engine.js";
+import { EvolutionCases } from "./core/evolution-cases.js";
 import { auditLogger } from "./core/audit-logger.js";
 import { appRuntime } from "./core/app-runtime.js";
 import { processManager } from "./core/process-manager.js";
@@ -362,6 +364,8 @@ program
       onCrashed: (id, crashCount) => appManager.onCrashed(id, crashCount),
     });
     await appManager.init();
+    // .aw app 包安装注入（Sprint 42 A4：示例应用包分发链路）
+    packageInstaller.appManager = appManager;
 
     // ─── 应用工厂（Sprint 35 v2：agent-loop + fs_write 生成） ───
     const appFactory = new AppFactory(deps, appManager);
@@ -483,6 +487,36 @@ program
         const cfg = agent.getConfig();
         return saveAgentConfig(agentId, { ...cfg, systemPrompt: newPrompt });
       },
+      // Sprint 41：A/B 评测裁判（modelRouter 判断文本是否足以引导正确完成；输出非 JSON 抛错 → runEval 按用例跳过降级）
+      scoreCase: async (task, text, expected) => {
+        const prompt = `你是 AiWorker 的评测裁判。判断「工具描述/系统提示词」是否足以让智能体正确完成给定任务。严格输出单个 JSON 对象。
+# 任务
+${task}${expected ? `\n# 期望达成\n${expected}` : ""}
+# 待评文本
+${text}
+# 输出
+{"ok": true|false, "reason": "≤50 字原因"}
+（ok=true 表示该文本信息足以引导正确完成；ok=false 表示模糊/缺失关键信息/会误导）`;
+        const t0 = performance.now();
+        const resp = await modelRouter.completeWithProfile("default", [{ role: "user", content: prompt }]);
+        const jsonText = (resp.text ?? "").replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+        let parsed: { ok?: unknown; reason?: unknown };
+        try {
+          parsed = JSON.parse(jsonText) as { ok?: unknown; reason?: unknown };
+        } catch {
+          throw new Error("裁判输出非 JSON");
+        }
+        return {
+          ok: parsed.ok === true,
+          reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 200) : undefined,
+          latencyMs: performance.now() - t0,
+        };
+      },
+      cases: new EvolutionCases(resolve(dataDir, "evolution", "cases")),
+      // tool-fix/prompt-fix before 实时定义（pending/confirmed 无快照时取当前生效状态）
+      getToolDescription: (name) =>
+        toolRegistry.getAll().find((t) => t.definition.function.name === name)?.definition.function.description,
+      getAgentSystemPrompt: (agentId) => agents[agentId]?.getConfig().systemPrompt,
       snapshot: {
         dataDir,
         skillsDir: resolve(process.cwd(), "skills"),

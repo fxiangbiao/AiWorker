@@ -14,6 +14,7 @@ import { scheduler } from "../src/core/scheduler.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 import { SessionStore } from "../src/memory/session-store.js";
+import { modelDir, modelManifest } from "../src/media/model-manager.js";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 
 const API = "/api/v1";
@@ -165,6 +166,94 @@ describe("HTTP Server", () => {
     const names = data.tools.map((t: { name: string }) => t.name);
     expect(names).toContain("fs_read");
     expect(names).toContain("web_search");
+  });
+
+  it("GET /audit 返回审计记录列表（limit/action 参数）", async () => {
+    const resp = await fetch(`${base}${API}/audit?limit=50&action=app:`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as { entries: unknown[] };
+    expect(Array.isArray(data.entries)).toBe(true);
+  });
+
+  it("GET /devices 返回设备状态（媒体通道 + 模型能力）", async () => {
+    const resp = await fetch(`${base}${API}/devices`);
+    expect(resp.status).toBe(200);
+    const data = (await resp.json()) as {
+      asr: { enabled: boolean };
+      tts: { engine: string };
+      mediaServer: { active: boolean };
+      model: { current: string; vision: boolean };
+    };
+    expect(data.asr.enabled).toBe(false);
+    expect(["edge-tts", "sherpa"]).toContain(data.tts.engine);
+    expect(typeof data.model.vision).toBe("boolean");
+  });
+
+  it("POST /media/download：非法 kind 400；模型已就绪时纯跳过（不触网）", async () => {
+    const freshDir = resolve(testDir, "media-dl-srv");
+    mkdirSync(freshDir, { recursive: true });
+    const store = new SessionStore(resolve(freshDir, "sessions.db"));
+    const deps = mockDeps();
+    deps.dataDir = freshDir;
+    (deps as Record<string, unknown>).sessionStore = store;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+
+    const bad = await fetch(`http://127.0.0.1:${port}${API}/media/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "xxx" }),
+    });
+    expect(bad.status).toBe(400);
+
+    // seed asr 模型文件 → download 全跳过
+    const base = modelDir(freshDir, "asr");
+    for (const f of modelManifest("asr").files) {
+      const p = resolve(base, f.local);
+      mkdirSync(resolve(p, ".."), { recursive: true });
+      writeFileSync(p, f.minSize > 0 ? "x".repeat(4) : "", "utf-8");
+    }
+    const ok = await fetch(`http://127.0.0.1:${port}${API}/media/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "asr" }),
+    });
+    expect(ok.status).toBe(200);
+    const d = (await ok.json()) as { ok: boolean; downloaded: string[]; skipped: string[] };
+    expect(d.ok).toBe(true);
+    expect(d.downloaded).toEqual([]);
+    expect(d.skipped.length).toBe(modelManifest("asr").files.length);
+    local.close();
+    store.close();
+  });
+
+  it("GET /dirs 列出子目录（只读；无 path 回退 workingDir；相对/不存在拒绝）", async () => {
+    const proj = resolve(testDir, "dirs-proj");
+    mkdirSync(resolve(proj, "sub1"), { recursive: true });
+    mkdirSync(resolve(proj, "sub2"), { recursive: true });
+    writeFileSync(resolve(proj, "file.txt"), "x");
+    const deps = mockDeps();
+    deps.workingDir = proj;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+
+    const ok = await fetch(`http://127.0.0.1:${port}${API}/dirs?path=${encodeURIComponent(proj)}`);
+    expect(ok.status).toBe(200);
+    const d = (await ok.json()) as { path: string; parent: string | null; dirs: string[] };
+    expect(d.path).toBe(proj);
+    expect(d.dirs).toEqual(["sub1", "sub2"]); // 文件不出现
+    expect(d.parent).toBe(resolve(proj, ".."));
+
+    const def = await fetch(`http://127.0.0.1:${port}${API}/dirs`);
+    expect(((await def.json()) as { path: string }).path).toBe(proj);
+
+    const bad = await fetch(`http://127.0.0.1:${port}${API}/dirs?path=${encodeURIComponent("relative/x")}`);
+    expect(bad.status).toBe(400);
+    const bad2 = await fetch(`http://127.0.0.1:${port}${API}/dirs?path=${encodeURIComponent(resolve(proj, "nope"))}`);
+    expect(bad2.status).toBe(400);
+    local.close();
   });
 
   it("/skills 返回技能列表", async () => {
@@ -762,6 +851,38 @@ describe("HTTP Server", () => {
     expect(d.content).toContain("会话报告");
   });
 
+  it("/docs?sessionId 项目文档根跟随会话项目目录（未设置回退全局）", async () => {
+    const store = new SessionStore(resolve(testDir, "docs-sessions.db"));
+    const projA = resolve(testDir, "proj-a");
+    const projB = resolve(testDir, "proj-b");
+    mkdirSync(projA, { recursive: true });
+    mkdirSync(projB, { recursive: true });
+    writeFileSync(resolve(projA, "a.md"), "# A 项目", "utf-8");
+    writeFileSync(resolve(projB, "b.md"), "# B 项目", "utf-8");
+    const sess = store.createSession("default");
+    store.setWorkingDir(sess.id, projB);
+    const deps = mockDeps();
+    deps.workingDir = projA; // 全局 A；会话覆盖为 B
+    (deps as Record<string, unknown>).sessionStore = store;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+
+    const g = await fetch(`http://127.0.0.1:${port}${API}/docs`);
+    const gd = (await g.json()) as { docs: { root: string; path: string }[] };
+    expect(gd.docs.some((d) => d.root === "project" && d.path === "a.md")).toBe(true);
+
+    const s = await fetch(`http://127.0.0.1:${port}${API}/docs?sessionId=${sess.id}`);
+    const sd = (await s.json()) as { docs: { root: string; path: string }[] };
+    expect(sd.docs.some((d) => d.root === "project" && d.path === "b.md")).toBe(true);
+    expect(sd.docs.some((d) => d.path === "a.md")).toBe(false);
+
+    const c = await fetch(`http://127.0.0.1:${port}${API}/docs/content?root=project&path=${encodeURIComponent("b.md")}&sessionId=${sess.id}`);
+    expect(c.status).toBe(200);
+    local.close();
+    store.close();
+  });
+
   it("/plan SSE 流式返回 plan + step + done", async () => {
     const resp = await fetch(`${base}${API}/plan`, {
       method: "POST",
@@ -960,6 +1081,113 @@ describe("HTTP Server — 会话管理端点", () => {
       body: JSON.stringify({}),
     });
     expect(resp.status).toBe(400);
+  });
+
+  it("POST/GET /sessions/:id/working-dir 设置、回读、列表带出与恢复默认", async () => {
+    const sess = store.createSession("default");
+    const proj = resolve(testDir, "proj");
+    mkdirSync(proj, { recursive: true });
+    const post = await fetch(`${base2}${API}/sessions/${sess.id}/working-dir`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dir: proj }),
+    });
+    expect(post.status).toBe(200);
+    expect(((await post.json()) as { workingDir: string | null }).workingDir).toBe(proj);
+
+    const get = await fetch(`${base2}${API}/sessions/${sess.id}/working-dir`);
+    expect(((await get.json()) as { workingDir: string | null }).workingDir).toBe(proj);
+
+    const listResp = await fetch(`${base2}${API}/sessions`);
+    const sessions = ((await listResp.json()) as { sessions: Array<{ id: string; workingDir?: string | null }> }).sessions;
+    expect(sessions.find((s) => s.id === sess.id)?.workingDir).toBe(proj);
+
+    // 恢复默认（null）
+    const clear = await fetch(`${base2}${API}/sessions/${sess.id}/working-dir`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dir: null }),
+    });
+    expect(((await clear.json()) as { workingDir: string | null }).workingDir).toBeNull();
+    expect(store.getWorkingDir(sess.id)).toBeNull();
+  });
+
+  it("POST working-dir 校验：相对路径/不存在/非目录/指向 dataDir 均拒绝", async () => {
+    const sess = store.createSession("default");
+    const file = resolve(testDir, "somefile.txt");
+    writeFileSync(file, "x");
+    const badDirs = ["relative/path", resolve(testDir, "no-such-dir-xyz"), file, testDir];
+    for (const dir of badDirs) {
+      const r = await fetch(`${base2}${API}/sessions/${sess.id}/working-dir`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dir }),
+      });
+      expect(r.status).toBe(400);
+    }
+    expect(store.getWorkingDir(sess.id)).toBeNull();
+  });
+
+  it("POST working-dir 对服务端尚无记录的会话自动补建（回归：Web 新会话草稿报 Session not found）", async () => {
+    // 模拟 Web 新会话本地草稿：服务端无该 session 行
+    const freshId = `fresh-${Date.now().toString(36)}`;
+    const proj = resolve(testDir, "fresh-proj");
+    mkdirSync(proj, { recursive: true });
+    const resp = await fetch(`${base2}${API}/sessions/${freshId}/working-dir`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dir: proj, agentId: "coding" }),
+    });
+    expect(resp.status).toBe(200);
+    expect(store.getWorkingDir(freshId)).toBe(proj);
+    // 会话行已补建
+    const sessions = store.listSessions(100);
+    expect(sessions.some((s) => s.id === freshId)).toBe(true);
+    expect(sessions.find((s) => s.id === freshId)?.agentId).toBe("coding");
+    // 恢复默认同样自动补建路径可用
+    const clear = await fetch(`${base2}${API}/sessions/${freshId}/working-dir`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dir: null }),
+    });
+    expect(clear.status).toBe(200);
+    expect(store.getWorkingDir(freshId)).toBeNull();
+  });
+
+  it("/chat 透传会话项目目录（task.workingDir）", async () => {
+    const sess = store.createSession("default");
+    const proj = resolve(testDir, "chatproj");
+    mkdirSync(proj, { recursive: true });
+    store.setWorkingDir(sess.id, proj);
+    let received: unknown = null;
+    const deps = {
+      modelRouter: mockModelRouter(),
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () =>
+        ({
+          runStream: async (task: { workingDir?: string }) => {
+            received = task.workingDir;
+            return { success: true, text: "ok" } as never;
+          },
+        }) as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: store,
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "你好", agentId: "default", sessionId: sess.id }),
+    });
+    expect(resp.status).toBe(200);
+    await resp.text();
+    expect(received).toBe(proj);
+    local.close();
   });
 
   it("导出会话返回 Markdown", async () => {
@@ -1472,6 +1700,23 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
           ok: true,
           view: { proposalId: id, kind: "new-tool", title: "生成周报工具", after: "生成工具：自动生成周报", lines: [{ type: "add", text: "生成工具：自动生成周报" }] },
         }),
+        listCases: (limit = 100) => [{ id: "case-1", input: "整理周报", source: "manual", createdAt: 123 }],
+        addCase: (input: string, expected?: string) => ({
+          ok: true,
+          case: { id: "case-new", input, expected, source: "manual", createdAt: 123 },
+        }),
+        deleteCase: (id: string) => ({ ok: id === "case-1" }),
+        extractCases: () => ({ added: 2, skipped: 1 }),
+        eval: async (id: string) => ({
+          ok: true,
+          report: { total: 1, skipped: 0, hasBaseline: true, baselinePassRate: 0.8, candidatePassRate: 0.6, deltaRate: -0.2, verdict: "pass", results: [] },
+        }),
+        verify: async (id: string) => ({
+          ok: true,
+          report: { total: 1, skipped: 0, hasBaseline: true, baselinePassRate: 1, candidatePassRate: 0.4, deltaRate: -0.6, verdict: "regress", results: [] },
+          rolledBack: true,
+          detail: "已自动回滚",
+        }),
       } as never,
     };
     server5 = startServer(deps as never, 0);
@@ -1568,5 +1813,65 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
   it("未知操作返回 404", async () => {
     const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/frobnicate`, { method: "POST" });
     expect(resp.status).toBe(404);
+  });
+
+  it("GET /evolution/cases 返回黄金用例", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases?limit=50`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.cases).toHaveLength(1);
+    expect(data.cases[0]).toMatchObject({ id: "case-1", input: "整理周报" });
+  });
+
+  it("POST /evolution/cases 手工补录", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: "写会议纪要", expected: "markdown" }),
+    });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.case).toMatchObject({ id: "case-new", input: "写会议纪要", expected: "markdown" });
+  });
+
+  it("POST /evolution/cases 非法 JSON 返回 400", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{invalid",
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("POST /evolution/cases/extract 提取用例", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases/extract`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data).toEqual({ added: 2, skipped: 1 });
+  });
+
+  it("DELETE /evolution/cases/:id 删除用例", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases/case-1`, { method: "DELETE" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+  });
+
+  it("POST /evolution/proposals/:id/eval 返回评测报告", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/eval`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.report).toMatchObject({ verdict: "pass", baselinePassRate: 0.8 });
+  });
+
+  it("POST /evolution/proposals/:id/verify 推广验证（回归自动回滚）", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/verify`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.rolledBack).toBe(true);
+    expect(data.report.verdict).toBe("regress");
   });
 });
