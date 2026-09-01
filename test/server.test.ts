@@ -14,6 +14,7 @@ import { scheduler } from "../src/core/scheduler.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 import { SessionStore } from "../src/memory/session-store.js";
+import { modelDir, modelManifest } from "../src/media/model-manager.js";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 
 const API = "/api/v1";
@@ -186,6 +187,45 @@ describe("HTTP Server", () => {
     expect(data.asr.enabled).toBe(false);
     expect(["edge-tts", "sherpa"]).toContain(data.tts.engine);
     expect(typeof data.model.vision).toBe("boolean");
+  });
+
+  it("POST /media/download：非法 kind 400；模型已就绪时纯跳过（不触网）", async () => {
+    const freshDir = resolve(testDir, "media-dl-srv");
+    mkdirSync(freshDir, { recursive: true });
+    const store = new SessionStore(resolve(freshDir, "sessions.db"));
+    const deps = mockDeps();
+    deps.dataDir = freshDir;
+    (deps as Record<string, unknown>).sessionStore = store;
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+
+    const bad = await fetch(`http://127.0.0.1:${port}${API}/media/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "xxx" }),
+    });
+    expect(bad.status).toBe(400);
+
+    // seed asr 模型文件 → download 全跳过
+    const base = modelDir(freshDir, "asr");
+    for (const f of modelManifest("asr").files) {
+      const p = resolve(base, f.local);
+      mkdirSync(resolve(p, ".."), { recursive: true });
+      writeFileSync(p, f.minSize > 0 ? "x".repeat(4) : "", "utf-8");
+    }
+    const ok = await fetch(`http://127.0.0.1:${port}${API}/media/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "asr" }),
+    });
+    expect(ok.status).toBe(200);
+    const d = (await ok.json()) as { ok: boolean; downloaded: string[]; skipped: string[] };
+    expect(d.ok).toBe(true);
+    expect(d.downloaded).toEqual([]);
+    expect(d.skipped.length).toBe(modelManifest("asr").files.length);
+    local.close();
+    store.close();
   });
 
   it("GET /dirs 列出子目录（只读；无 path 回退 workingDir；相对/不存在拒绝）", async () => {

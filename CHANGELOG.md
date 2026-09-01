@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 (2026-08-30)
+
+### 语音输入（离线 ASR）+ TTS 补齐（Sprint 43）
+
+- **离线中文语音输入**：Web 输入区 🎤 **按住说话 → 松开识别 → 文本回填输入框**（可编辑后发送）；采集（getUserMedia + ScriptProcessor）→ 前端降采样 16k → 独立 WS 连 `/api/v1/audio` 上行 base64 PCM → 识别结果回填；录音中红点脉冲/识别中状态/错误分级提示（权限拒绝/模型缺失/识别失败）
+- **ASR 服务**（`src/media/asr.ts`）：`AsrProvider` 接口 + `SherpaAsrProvider`（sherpa-onnx **paraformer-zh 非流式**，spike 实测逐字精准；懒加载 232MB 模型 + 进程内缓存）；16kHz 输入守卫（非 16k 明确报错）；`resolveAsrProvider`/`getAsrProvider` 就绪解析
+- **模型管理**（`src/media/model-manager.ts`）：`data/media/models/{asr,tts}/` 就绪探测（缺失文件清单）；**hf-mirror 一键下载**（镜像实测可达，huggingface.co 直连超时；幂等跳过已就绪文件；`minSize` 处理仓库 0 字节的 `user.dict.utf8`）；CLI `/media status|download` + HTTP `POST /api/v1/media/download`（Web 设备 Tab 一键下载按钮）
+- **WS 双向通道**（media-server 扩展）：`{type:"asr", audio: base64(16k PCM), sampleRate}` → `asr:result/asr:error`；一次性整段（按住说话 ≤60s）；模型未装/非 16k/坏 base64 分别明确报错；TTS 协议不变
+- **TTS 补齐**：`SherpaTtsProvider` 真实现（**vits-zh-ll**，lexicon/dict/fst 内层配置，`generate()` → 16k 16-bit WAV），替换 P1 抛错桩；`resolveTtsProvider` 按模型就绪解析（sherpa 优先，edge-tts 降级保留）
+- **设备 Tab 真实化**：asr/tts 状态按模型就绪动态展示 + 一键下载按钮（约 232MB ASR / 118MB TTS）
+- **依赖**：`sherpa-onnx-node@1.10.46` 锁定（1.13.x 流式路径本环境原生崩溃；1.10.46 非流式全链路验证）+ `src/media/sherpa-onnx-node.d.ts` 类型声明
+- 冒烟：`RUN_MEDIA_SMOKE=1` 且模型就绪时本地跑真实识别（不进 CI）
+- 测试 +19（model-manager 就绪/幂等/404、asr 守卫/缓存、WS asr 协议 4 例、CLI media 3、端点 1）；全量 757 全绿
+
 ## 1.0.0 (2026-08-30)
 
 ### AI OS 1.0 整合 + 每会话项目目录（Sprint 42）

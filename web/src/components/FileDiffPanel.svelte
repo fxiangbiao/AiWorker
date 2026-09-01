@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { API, store } from "$lib/stores/chat.svelte";
   import { workingDir } from "$lib/stores/status";
@@ -45,17 +44,12 @@
     file?: DiffFile;
   }
 
-  /** 共享空集合（未折叠任何目录的会话用，避免每次派生创建新 Set） */
-  const EMPTY_SET: ReadonlySet<string> = new Set();
-
   let loading = $state(false);
   let sessions: DiffSession[] = $state([]);
   let selected: DiffFile | null = $state(null);
   let listWidth = $state<number | null>(null); // null = 默认 25% (1:3)
-  /** 折叠状态：sessionId → 该会话内折叠的目录路径集合（会话间隔离） */
-  let collapsedDirs = $state<Map<string, Set<string>>>(new Map());
-  /** 折叠的会话 id */
-  let collapsedSessions = $state<Set<string>>(new Set());
+  /** 折叠状态：当前会话内折叠的目录路径集合 */
+  let collapsedDirs = $state<Set<string>>(new Set());
   /** 最近复制的行号（提示用） */
   let copiedLine = $state<number | null>(null);
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -79,51 +73,47 @@
     window.addEventListener("pointerup", onUp);
   }
 
-  onMount(() => load());
+  // 初始加载与后续刷新统一走下方 debounce effect（不再 onMount 直载，避免挂载期双请求）
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight = false;
+  // 注意：effect 内不得读写 $state（如 sessions/selected），否则 load 写回新数组会形成自触发刷新循环
   $effect(() => {
     void store.diffVersion;
+    void store.activeChatId; // 切换会话 → 延迟重载（remap 在 load 内完成）
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(load, 400);
   });
 
-  /** 是否已按"仅展开最新会话"初始化折叠状态（只初始化一次，之后保留用户手动调整） */
-  let foldInitialized = false;
+  /** 选中文件跟随当前会话：路径不在当前会话 → 选中其第一个文件；无会话 → 清空 */
+  function remapSelected() {
+    const act = sessions.find((s) => s.sessionId === store.activeChatId) ?? null;
+    if (!act) {
+      selected = null;
+      return;
+    }
+    if (!selected || !act.files.some((f) => f.path === selected!.path)) {
+      selected = act.files[0] ?? null;
+    }
+  }
 
+  /** 单请求守卫：在途时丢弃重复触发（挂载/切换/流式刷新任何来源最多一次并发） */
   function load() {
+    if (inFlight) return;
+    inFlight = true;
     loading = true;
     fetch(`${API}/diffs`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
         const list: DiffSession[] = (d.sessions || []).sort((a: DiffSession, b: DiffSession) => (b.updatedAt || 0) - (a.updatedAt || 0));
         sessions = list;
-        if (!foldInitialized) {
-          foldInitialized = true;
-          // 默认只展开最新会话（list[0]，已按 updatedAt 降序），历史会话默认收起
-          const collapsed = new Set<string>();
-          for (let i = 1; i < list.length; i++) collapsed.add(list[i].sessionId);
-          collapsedSessions = collapsed;
-        }
-        if (sessions.length > 0 && sessions[0].files.length > 0 && !selected) {
-          selected = sessions[0].files[0];
-        } else if (selected) {
-          // 自动刷新后按路径重新映射选中文件（sessions 已是新对象，避免渲染过期行级 diff）
-          let found: DiffFile | null = null;
-          for (const s of sessions) {
-            const f = s.files.find((f2) => f2.path === selected!.path);
-            if (f) {
-              found = f;
-              break;
-            }
-          }
-          selected = found;
-        }
+        remapSelected();
       })
       .catch(() => {
         sessions = [];
         selected = null;
       })
       .finally(() => {
+        inFlight = false;
         loading = false;
       });
   }
@@ -131,17 +121,6 @@
   function basename(p: string): string {
     const parts = p.split(/[\\/]/);
     return parts[parts.length - 1] || p;
-  }
-
-  function fmtTime(ts: number): string {
-    if (!ts) return "";
-    const d = new Date(ts);
-    const today = new Date();
-    const isToday = d.toDateString() === today.toDateString();
-    const h = String(d.getHours()).padStart(2, "0");
-    const m = String(d.getMinutes()).padStart(2, "0");
-    if (isToday) return `${h}:${m}`;
-    return `${d.getMonth() + 1}/${d.getDate()} ${h}:${m}`;
   }
 
   /** 以工作目录为根裁剪路径（树根不显示盘符/绝对路径） */
@@ -207,30 +186,22 @@
     }
   }
 
-  /** 每个会话的树行（$derived 自动追踪 sessions/collapsedDirs/collapsedSessions 变化） */
-  const sessionItems = $derived.by(() =>
-    sessions.map((s) => {
-      const collapsedSet = collapsedDirs.get(s.sessionId) ?? EMPTY_SET;
-      const rows: TreeRow[] = [];
-      flattenTree(buildTree(s.files), 0, rows, collapsedSet);
-      return { id: s.sessionId, summary: s.summary, updatedAt: s.updatedAt, collapsed: collapsedSessions.has(s.sessionId), rows };
-    }),
-  );
+  /** 当前选中会话（跟随 store.activeChatId；无则 null） */
+  const activeSession = $derived(sessions.find((s) => s.sessionId === store.activeChatId) ?? null);
 
-  function toggleDir(sessionId: string, path: string) {
-    const next = new Map(collapsedDirs);
-    const set = new Set(next.get(sessionId) ?? []);
-    if (set.has(path)) set.delete(path);
-    else set.add(path);
-    next.set(sessionId, set);
+  /** 当前会话的树行（$derived 自动追踪 sessions/collapsedDirs/activeChatId 变化） */
+  const treeRows = $derived.by(() => {
+    if (!activeSession) return [];
+    const rows: TreeRow[] = [];
+    flattenTree(buildTree(activeSession.files), 0, rows, collapsedDirs);
+    return rows;
+  });
+
+  function toggleDir(path: string) {
+    const next = new Set(collapsedDirs);
+    if (next.has(path)) next.delete(path);
+    else next.add(path);
     collapsedDirs = next;
-  }
-
-  function toggleSession(id: string) {
-    const next = new Set(collapsedSessions);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    collapsedSessions = next;
   }
 
   // ── 列表拖拽滚动（按住拖动；>4px 视为滚动，不触发文件选择） ──
@@ -285,54 +256,43 @@
     onpointerdown={onListPointerDown}
     onpointerup={onListPointerUp}
     onclickcapture={onListClickCapture}>
-    <div class="dl-title">变更文件</div>
-    {#if loading}
+    <div class="dl-title">{activeSession ? sessionTitle(activeSession) : ""}</div>
+    {#if loading && sessions.length === 0}
       <div class="dl-empty">加载中...</div>
-    {:else if sessions.length === 0}
-      <div class="dl-empty">暂无文件变更</div>
+    {:else if !activeSession || treeRows.length === 0}
+      <div class="dl-empty">当前会话暂无文件变更</div>
     {:else}
-      {#each sessionItems as item (item.id)}
-        <div class="dl-session" role="button" tabindex="0"
-          onclick={() => toggleSession(item.id)}
-          onkeydown={(e) => e.key === "Enter" && toggleSession(item.id)}>
-          <span class="dl-caret">{item.collapsed ? "▸" : "▾"}</span>
-          <span class="dl-sid" title={item.id}>{sessionTitle(item)}</span>
-          <span class="dl-stime">{fmtTime(item.updatedAt)}</span>
-        </div>
-        {#if !item.collapsed}
-          {#each item.rows as row (row.path)}
-            {#if row.kind === "dir"}
-              <div class="dl-dir" style:padding-left={`${10 + row.depth * 12}px`}
-                role="button" tabindex="0"
-                onclick={() => toggleDir(item.id, row.path)}
-                onkeydown={(e) => e.key === "Enter" && toggleDir(item.id, row.path)}>
-                <span class="dl-caret">{row.collapsed ? "▸" : "▾"}</span>
-                <span class="dl-folder">📁</span>
-                <span class="dl-dirname">{row.name}</span>
-              </div>
-            {:else if row.file}
-              <div
-                class="dl-file"
-                style:padding-left={`${22 + row.depth * 12}px`}
-                class:active={selected?.path === row.file.path}
-                title={row.path}
-                onclick={() => (selected = row.file)}
-                onkeydown={(e) => e.key === "Enter" && (selected = row.file)}
-                role="button"
-                tabindex="0"
-              >
-                <span class="dl-name" title={row.path}>{row.name}</span>
-                {#if row.file.deleted}
-                  <span class="dl-del">已删除</span>
-                {:else if row.file.modified}
-                  <span class="dl-mod">已修改</span>
-                {:else}
-                  <span class="dl-add">+{row.file.added}</span>
-                  <span class="dl-rem">-{row.file.removed}</span>
-                {/if}
-              </div>
+      {#each treeRows as row (row.path)}
+        {#if row.kind === "dir"}
+          <div class="dl-dir" style:padding-left={`${10 + row.depth * 12}px`}
+            role="button" tabindex="0"
+            onclick={() => toggleDir(row.path)}
+            onkeydown={(e) => e.key === "Enter" && toggleDir(row.path)}>
+            <span class="dl-caret">{row.collapsed ? "▸" : "▾"}</span>
+            <span class="dl-folder">📁</span>
+            <span class="dl-dirname">{row.name}</span>
+          </div>
+        {:else if row.file}
+          <div
+            class="dl-file"
+            style:padding-left={`${22 + row.depth * 12}px`}
+            class:active={selected?.path === row.file.path}
+            title={row.path}
+            onclick={() => (selected = row.file)}
+            onkeydown={(e) => e.key === "Enter" && (selected = row.file)}
+            role="button"
+            tabindex="0"
+          >
+            <span class="dl-name" title={row.path}>{row.name}</span>
+            {#if row.file.deleted}
+              <span class="dl-del">已删除</span>
+            {:else if row.file.modified}
+              <span class="dl-mod">已修改</span>
+            {:else}
+              <span class="dl-add">+{row.file.added}</span>
+              <span class="dl-rem">-{row.file.removed}</span>
             {/if}
-          {/each}
+          </div>
         {/if}
       {/each}
     {/if}
@@ -414,21 +374,7 @@
     letter-spacing: .5px;
   }
   .dl-empty, .dd-empty { font-size: 12px; color: var(--dim); padding: 16px 0; text-align: center; }
-  .dl-session {
-    font-size: 10px;
-    color: var(--dim);
-    margin: 8px 0 4px;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    cursor: pointer;
-    padding: 2px 4px;
-    border-radius: var(--radius-sm);
-  }
-  .dl-session:hover { background: var(--hover-bg); }
   .dl-caret { width: 10px; flex-shrink: 0; font-size: 9px; }
-  .dl-sid { font-weight: 600; flex: 1; }
-  .dl-stime { color: var(--primary); }
   .dl-dir {
     display: flex;
     align-items: center;

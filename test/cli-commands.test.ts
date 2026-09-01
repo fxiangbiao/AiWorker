@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { buildCliCommands } from "../src/commands/registry.js";
+import { modelDir, modelManifest } from "../src/media/model-manager.js";
 import { pluginManager } from "../src/core/plugin-manager.js";
 import type { CommandContext, CliCommand } from "../src/commands/types.js";
 import type { ModelRouter } from "../src/core/model-router.js";
@@ -215,6 +216,34 @@ describe("会话命令", () => {
     const writes2: string[] = [];
     await find("dir").handler({ ...noSessCtx, writeLine: (l) => writes2.push(l) }, resolve(ctx.workingDir), "/dir set");
     expect(writes2.join("\n")).toContain("无会话");
+  });
+});
+
+describe("语音模型命令（Sprint 43）", () => {
+  it("/media status 空模型 → 未就绪并列出缺失", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("media").handler(ctx, "status", "/media status");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("未就绪");
+    expect(joined).toContain("model.onnx");
+  });
+
+  it("/media download asr 已就绪 → 无需下载（不触网）", async () => {
+    const { ctx, writeLines } = makeCtx();
+    const base = modelDir(ctx.dataDir, "asr");
+    for (const f of modelManifest("asr").files) {
+      const p = resolve(base, f.local);
+      mkdirSync(resolve(p, ".."), { recursive: true });
+      writeFileSync(p, f.minSize > 0 ? "x".repeat(4) : "", "utf-8");
+    }
+    await find("media").handler(ctx, "download asr", "/media download asr");
+    expect(writeLines.join("\n")).toContain("无需下载");
+  });
+
+  it("/media download 非法 kind → 用法提示", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("media").handler(ctx, "download xxx", "/media download xxx");
+    expect(writeLines.join("\n")).toContain("asr|tts");
   });
 });
 

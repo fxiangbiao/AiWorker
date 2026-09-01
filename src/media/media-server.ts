@@ -7,6 +7,7 @@
 
 import { WebSocketServer, type WebSocket } from "ws";
 import { resolveTtsProvider, type TtsProvider, type TtsRequest } from "./tts-provider.js";
+import type { AsrProvider } from "./asr.js";
 
 interface TtsWs extends WebSocket {
   alive?: boolean;
@@ -20,8 +21,13 @@ export function getAudioWsStatus(): { active: boolean; path?: string; clients?: 
   return { active: audioWsStatus.active, path: audioWsStatus.path, clients: audioWsStatus.clients() };
 }
 
-/** 创建 /api/v1/audio WS 服务（noServer 模式；由 server 集成 upgrade 路由；provider 可注入便于测试） */
-export function createAudioWs(dataDir: string, provider?: TtsProvider): { wss: WebSocketServer; path: string } {
+/** 创建 /api/v1/audio WS 服务（noServer 模式；由 server 集成 upgrade 路由；provider 可注入便于测试）
+ * Sprint 43：新增 ASR 上行（asrProvider 未注入或无模型时明确报错） */
+export function createAudioWs(
+  dataDir: string,
+  provider?: TtsProvider,
+  asrProvider?: AsrProvider | null,
+): { wss: WebSocketServer; path: string } {
   const wss = new WebSocketServer({ noServer: true });
   const path = "/api/v1/audio";
   const ttsProvider = provider ?? resolveTtsProvider(dataDir);
@@ -35,11 +41,15 @@ export function createAudioWs(dataDir: string, provider?: TtsProvider): { wss: W
     });
 
     ws.on("message", (data) => {
-      let req: { type?: string; reqId?: string; text?: string; voice?: string; rate?: string };
+      let req: { type?: string; reqId?: string; text?: string; voice?: string; rate?: string; audio?: string; sampleRate?: number };
       try {
         req = JSON.parse(data.toString()) as typeof req;
       } catch {
         send(ws, { type: "error", message: "无效请求（JSON 解析失败）" });
+        return;
+      }
+      if (req.type === "asr") {
+        void handleAsr(ws, req, asrProvider);
         return;
       }
       if (req.type !== "tts") return;
@@ -89,6 +99,56 @@ async function synthesizeAndStream(ws: TtsWs, reqId: string, req: TtsRequest, pr
     if (ws.readyState === ws.OPEN) {
       send(ws, { type: "tts:error", reqId, message: (err as Error).message });
     }
+  }
+}
+
+/** base64（16k 单声道 16-bit PCM，小端）→ Float32Array [-1,1] */
+function base64ToFloat32(audioB64: string): { samples: Float32Array; sampleRate: number } | null {
+  try {
+    const buf = Buffer.from(audioB64, "base64");
+    if (buf.length === 0 || buf.length % 2 !== 0) return null;
+    const pcm = new Int16Array(buf.length / 2);
+    for (let i = 0; i < pcm.length; i++) pcm[i] = buf.readInt16LE(i * 2);
+    const samples = new Float32Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) samples[i] = pcm[i]! / 32768;
+    return { samples, sampleRate: 16000 };
+  } catch {
+    return null;
+  }
+}
+
+/** ASR 上行：base64 PCM → 非流式识别 → asr:result / asr:error（一次性整段，按住说话 ≤60s） */
+async function handleAsr(
+  ws: TtsWs,
+  req: { reqId?: string; audio?: string; sampleRate?: number },
+  asrProvider?: AsrProvider | null,
+): Promise<void> {
+  const reqId = typeof req.reqId === "string" ? req.reqId : `r${Date.now()}`;
+  const fail = (message: string) => {
+    if (ws.readyState === ws.OPEN) send(ws, { type: "asr:error", reqId, message });
+  };
+  if (!asrProvider) {
+    fail("语音识别模型未安装（设置→设备→一键下载，或 /media download asr）");
+    return;
+  }
+  if (typeof req.audio !== "string" || !req.audio) {
+    fail("audio 不能为空（16k 单声道 16-bit PCM base64）");
+    return;
+  }
+  if (req.sampleRate !== undefined && req.sampleRate !== 16000) {
+    fail(`仅支持 16000Hz（收到 ${req.sampleRate}Hz），请降采样后上传`);
+    return;
+  }
+  const decoded = base64ToFloat32(req.audio);
+  if (!decoded) {
+    fail("audio 解码失败（需 16k 单声道 16-bit PCM base64）");
+    return;
+  }
+  try {
+    const result = await asrProvider.transcribe(decoded.samples, decoded.sampleRate);
+    if (ws.readyState === ws.OPEN) send(ws, { type: "asr:result", reqId, text: result.text });
+  } catch (err) {
+    fail((err as Error).message);
   }
 }
 

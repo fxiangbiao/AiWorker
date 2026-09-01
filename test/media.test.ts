@@ -3,17 +3,28 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Server } from "node:http";
 import { createAudioWs } from "../src/media/media-server.js";
 import { resolveTtsProvider, EdgeTtsProvider } from "../src/media/tts-provider.js";
 import type { TtsProvider, TtsRequest } from "../src/media/tts-provider.js";
+import { modelDir, modelManifest } from "../src/media/model-manager.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { ContextManager } from "../src/core/context-manager.js";
 import { makeTestDir } from "./helpers.js";
 
 const testDir = makeTestDir("media");
+
+/** 补齐 tts 模型文件集（isModelReady 需全文件；user.dict 可为 0 字节） */
+function seedTtsModel(): void {
+  const base = modelDir(testDir, "tts");
+  for (const f of modelManifest("tts").files) {
+    const p = resolve(base, f.local);
+    mkdirSync(resolve(p, ".."), { recursive: true });
+    writeFileSync(p, f.minSize > 0 ? "x".repeat(4) : "", "utf-8");
+  }
+}
 
 describe("TTS provider 解析与降级", () => {
   it("无本地 sherpa 模型 → 解析为 edge-tts 在线 provider", () => {
@@ -22,8 +33,8 @@ describe("TTS provider 解析与降级", () => {
     expect(p.engine).toBe("edge-tts");
   });
 
-  it("sherpa 模型目录存在 → 解析为 sherpa provider（本地优先，离线可用）", () => {
-    mkdirSync(resolve(testDir, "media", "models", "tts"), { recursive: true });
+  it("sherpa 模型文件集就绪 → 解析为 sherpa provider（本地优先，离线可用）", () => {
+    seedTtsModel();
     const p = resolveTtsProvider(testDir);
     expect(p.engine).toBe("sherpa");
   });

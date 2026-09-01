@@ -12,6 +12,7 @@ import { jobsCommands } from "./jobs.js";
 import { packageCommands } from "./package.js";
 import { appsCommands } from "./apps.js";
 import { evolutionCommands } from "./evolution.js";
+import { mediaCommands } from "./media.js";
 import { miscCommands } from "./misc.js";
 
 export type { CliCommand, CommandContext, CommandAction } from "./types.js";
@@ -28,6 +29,7 @@ export function buildCliCommands(): CliCommand[] {
     ...packageCommands, // pkg export/list
     ...appsCommands, // app（AI OS 应用生命周期）
     ...evolutionCommands, // evo（AI OS 进化引擎）
+    ...mediaCommands, // media（语音模型状态/下载）
     ...miscCommands, // mcps, help, exit
   ];
 }

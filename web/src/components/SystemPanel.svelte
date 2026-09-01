@@ -76,14 +76,16 @@
     return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
-  // ── 设备 Tab（Sprint 42 A2：媒体通道 + 模型能力，只读） ──
+  // ── 设备 Tab（Sprint 42 A2：媒体通道 + 模型能力，只读；Sprint 43：一键下载语音模型） ──
   interface DeviceStatus {
-    asr: { enabled: boolean; detail: string };
+    asr: { enabled: boolean; engine: string; detail: string };
     tts: { engine: string; localModelReady: boolean; detail: string };
     mediaServer: { active: boolean; path?: string; clients?: number };
     model: { current: string; vision: boolean; detail: string };
   }
   let deviceStatus = $state<DeviceStatus | null>(null);
+  let mediaBusy = $state<"" | "asr" | "tts">("");
+  let msg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
 
   async function loadDevices() {
     try {
@@ -91,6 +93,27 @@
       if (r.ok) deviceStatus = (await r.json()) as DeviceStatus;
     } catch {
       deviceStatus = null;
+    }
+  }
+
+  /** 一键下载语音模型（hf-mirror；约 232MB(ASR)/118MB(TTS)，本地 fetch 等待完成） */
+  async function downloadMedia(kind: "asr" | "tts") {
+    if (mediaBusy) return;
+    mediaBusy = kind;
+    try {
+      const r = await fetch(`${API}/media/download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      });
+      const d = (await r.json()) as { ok?: boolean; downloaded?: string[]; skipped?: string[]; error?: string };
+      if (!r.ok || !d.ok) msg = { kind: "err", text: d.error ?? `下载失败（HTTP ${r.status}）` };
+      else msg = { kind: "ok", text: `模型下载完成（新增 ${d.downloaded?.length ?? 0} · 跳过 ${d.skipped?.length ?? 0}）` };
+      await loadDevices();
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    } finally {
+      mediaBusy = "";
     }
   }
 
@@ -558,6 +581,9 @@
     {:else if tab === "devices"}
       <div class="sp-section">
         <div class="sp-io-bar"><button class="sp-io-btn" onclick={loadDevices}>刷新</button></div>
+        {#if msg}
+          <div class="sp-msg sp-msg-{msg.kind}">{msg.text}</div>
+        {/if}
         {#if !deviceStatus}
           <div class="sp-empty">设备状态不可用</div>
         {:else}
@@ -565,6 +591,11 @@
             <div class="sp-dev-card">
               <div class="sp-dev-head"><span class="sp-dev-dot {deviceStatus.asr.enabled ? "ok" : "off"}"></span>语音输入（ASR）</div>
               <div class="sp-dev-detail">{deviceStatus.asr.detail}</div>
+              {#if !deviceStatus.asr.enabled}
+                <button class="sp-dev-btn" onclick={() => downloadMedia("asr")} disabled={mediaBusy !== ""}>
+                  {mediaBusy === "asr" ? "下载中…（约 232MB）" : "下载 ASR 模型"}
+                </button>
+              {/if}
             </div>
             <div class="sp-dev-card">
               <div class="sp-dev-head">
@@ -573,6 +604,11 @@
                 {#if deviceStatus.tts.localModelReady}<span class="sp-dev-badge">离线就绪</span>{/if}
               </div>
               <div class="sp-dev-detail">{deviceStatus.tts.detail}</div>
+              {#if !deviceStatus.tts.localModelReady}
+                <button class="sp-dev-btn" onclick={() => downloadMedia("tts")} disabled={mediaBusy !== ""}>
+                  {mediaBusy === "tts" ? "下载中…（约 118MB）" : "下载 TTS 模型"}
+                </button>
+              {/if}
             </div>
             <div class="sp-dev-card">
               <div class="sp-dev-head">
@@ -1083,6 +1119,21 @@
   .sp-dev-badge { font-size: 10px; color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 40%, transparent); border-radius: 4px; padding: 0 5px; }
   .sp-dev-detail { font-size: 11px; color: var(--dim); line-height: 1.5; }
   .sp-dev-note { margin-top: 2px; }
+  .sp-dev-btn {
+    margin-top: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    border: 1px solid color-mix(in srgb, var(--primary) 50%, transparent);
+    background: transparent;
+    color: var(--primary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .sp-dev-btn:hover:not(:disabled) { background: var(--primary-light); }
+  .sp-dev-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .sp-msg { font-size: 12px; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; }
+  .sp-msg-ok { color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
+  .sp-msg-err { color: var(--error); background: color-mix(in srgb, var(--error) 10%, transparent); }
   .sp-io-btn:hover { filter: brightness(1.05); }
   .sp-io-mini { padding: 1px 8px; font-size: 10px; background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--dim); cursor: pointer; }
   .sp-io-mini:hover { color: var(--primary); border-color: var(--primary); }

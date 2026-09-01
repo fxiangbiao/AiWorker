@@ -166,6 +166,7 @@
       .catch(() => {
         skillOptions = [];
       });
+    void checkMicReady();
     // 其他端修改当前会话项目目录 → 徽标实时刷新
     offWs = onWsEvent((d) => {
       const ev = d as { type?: string; kind?: string; sessionId?: string };
@@ -179,6 +180,157 @@
   $effect(() => {
     return () => offWs?.();
   });
+
+  // ── 语音输入（Sprint 43）：按住说话 → 16k PCM → WS 上行 → 识别回填输入框 ──
+  let micReady = $state(false);
+  let recording = $state(false);
+  let asrBusy = $state(false);
+  let asrMsg = $state("");
+  let micSession: { ctx: AudioContext; node: ScriptProcessorNode; chunks: Float32Array[]; sampleRate: number } | null = null;
+  let micStarting: Promise<void> | null = null;
+
+  async function checkMicReady() {
+    try {
+      const r = await fetch(`${API}/devices`);
+      if (r.ok) micReady = !!((await r.json()) as { asr?: { enabled?: boolean } }).asr?.enabled;
+    } catch {
+      micReady = false;
+    }
+  }
+
+  function pcm16Base64(f32: Float32Array): string {
+    const buf = new ArrayBuffer(f32.length * 2);
+    const v = new DataView(buf);
+    for (let i = 0; i < f32.length; i++) v.setInt16(i * 2, Math.max(-1, Math.min(1, f32[i]!)) * 32767, true);
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  /** 独立 WS 连 /api/v1/audio，一次性上传识别（按需建连，用完即关） */
+  function sendAsr(f32: Float32Array): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(`${proto}//${location.host}/api/v1/audio`);
+      } catch (e) {
+        reject(e as Error);
+        return;
+      }
+      const reqId = `asr-${Date.now().toString(36)}`;
+      const timer = setTimeout(() => {
+        try { ws.close(); } catch { /* ignore */ }
+        reject(new Error("识别超时（语音通道无响应）"));
+      }, 120_000);
+      ws.onopen = () => ws.send(JSON.stringify({ type: "asr", reqId, audio: pcm16Base64(f32), sampleRate: 16000 }));
+      ws.onmessage = (ev) => {
+        let d: { type?: string; reqId?: string; text?: string; message?: string };
+        try {
+          d = JSON.parse(ev.data as string);
+        } catch {
+          return;
+        }
+        if (d.reqId !== reqId) return;
+        if (d.type === "asr:result") {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* ignore */ }
+          resolve(d.text ?? "");
+        } else if (d.type === "asr:error") {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* ignore */ }
+          reject(new Error(d.message ?? "识别失败"));
+        }
+      };
+      ws.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error("语音通道连接失败"));
+      };
+    });
+  }
+
+  function startMic(e: PointerEvent) {
+    e.preventDefault();
+    if (recording || micStarting || asrBusy) return;
+    if (!micReady) {
+      asrMsg = "语音模型未安装（设置→设备→一键下载 ASR 模型）";
+      return;
+    }
+    asrMsg = "";
+    micStarting = (async () => {
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        });
+      } catch (err) {
+        asrMsg = `麦克风不可用: ${(err as Error).name === "NotAllowedError" ? "权限被拒绝" : (err as Error).message}`;
+        throw err; // 由下方 catch 统一收敛，避免未处理拒绝
+      }
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const node = ctx.createScriptProcessor(4096, 1, 1);
+      const chunks: Float32Array[] = [];
+      node.onaudioprocess = (ev) => {
+        // inputBuffer 通道缓冲会被复用，必须拷贝
+        chunks.push(ev.inputBuffer.getChannelData(0).slice());
+      };
+      source.connect(node);
+      node.connect(ctx.destination);
+      micSession = { ctx, node, chunks, sampleRate: ctx.sampleRate };
+      recording = true;
+    })();
+    micStarting.catch(() => {
+      /* asrMsg 已在上面设置 */
+    });
+    micStarting.finally(() => {
+      micStarting = null;
+    });
+  }
+
+  async function stopMic() {
+    if (micStarting) {
+      try {
+        await micStarting;
+      } catch {
+        return; // 启动失败（如权限拒绝）已提示，无需停止
+      }
+    }
+    const session = micSession;
+    if (!session) return;
+    recording = false;
+    asrBusy = true;
+    micSession = null;
+    const { ctx, node, chunks, sampleRate } = session;
+    try {
+      node.onaudioprocess = null;
+      node.disconnect();
+      await ctx.close().catch(() => {});
+      // 拼接 + 最近邻降采样到 16k
+      const total = chunks.reduce((s, c) => s + c.length, 0);
+      const all = new Float32Array(total);
+      let off = 0;
+      for (const c of chunks) {
+        all.set(c, off);
+        off += c.length;
+      }
+      const step = sampleRate / 16000;
+      const out = new Float32Array(Math.floor(all.length / step));
+      for (let i = 0; i < out.length; i++) out[i] = all[Math.floor(i * step)] ?? 0;
+      const recognized = (await sendAsr(out)).trim();
+      if (!recognized) {
+        asrMsg = "未识别到语音（请靠近麦克风再试）";
+        return;
+      }
+      text = text.trim() ? `${text.trim()} ${recognized}` : recognized;
+      ta?.focus();
+    } catch (e) {
+      asrMsg = (e as Error).message;
+    } finally {
+      asrBusy = false;
+    }
+  }
 
   /** 输入中 "/" 后的 token（到首个空白为止） */
   let pickerToken = $derived(text.startsWith("/") ? (text.slice(1).match(/^[\w-]*/)?.[0] ?? "") : "");
@@ -313,6 +465,19 @@
           onkeydown={handleKeydown}
           oninput={handleInput}
         ></textarea>
+        <!-- 语音输入（Sprint 43）：与发送按钮同行，按住说话 → 松开识别回填 -->
+        <button
+          class="send-btn mic-btn"
+          class:mic-rec={recording}
+          title={micReady ? "按住说话，松开识别（离线 ASR）" : "语音识别模型未安装（设置→设备→一键下载）"}
+          onpointerdown={(e) => void startMic(e)}
+          onpointerup={() => void stopMic()}
+          onpointercancel={() => void stopMic()}
+          onpointerleave={() => recording && void stopMic()}
+          oncontextmenu={(e) => e.preventDefault()}
+        >
+          {asrBusy ? "⏳" : "🎤"}
+        </button>
         {#if stream.sending}
           <button class="send-btn stop" onclick={stop} title="停止请求">&#9632;</button>
         {:else}
@@ -433,6 +598,9 @@
           </button>
         {/each}
       </div>
+      {#if asrMsg}
+        <span class="mic-err" title={asrMsg}>{asrMsg}</span>
+      {/if}
     </div>
   </div>
 
@@ -517,6 +685,11 @@
   .cfg-group { display: flex; align-items: center; gap: 6px; }
   .cfg-divider { width: 1px; height: 18px; background: var(--border); }
   .dir-wrap { position: relative; }
+  .mic-btn { background: transparent; border: 1px solid var(--border); color: var(--dim); font-size: 14px; }
+  .mic-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .mic-btn.mic-rec { border-color: var(--error); color: var(--error); animation: mic-pulse 1s ease-in-out infinite; }
+  @keyframes mic-pulse { 50% { opacity: 0.55; } }
+  .mic-err { margin-left: auto; font-size: 11px; color: var(--error); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dir-active { border-color: var(--primary); color: var(--primary); }
   .dir-editor {
     position: absolute;

@@ -1,36 +1,41 @@
 /**
- * 设备状态汇总（Sprint 42 A2）— 只读探测，不启动不修改
- * 三通道：ASR（语音输入，Sprint 36 决策放弃 → 未启用）、TTS（edge-tts 在线 / sherpa 本地）、媒体服务器（WS 音频通道）
+ * 设备状态汇总（Sprint 42 A2；Sprint 43 真实化 asr/tts 就绪）— 只读探测，不启动不修改
+ * 三通道：ASR（sherpa paraformer-zh 离线，模型就绪即启用）、TTS（sherpa vits 就绪优先 / edge-tts 在线）、媒体服务器（WS 音频通道）
  * 模型能力：当前模型是否支持视觉（多模态）
  */
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { getAudioWsStatus } from "./media-server.js";
 import { resolveTtsProvider } from "./tts-provider.js";
+import { getAsrProvider } from "./asr.js";
+import { isModelReady, modelReadyInfo } from "./model-manager.js";
 import type { ModelRouter } from "../core/model-router.js";
 
 export interface DeviceStatus {
-  asr: { enabled: boolean; detail: string };
+  asr: { enabled: boolean; engine: string; detail: string };
   tts: { engine: string; localModelReady: boolean; detail: string };
   mediaServer: { active: boolean; path?: string; clients?: number };
   model: { current: string; vision: boolean; detail: string };
 }
 
 export function getDeviceStatus(dataDir: string, modelRouter?: ModelRouter): DeviceStatus {
-  const ttsProvider = resolveTtsProvider(dataDir);
-  const sherpaReady = existsSync(resolve(dataDir, "media", "models", "tts"));
+  const asrInfo = modelReadyInfo(dataDir, "asr");
+  const ttsInfo = modelReadyInfo(dataDir, "tts");
   const ws = getAudioWsStatus();
   const vision = modelRouter?.supportsVision?.() === true;
   return {
-    asr: { enabled: false, detail: "语音输入未启用（网络受限，Sprint 36 决策；保留图片多模态）" },
+    asr: {
+      enabled: getAsrProvider(dataDir) !== null,
+      engine: "sherpa-paraformer-zh",
+      detail: asrInfo.ready
+        ? "paraformer-zh 离线就绪（按住说话→识别）"
+        : `未就绪（缺: ${asrInfo.missing.join(", ") || "未下载"}）— 设置→设备→一键下载`,
+    },
     tts: {
-      engine: ttsProvider.engine,
-      localModelReady: sherpaReady,
-      detail:
-        ttsProvider.engine === "sherpa"
-          ? "sherpa-onnx 本地模型就绪（离线 TTS）"
-          : "edge-tts 在线合成（无 key；特定网络/地区可能 403）",
+      engine: resolveTtsProvider(dataDir).engine,
+      localModelReady: isModelReady(dataDir, "tts"),
+      detail: ttsInfo.ready
+        ? "sherpa vits-zh-ll 离线就绪"
+        : `edge-tts 在线降级（本地模型缺: ${ttsInfo.missing.join(", ") || "未下载"}）`,
     },
     mediaServer: { active: ws?.active ?? false, path: ws?.path, clients: ws?.clients ?? 0 },
     model: {

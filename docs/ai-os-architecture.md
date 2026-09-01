@@ -1,6 +1,6 @@
 # AiWorker AI OS 架构（正式版）
 
-> 版本 1.0.0 · 由 [AIOS-架构升级方案.md](AIOS-架构升级方案.md) 提炼定稿
+> 版本 1.1.0 · 由 [AIOS-架构升级方案.md](AIOS-架构升级方案.md) 提炼定稿
 > 一句话：**AI 是大脑、Harness 是手脚、应用是进程、一切皆可即时生成、用完即毁**
 
 ## 1. 设计愿景
@@ -82,7 +82,7 @@ Verify 推广后验证（完整 A/B → 回归超阈值 → 自动回滚，全�
 
 - **TUI**：自研帧缓冲渲染（差分 + CJK 宽）+ markdown OSC8 超链接
 - **Web**：Svelte 5 + SSE（chat 流）+ WS 实时总线（eventBus 双写）；左侧导航（对话/应用/进程/任务）+ 右侧面板（文件变更/文档预览/应用预览）+ SystemPanel 13 Tab（上下文/智能体/技能/MCP/插件/应用/进程/设备/进化/调度/配置/轨迹/审计）
-- **设备**：TTS（edge-tts 在线 / sherpa 本地降级）、媒体服务器 WS 音频通道、模型多模态能力展示
+- **设备**：**语音输入**（sherpa-onnx paraformer-zh 离线 ASR，Web 按住说话→识别回填；模型经 hf-mirror 下载或手动放置 `data/media/models/asr/`）+ **TTS**（sherpa vits-zh-ll 离线优先 / edge-tts 在线降级，WS 音频通道 + Web speechSynthesis 兜底）、模型多模态能力展示；`/media status|download`
 - **CLI**：`/mode /plan /debate /app /bg /jobs /schedule /install /pkg /skill(s) /setup /new /sessions /trace /dir /config /evo /export /help /exit`
 
 ## 8. 快速开始

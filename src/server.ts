@@ -11,6 +11,8 @@ import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createAudioWs } from "./media/media-server.js";
 import { getDeviceStatus } from "./media/status.js";
+import { getAsrProvider } from "./media/asr.js";
+import { downloadModel } from "./media/model-manager.js";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
@@ -867,6 +869,35 @@ export function startServer(deps: ServerDeps, port: number) {
         /* 无权限目录返回空列表 */
       }
       sendJSON(res, 200, { path: start, parent, dirs });
+      return;
+    }
+
+    // 语音模型下载（Sprint 43：Web 设备 Tab 一键下载；异步长任务，本地 fetch 等待完成）
+    if (url === apiUrl("/media/download") && req.method === "POST") {
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      let kind: string;
+      try {
+        const body = JSON.parse(await parseBody(req)) as { kind?: string };
+        kind = body.kind ?? "";
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+      if (kind !== "asr" && kind !== "tts") {
+        sendJSON(res, 400, { error: "kind 必须为 asr|tts" });
+        return;
+      }
+      const result = await downloadModel(dataDir, kind);
+      auditLogger.log({
+        timestamp: Date.now(),
+        agentId: "server",
+        sessionId: "",
+        action: "media:download",
+        target: kind,
+        result: result.ok ? "success" : "error",
+        detail: result.ok ? `新增 ${result.downloaded.length} · 跳过 ${result.skipped.length}` : (result.error ?? "下载失败"),
+      });
+      sendJSON(res, 200, result);
       return;
     }
 
@@ -1992,7 +2023,11 @@ export function startServer(deps: ServerDeps, port: number) {
   // 服务端主动推送（会话元数据变更 / 任务事件广播），支持多端同步。
   const wss = new WebSocketServer({ noServer: true });
   // 音频通道（Sprint 36：/api/v1/audio，TTS 请求/响应）
-  const audioWs = createAudioWs(deps.dataDir ?? resolve(process.cwd(), "data"));
+  const audioWs = createAudioWs(
+    deps.dataDir ?? resolve(process.cwd(), "data"),
+    undefined,
+    getAsrProvider(deps.dataDir ?? resolve(process.cwd(), "data")),
+  );
   server.on("upgrade", (req, socket, head) => {
     if (req.url === apiUrl("/ws")) {
       wss.handleUpgrade(req, socket, head, (ws) => {
