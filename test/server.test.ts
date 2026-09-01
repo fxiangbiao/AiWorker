@@ -1472,6 +1472,23 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
           ok: true,
           view: { proposalId: id, kind: "new-tool", title: "生成周报工具", after: "生成工具：自动生成周报", lines: [{ type: "add", text: "生成工具：自动生成周报" }] },
         }),
+        listCases: (limit = 100) => [{ id: "case-1", input: "整理周报", source: "manual", createdAt: 123 }],
+        addCase: (input: string, expected?: string) => ({
+          ok: true,
+          case: { id: "case-new", input, expected, source: "manual", createdAt: 123 },
+        }),
+        deleteCase: (id: string) => ({ ok: id === "case-1" }),
+        extractCases: () => ({ added: 2, skipped: 1 }),
+        eval: async (id: string) => ({
+          ok: true,
+          report: { total: 1, skipped: 0, hasBaseline: true, baselinePassRate: 0.8, candidatePassRate: 0.6, deltaRate: -0.2, verdict: "pass", results: [] },
+        }),
+        verify: async (id: string) => ({
+          ok: true,
+          report: { total: 1, skipped: 0, hasBaseline: true, baselinePassRate: 1, candidatePassRate: 0.4, deltaRate: -0.6, verdict: "regress", results: [] },
+          rolledBack: true,
+          detail: "已自动回滚",
+        }),
       } as never,
     };
     server5 = startServer(deps as never, 0);
@@ -1568,5 +1585,65 @@ describe("HTTP Server — 进化引擎端点（Sprint 39）", () => {
   it("未知操作返回 404", async () => {
     const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/frobnicate`, { method: "POST" });
     expect(resp.status).toBe(404);
+  });
+
+  it("GET /evolution/cases 返回黄金用例", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases?limit=50`);
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.cases).toHaveLength(1);
+    expect(data.cases[0]).toMatchObject({ id: "case-1", input: "整理周报" });
+  });
+
+  it("POST /evolution/cases 手工补录", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: "写会议纪要", expected: "markdown" }),
+    });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.case).toMatchObject({ id: "case-new", input: "写会议纪要", expected: "markdown" });
+  });
+
+  it("POST /evolution/cases 非法 JSON 返回 400", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{invalid",
+    });
+    expect(resp.status).toBe(400);
+  });
+
+  it("POST /evolution/cases/extract 提取用例", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases/extract`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data).toEqual({ added: 2, skipped: 1 });
+  });
+
+  it("DELETE /evolution/cases/:id 删除用例", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/cases/case-1`, { method: "DELETE" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+  });
+
+  it("POST /evolution/proposals/:id/eval 返回评测报告", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/eval`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.report).toMatchObject({ verdict: "pass", baselinePassRate: 0.8 });
+  });
+
+  it("POST /evolution/proposals/:id/verify 推广验证（回归自动回滚）", async () => {
+    const resp = await fetch(`${base5}${API}/evolution/proposals/evo-abc/verify`, { method: "POST" });
+    expect(resp.status).toBe(200);
+    const data = await resp.json();
+    expect(data.ok).toBe(true);
+    expect(data.rolledBack).toBe(true);
+    expect(data.report.verdict).toBe("regress");
   });
 });

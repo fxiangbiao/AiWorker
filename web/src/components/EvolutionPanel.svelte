@@ -6,7 +6,7 @@
   import { onMount } from "svelte";
   import { API } from "$lib/stores/chat.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
-  import { Sparkles, RefreshCw, Check, X, BrainCircuit, FileDiff } from "lucide-svelte";
+  import { Sparkles, RefreshCw, Check, X, BrainCircuit, FileDiff, FlaskConical, ShieldCheck, Plus, Trash2, Database } from "lucide-svelte";
 
   interface ToolStat {
     name: string;
@@ -58,10 +58,43 @@
     jobId?: string;
   }
 
+  interface EvalCaseResult {
+    caseId: string;
+    beforeOk: boolean;
+    afterOk: boolean;
+    reason?: string;
+  }
+  interface EvalReport {
+    total: number;
+    skipped: number;
+    hasBaseline: boolean;
+    baselinePassRate: number;
+    candidatePassRate: number;
+    deltaRate: number;
+    beforeLatencyMs?: number;
+    afterLatencyMs?: number;
+    verdict: "pass" | "regress" | "unknown" | "not-evaluable";
+    reason?: string;
+    results: EvalCaseResult[];
+  }
+  interface EvolutionCase {
+    id: string;
+    input: string;
+    expected?: string;
+    source: "manual" | "session";
+    sessionId?: string;
+    createdAt: number;
+  }
+
   let obs = $state<Observation | null>(null);
   let proposals = $state<Proposal[]>([]);
   let ledger = $state<LedgerEntry[]>([]);
   let changes = $state<Record<string, ChangeView>>({});
+  let reports = $state<Record<string, EvalReport>>({});
+  let cases = $state<EvolutionCase[]>([]);
+  let newCaseInput = $state("");
+  let newCaseExpected = $state("");
+  let caseBusy = $state(false);
   let loading = $state(false);
   let busy = $state(false);
   let msg = $state<{ kind: "ok" | "err" | "info"; text: string } | null>(null);
@@ -97,6 +130,8 @@
     rejected: "拒绝",
     "generated-submitted": "生成提交",
     generated: "生成结果",
+    eval: "评测",
+    verified: "验证",
   };
 
   function pct(v?: number): string {
@@ -158,6 +193,107 @@
     } catch {
       /* 静默 */
     }
+  }
+
+  async function loadCases() {
+    try {
+      const r = await fetch(`${API}/evolution/cases?limit=50`);
+      if (r.ok) cases = ((await r.json()) as { cases: EvolutionCase[] }).cases ?? [];
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  /** A/B 评测（不动作）：pending/confirmed/applied 均可；报告仅当次展示（重跑即刷新） */
+  async function runEval(id: string) {
+    msg = null;
+    try {
+      const r = await fetch(`${API}/evolution/proposals/${id}/eval`, { method: "POST" });
+      const d = (await r.json()) as { ok: boolean; report?: EvalReport; error?: string };
+      if (!r.ok || !d.ok) {
+        msg = { kind: "err", text: d.error ?? `评测失败（HTTP ${r.status}）` };
+        return;
+      }
+      reports = { ...reports, [id]: d.report! };
+      await loadLedger();
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    }
+  }
+
+  /** 推广后验证（仅 applied）：回归自动回滚 */
+  async function runVerify(id: string) {
+    msg = null;
+    try {
+      const r = await fetch(`${API}/evolution/proposals/${id}/verify`, { method: "POST" });
+      const d = (await r.json()) as { ok: boolean; report?: EvalReport; rolledBack?: boolean; detail?: string; error?: string };
+      if (!r.ok || !d.ok) {
+        msg = { kind: "err", text: d.error ?? `验证失败（HTTP ${r.status}）` };
+        return;
+      }
+      if (d.report) reports = { ...reports, [id]: d.report };
+      msg = d.rolledBack
+        ? { kind: "info", text: `评测回归，已自动回滚${d.detail ? ` · ${d.detail}` : ""}` }
+        : { kind: "ok", text: `验证完成（${d.report?.verdict ?? ""}），未触发回滚` };
+      await loadProposals();
+      await loadLedger();
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    }
+  }
+
+  async function addCase() {
+    const input = newCaseInput.trim();
+    if (!input) return;
+    caseBusy = true;
+    try {
+      const r = await fetch(`${API}/evolution/cases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input, expected: newCaseExpected.trim() || undefined }),
+      });
+      const d = (await r.json()) as { ok: boolean; error?: string };
+      if (!r.ok || !d.ok) {
+        msg = { kind: "err", text: d.error ?? `补录失败（HTTP ${r.status}）` };
+      } else {
+        newCaseInput = "";
+        newCaseExpected = "";
+        msg = { kind: "ok", text: "已补录黄金用例" };
+      }
+      await loadCases();
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    } finally {
+      caseBusy = false;
+    }
+  }
+
+  async function extractCases() {
+    caseBusy = true;
+    try {
+      const r = await fetch(`${API}/evolution/cases/extract`, { method: "POST" });
+      const d = (await r.json()) as { added: number; skipped: number };
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      msg = { kind: "ok", text: `提取完成: 新增 ${d.added} · 去重跳过 ${d.skipped}` };
+      await loadCases();
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    } finally {
+      caseBusy = false;
+    }
+  }
+
+  async function deleteCase(id: string) {
+    try {
+      const r = await fetch(`${API}/evolution/cases/${id}`, { method: "DELETE" });
+      if (r.ok) await loadCases();
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  function verdictBadge(v: string): string {
+    return v === "pass" ? "✅ 通过" : v === "regress" ? "🔻 回归" : v === "unknown" ? "⚠️ 未知" : "⛔ 不可评测";
   }
 
   /** 加载/切换提案变更对比（已缓存则收起；未缓存则加载并展开） */
@@ -247,12 +383,14 @@
     loadObserve();
     loadProposals();
     loadLedger();
+    loadCases();
     unsubWs = onWsEvent((d) => {
       const t = (d as { type?: string }).type ?? "";
       if (t.startsWith("evolution/") || t === "gen/done" || t === "gen/failed") {
         loadProposals();
         loadObserve();
         loadLedger();
+        loadCases();
       }
     });
   });
@@ -379,7 +517,38 @@
               </div>
             </div>
           {/if}
+          {#if reports[p.id]}
+            <div class="evo-diff">
+              <div class="evo-diff-title">评测报告（A/B · {verdictBadge(reports[p.id].verdict)}）</div>
+              {#if reports[p.id].verdict === "not-evaluable"}
+                <div class="evo-empty">{reports[p.id].reason}</div>
+              {:else}
+                <div class="evo-eval-rate">
+                  {#if reports[p.id].hasBaseline}
+                    <span>旧 {pct(reports[p.id].baselinePassRate)}</span>
+                    <span class="evo-eval-bar"><span class="evo-eval-fill" style="width:{Math.max(2, reports[p.id].baselinePassRate * 100)}%;background:var(--dim)"></span></span>
+                    <span>→ 新 {pct(reports[p.id].candidatePassRate)}</span>
+                    <span class="evo-eval-bar"><span class="evo-eval-fill" style="width:{Math.max(2, reports[p.id].candidatePassRate * 100)}%;background:{reports[p.id].verdict === "regress" ? "var(--error)" : "var(--success)"}"></span></span>
+                  {:else}
+                    <span>候选成功率 {pct(reports[p.id].candidatePassRate)}（无基线）</span>
+                  {/if}
+                  <span class="evo-eval-meta">计分 {reports[p.id].total} · 跳过 {reports[p.id].skipped}</span>
+                </div>
+                <div class="evo-diff-lines">
+                  {#each reports[p.id].results as res}
+                    <div class="evo-diff-line">
+                      <span class="evo-diff-mark">{res.afterOk === res.beforeOk ? "·" : res.afterOk ? "↑" : "↓"}</span>
+                      {res.caseId}{reports[p.id].hasBaseline ? ` 旧:${res.beforeOk ? "✓" : "✗"}` : ""} 新:{res.afterOk ? "✓" : "✗"}{res.reason ? ` ${res.reason}` : ""}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
           <div class="evo-prop-actions">
+            {#if p.status === "pending" || p.status === "confirmed" || p.status === "applied"}
+              <button class="evo-btn evo-sm evo-ghost" onclick={() => runEval(p.id)}><FlaskConical size={12} /> 评测</button>
+            {/if}
             {#if p.status === "pending"}
               <button class="evo-btn evo-sm evo-adopt" onclick={() => act(p.id, "adopt")}><Check size={12} /> 采纳</button>
               <button class="evo-btn evo-sm evo-reject" onclick={() => act(p.id, "reject")}><X size={12} /> 拒绝</button>
@@ -389,6 +558,7 @@
             {:else if p.status === "applied" || p.status === "rolled_back"}
               <button class="evo-btn evo-sm evo-ghost" onclick={() => toggleChange(p.id)}><FileDiff size={12} /> {changes[p.id] ? "收起变更" : "查看变更"}</button>
               {#if p.status === "applied"}
+                <button class="evo-btn evo-sm evo-adopt" onclick={() => runVerify(p.id)}><ShieldCheck size={12} /> 推广验证</button>
                 <button class="evo-btn evo-sm evo-rollback" onclick={() => act(p.id, "rollback")}><RefreshCw size={12} /> 回滚</button>
               {/if}
               <span class="evo-prop-id">{p.id}</span>
@@ -398,6 +568,32 @@
           </div>
         </div>
       {/each}
+    {/if}
+  </div>
+
+  <div class="evo-section">
+    <div class="evo-title"><Database size={14} /> 黄金用例（{cases.length}，评测集）</div>
+    <div class="evo-case-toolbar">
+      <input class="evo-case-input" placeholder="任务描述（手工补录）" bind:value={newCaseInput} />
+      <input class="evo-case-input evo-case-expected" placeholder="期望达成（可选）" bind:value={newCaseExpected} />
+      <button class="evo-btn evo-sm" onclick={addCase} disabled={caseBusy || !newCaseInput.trim()}><Plus size={12} /> 补录</button>
+      <button class="evo-btn evo-sm evo-ghost" onclick={extractCases} disabled={caseBusy}><Sparkles size={12} /> 从会话提取</button>
+    </div>
+    {#if cases.length === 0}
+      <div class="evo-empty">暂无黄金用例（评测前先「从会话提取」或手工补录）</div>
+    {:else}
+      <div class="evo-case-list">
+        {#each cases as c}
+          <div class="evo-case-row">
+            <span class="evo-case-src">{c.source === "session" ? "📜" : "✍️"}</span>
+            <span class="evo-case-input-text" title={c.input}>{c.input}</span>
+            {#if c.expected}
+              <span class="evo-case-exp" title={c.expected}>期望</span>
+            {/if}
+            <button class="evo-btn evo-sm evo-ghost" onclick={() => deleteCase(c.id)}><Trash2 size={11} /></button>
+          </div>
+        {/each}
+      </div>
     {/if}
   </div>
 
@@ -772,6 +968,85 @@
     display: inline-block;
     width: 14px;
     font-weight: 700;
+  }
+  .evo-eval-rate {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text);
+    flex-wrap: wrap;
+  }
+  .evo-eval-bar {
+    width: 90px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .evo-eval-fill {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+  }
+  .evo-eval-meta {
+    color: var(--dim);
+    font-size: 11px;
+  }
+  .evo-case-toolbar {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .evo-case-input {
+    flex: 1;
+    min-width: 140px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .evo-case-expected {
+    flex: 0.7;
+  }
+  .evo-case-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-height: 180px;
+    overflow: auto;
+  }
+  .evo-case-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 4px;
+  }
+  .evo-case-row:hover {
+    background: var(--hover-bg);
+  }
+  .evo-case-src {
+    flex-shrink: 0;
+  }
+  .evo-case-input-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+  }
+  .evo-case-exp {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--primary);
+    border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+    border-radius: 4px;
+    padding: 0 5px;
   }
   .evo-prop-actions {
     display: flex;

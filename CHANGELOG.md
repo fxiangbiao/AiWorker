@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.0 (2026-08-30)
+
+### 进化引擎第三期：测试 + 推广（Sprint 41）
+
+- **黄金用例库**（`data/evolution/cases/`）：成功会话轨迹沉淀评测用例——按 turn 提取（`turn/end reason=stop` 的 turn 取末条用户消息为 input、末条助手消息为 expected 截断 200 字符，多轮会话产出多用例，复用 `messageText` 兼容 parts 数组）；`normalizeTaskText` 完全一致去重（记 skipped）；手工补录（CLI `/evo case add <任务> [期望]` 期望为剩余参数 join + Web/API）；`/evo case list|delete|extract` + API 四端点；存储目录注入测试隔离
+- **A/B 量化评测**（`evolution-eval`）：tool-fix/prompt-fix 在用例集上对比「旧文本 vs 新文本」→ 成功率/耗时报告 + 通过/回归裁决；裁判注入（生产=modelRouter 判断文本是否足以引导正确完成，输出非 JSON 抛错按用例跳过；测试 mock）；**before 双轨**（applied 走快照 `extractBefore` 现成逻辑，pending/confirmed 走实时定义 `getToolDescription`/`getAgentSystemPrompt`，按 status 选源——apply 失败残留快照不误用，旧数据无基线仅绝对线）；护栏 MAX_EVAL_CASES=5、裁判失败不计分母、**耗时仅报告不裁决**（裁判调用耗时≠工具执行耗时）、阈值含浮点 epsilon（恰等于 -0.2 不算回归）
+- **推广后验证 + 自动回滚**：`/evo verify <id>` + Web「推广验证」仅 applied 可调 → 完整 A/B → regress（相对 -20% 或绝对 <50% 且 ≥2 用例）且快照存在 → **自动回滚**（`doRollback(id,"auto")` 单路径复用 rollback 状态机，审计 `evolution:auto_rolled_back` + 广播 `evolution/auto_rolled_back`，detail 含评测回归摘要）；pass/unknown 记 `verified` 不动作；无快照明确报错不虚假回滚；manual rollback 不受影响
+- **API**：`GET/POST /evolution/cases`、`POST /evolution/cases/extract`、`DELETE /evolution/cases/:id`、`POST /evolution/proposals/:id/eval|verify`（POST-only 405 沿用）；台账补 `eval`/`verified` 事件（摘要含 verdict/passRates）
+- **Web 进化 Tab**：提案卡片「评测」（pending/confirmed/applied）+「推广验证」（applied）按钮；A/B 结果视图（旧/新成功率对比条、✅/🔻/⚠️/⛔ 徽标、无基线/skipped 标注，报告仅当次展示重跑即刷新）；「黄金用例」卡（补录输入框/从会话提取/删除）
+- **CLI**：`/evo eval <id>`（A/B 报告：成功率/Δ/裁判耗时参考/每用例明细）、`/evo verify <id>`（回归自动回滚提示）、`/evo case add|list|delete|extract`
+- 修复：「从会话提取」崩溃——`user/message` 事件 data 即 Message **本体**（误按 assistant 的 `{message}` 包装解析）→ 对齐 session-store 真实形状，并对畸形/旧数据防御（形状不符按跳过处理不抛错）；测试夹具同步修正（旧夹具形状错误致漏测）
+- 测试 +61（cases 提取/切分/去重/截断/形状回归、decideVerdict 阈值边界、runEval 调用次数/skipped/超限/expected 传入、engine before 双轨/eval 状态门/verify 三态/自动回滚审计广播、端点 7、CLI 7）；全量 716 全绿
+
 ## 0.11.0 (2026-08-30)
 
 ### 进化引擎第二期：补丁生效 + 快照回滚（Sprint 40）

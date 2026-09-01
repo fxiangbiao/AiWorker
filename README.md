@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-0.11.0-blue)
+![version](https://img.shields.io/badge/version-0.12.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)

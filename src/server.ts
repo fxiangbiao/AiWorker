@@ -1645,6 +1645,41 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 200, { entries: evo.ledger(Number.isFinite(limit) ? limit : 20) });
         return;
       }
+      // 黄金用例库（Sprint 41 第三期：评测集）
+      if (req.method === "GET" && (url === apiUrl("/evolution/cases") || url.startsWith(apiUrl("/evolution/cases") + "?"))) {
+        sendJSON(res, 200, { cases: evo.listCases() });
+        return;
+      }
+      if (url === apiUrl("/evolution/cases") && req.method === "POST") {
+        let body: string;
+        try {
+          body = await parseBody(req);
+        } catch {
+          sendJSON(res, 413, { error: "Body too large" });
+          return;
+        }
+        let input = "";
+        let expected: string | undefined;
+        try {
+          const parsed = JSON.parse(body) as { input?: unknown; expected?: unknown };
+          if (typeof parsed.input === "string") input = parsed.input;
+          if (typeof parsed.expected === "string") expected = parsed.expected;
+        } catch {
+          sendJSON(res, 400, { error: "Invalid JSON" });
+          return;
+        }
+        sendJSON(res, 200, evo.addCase(input, expected));
+        return;
+      }
+      if (url === apiUrl("/evolution/cases/extract") && req.method === "POST") {
+        sendJSON(res, 200, evo.extractCases());
+        return;
+      }
+      if (url.startsWith(apiUrl("/evolution/cases/")) && req.method === "DELETE") {
+        const cid = decodeURIComponent(url.slice(apiUrl("/evolution/cases/").length));
+        sendJSON(res, 200, evo.deleteCase(cid));
+        return;
+      }
       if (url.startsWith(apiUrl("/evolution/proposals/"))) {
         const rest = url.slice(apiUrl("/evolution/proposals/").length);
         const id = decodeURIComponent(rest.split("/")[0] ?? "");
@@ -1676,11 +1711,19 @@ export function startServer(deps: ServerDeps, port: number) {
           sendJSON(res, 200, evo.rollback(id));
           return;
         }
+        if (rest.endsWith("/eval")) {
+          sendJSON(res, 200, await evo.eval(id));
+          return;
+        }
+        if (rest.endsWith("/verify")) {
+          sendJSON(res, 200, await evo.verify(id));
+          return;
+        }
         if (rest.endsWith("/reject")) {
           sendJSON(res, 200, evo.reject(id));
           return;
         }
-        sendJSON(res, 404, { error: "未知操作（change|adopt|apply|rollback|reject）" });
+        sendJSON(res, 404, { error: "未知操作（change|adopt|apply|rollback|reject|eval|verify）" });
         return;
       }
     }
