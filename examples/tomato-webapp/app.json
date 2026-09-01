@@ -1,0 +1,10 @@
+{
+  "id": "tomato",
+  "type": "app",
+  "name": "番茄钟",
+  "version": "1.0.0",
+  "description": "番茄工作法计时器：25 分钟专注 + 5 分钟休息，纯前端无外部依赖",
+  "entry": "index.html",
+  "permissions": [],
+  "ui": { "surface": "float" }
+}

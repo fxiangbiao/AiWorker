@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { resolve } from "node:path";
+import Database from "better-sqlite3";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import type { SessionEvent } from "../src/types.js";
@@ -224,5 +225,37 @@ describe("会话自动标题（Sprint 26）", () => {
     const { generateSessionTitle } = await import("../src/memory/session-store.js");
     expect(generateSessionTitle("  hello   world  ")).toBe("hello world");
     expect(generateSessionTitle("a".repeat(30))).toBe(`${"a".repeat(24)}…`);
+  });
+});
+
+describe("会话项目目录（Sprint 42）", () => {
+  it("get/set/list 读写与 null 清除", () => {
+    const sid = store.createSession("default").id;
+    expect(store.getWorkingDir(sid)).toBeNull();
+    const proj = resolve(dir, "proj");
+    expect(store.setWorkingDir(sid, proj)).toBe(true);
+    expect(store.getWorkingDir(sid)).toBe(proj);
+    const sessions = store.listSessions(100);
+    expect(sessions.find((s) => s.id === sid)?.workingDir).toBe(proj);
+    expect(store.setWorkingDir(sid, null)).toBe(true);
+    expect(store.getWorkingDir(sid)).toBeNull();
+    // 不存在的会话 set 返回 false
+    expect(store.setWorkingDir("no-such", proj)).toBe(false);
+  });
+
+  it("旧库迁移：无 working_dir 列自动 ALTER 补列（旧行 null）", () => {
+    const oldPath = resolve(dir, "old.db");
+    const db = new Database(oldPath);
+    db.exec(
+      `CREATE TABLE sessions (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, summary TEXT);`,
+    );
+    db.close();
+    const migrated = new SessionStore(oldPath);
+    const sid = migrated.createSession("default").id;
+    expect(migrated.getWorkingDir(sid)).toBeNull();
+    const proj = resolve(dir, "proj");
+    expect(migrated.setWorkingDir(sid, proj)).toBe(true);
+    expect(migrated.getWorkingDir(sid)).toBe(proj);
+    migrated.close();
   });
 });

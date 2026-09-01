@@ -12,11 +12,20 @@ interface TtsWs extends WebSocket {
   alive?: boolean;
 }
 
+/** 设备状态探测（Sprint 42 A2）：最近一次创建的音频通道实例（只读） */
+let audioWsStatus: { active: boolean; path: string; clients: () => number } | null = null;
+
+export function getAudioWsStatus(): { active: boolean; path?: string; clients?: number } | null {
+  if (!audioWsStatus) return null;
+  return { active: audioWsStatus.active, path: audioWsStatus.path, clients: audioWsStatus.clients() };
+}
+
 /** 创建 /api/v1/audio WS 服务（noServer 模式；由 server 集成 upgrade 路由；provider 可注入便于测试） */
 export function createAudioWs(dataDir: string, provider?: TtsProvider): { wss: WebSocketServer; path: string } {
   const wss = new WebSocketServer({ noServer: true });
   const path = "/api/v1/audio";
   const ttsProvider = provider ?? resolveTtsProvider(dataDir);
+  audioWsStatus = { active: true, path, clients: () => wss.clients.size };
 
   wss.on("connection", (raw) => {
     const ws = raw as TtsWs;

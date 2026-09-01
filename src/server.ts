@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createAudioWs } from "./media/media-server.js";
+import { getDeviceStatus } from "./media/status.js";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
@@ -19,6 +20,7 @@ import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
 import { eventBus } from "./server/event-bus.js";
+import { auditLogger } from "./core/audit-logger.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
@@ -740,7 +742,7 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export")) {
+    if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export") && !url.endsWith("/working-dir")) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       // 事件回放（含 tool_calls + tool 结果，TUI/Web 会话完整消息序列）；
@@ -777,6 +779,112 @@ export function startServer(deps: ServerDeps, port: number) {
       const ok = deps.sessionStore.renameSession(sessionId, parsedTitle);
       if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "rename", title: parsedTitle });
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
+      return;
+    }
+
+    // 会话项目目录（Sprint 42：每会话选择项目目录）
+    if (url.startsWith(apiUrl("/sessions/")) && url.endsWith("/working-dir") && req.method === "GET") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length).replace(/\/working-dir$/, "");
+      sendJSON(res, 200, { workingDir: deps.sessionStore.getWorkingDir(sessionId) });
+      return;
+    }
+    if (url.startsWith(apiUrl("/sessions/")) && url.endsWith("/working-dir") && req.method === "POST") {
+      if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length).replace(/\/working-dir$/, "");
+      let dir: unknown;
+      let agentId: unknown;
+      try {
+        const body = JSON.parse(await parseBody(req)) as { dir?: unknown; agentId?: unknown };
+        dir = body.dir;
+        agentId = body.agentId;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+      // null/空串 = 恢复默认；否则校验绝对路径 + 存在 + 目录 + 不指向 dataDir
+      let resolvedDir: string | null = null;
+      if (dir !== null && dir !== undefined && dir !== "") {
+        if (typeof dir !== "string" || !isAbsolute(dir)) {
+          sendJSON(res, 400, { error: "目录必须为绝对路径" });
+          return;
+        }
+        if (!existsSync(dir)) {
+          sendJSON(res, 400, { error: `目录不存在: ${dir}` });
+          return;
+        }
+        if (!statSync(dir).isDirectory()) {
+          sendJSON(res, 400, { error: "路径不是目录" });
+          return;
+        }
+        const dataDirAbs = deps.dataDir ? resolve(deps.dataDir) : resolve(process.cwd(), "data");
+        if (resolve(dir) === dataDirAbs) {
+          sendJSON(res, 400, { error: "不能指向数据目录（dataDir）" });
+          return;
+        }
+        resolvedDir = resolve(dir);
+      }
+      // 新会话（Web 本地草稿）服务端可能尚无行：与 /chat 同策略自动补建，避免 "Session not found"
+      deps.sessionStore.ensureSession(sessionId, typeof agentId === "string" && agentId ? agentId : "default");
+      const ok = deps.sessionStore.setWorkingDir(sessionId, resolvedDir);
+      if (!ok) { sendJSON(res, 404, { error: "Session not found" }); return; }
+      auditLogger.log({
+        timestamp: Date.now(),
+        agentId: "server",
+        sessionId,
+        action: "session:working-dir",
+        target: sessionId,
+        result: "success",
+        detail: resolvedDir ?? "（恢复默认）",
+      });
+      eventBus.broadcast({ type: "session/update", sessionId, kind: "working-dir", workingDir: resolvedDir });
+      sendJSON(res, 200, { ok: true, workingDir: resolvedDir });
+      return;
+    }
+
+    // 目录浏览（Sprint 42 补：项目目录弹窗选择的数据源；只读列出子目录名，不读内容）
+    if (req.method === "GET" && (url === apiUrl("/dirs") || url.startsWith(apiUrl("/dirs") + "?"))) {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const raw = u.searchParams.get("path");
+      if (raw && !isAbsolute(raw)) {
+        sendJSON(res, 400, { error: "必须为绝对路径" });
+        return;
+      }
+      const start = raw ? resolve(raw) : deps.workingDir;
+      if (!existsSync(start) || !statSync(start).isDirectory()) {
+        sendJSON(res, 400, { error: `目录不存在或不是目录: ${start}` });
+        return;
+      }
+      const parent = dirname(start) === start ? null : dirname(start);
+      let dirs: string[] = [];
+      try {
+        dirs = readdirSync(start, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+          .sort((a, b) => a.localeCompare(b))
+          .slice(0, 300);
+      } catch {
+        /* 无权限目录返回空列表 */
+      }
+      sendJSON(res, 200, { path: start, parent, dirs });
+      return;
+    }
+
+    // 设备状态（Sprint 42 A2：媒体通道 + 模型能力，只读）
+    if (url === apiUrl("/devices") && req.method === "GET") {
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      sendJSON(res, 200, getDeviceStatus(dataDir, deps.modelRouter));
+      return;
+    }
+
+    // 审计查询（Sprint 42 A1：审计 Tab；?limit=&action= 前缀过滤，最新在前）
+    if (url.startsWith(apiUrl("/audit")) && req.method === "GET") {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const limit = Number(u.searchParams.get("limit") ?? "100");
+      const action = u.searchParams.get("action") ?? undefined;
+      sendJSON(res, 200, {
+        entries: auditLogger.queryRecent(Number.isFinite(limit) ? limit : 100, action || undefined),
+      });
       return;
     }
 
@@ -1043,7 +1151,18 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
     if (url === apiUrl("/processes") && req.method === "GET") {
-      sendJSON(res, 200, { processes: processManager.list(), stats: processManager.stats() });
+      // 资源仪表（Sprint 42 A3）：全局 token 占用（进程级精确归因未做——模型 token 全局累计）
+      sendJSON(res, 200, {
+        processes: processManager.list(),
+        stats: processManager.stats(),
+        resources: {
+          tokens: {
+            total: deps.modelRouter?.getTokenUsage() ?? 0,
+            prompt: deps.modelRouter?.getPromptTokens?.() ?? 0,
+            completion: deps.modelRouter?.getCompletionTokens?.() ?? 0,
+          },
+        },
+      });
       return;
     }
 
@@ -1532,10 +1651,16 @@ export function startServer(deps: ServerDeps, port: number) {
     }
 
     // ─── 文档工作台（Sprint 35：data/docs/ 会话资产；Sprint 38：+ 工作目录项目文档） ───
-    if (url === apiUrl("/docs") && req.method === "GET") {
+    if (req.method === "GET" && (url === apiUrl("/docs") || url.startsWith(apiUrl("/docs") + "?"))) {
       const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
       const docsDir = resolve(dataDir, "docs");
-      const projectDir = deps.workingDir;
+      // 项目文档根：?sessionId= 时跟随会话项目目录（未设置回退全局）
+      const u = new URL(req.url ?? "", "http://localhost");
+      const sessionIdParam = u.searchParams.get("sessionId");
+      const projectDir =
+        sessionIdParam && deps.sessionStore
+          ? deps.sessionStore.getWorkingDir(sessionIdParam) ?? deps.workingDir
+          : deps.workingDir;
       const docs: { root: string; path: string; title: string; size: number; mtime: number }[] = [];
       // 会话资产：data/docs/ 全量递归（数量小，无上限）
       const walkSession = (dir: string, base: string): void => {
@@ -1611,8 +1736,13 @@ export function startServer(deps: ServerDeps, port: number) {
       const u = new URL(req.url ?? "", "http://localhost");
       const root = u.searchParams.get("root") ?? "session";
       const rel = u.searchParams.get("path") ?? "";
+      const sessionIdParam = u.searchParams.get("sessionId");
       const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
-      const baseDir = root === "project" ? deps.workingDir : resolve(dataDir, "docs");
+      const projectDir =
+        sessionIdParam && deps.sessionStore
+          ? deps.sessionStore.getWorkingDir(sessionIdParam) ?? deps.workingDir
+          : deps.workingDir;
+      const baseDir = root === "project" ? projectDir : resolve(dataDir, "docs");
       const abs = resolve(baseDir, rel);
       const relCheck = relative(baseDir, abs);
       if (!relCheck.startsWith("..") && !isAbsolute(relCheck) && existsSync(abs) && statSync(abs).isFile()) {
@@ -1826,6 +1956,8 @@ export function startServer(deps: ServerDeps, port: number) {
             sessionId: sessionId ?? `http-${Date.now().toString(36)}`,
             mode: chatReq.mode as PermissionMode | undefined,
             images,
+            // 每会话项目目录：优先会话自定义，回退全局（base-agent 已 task.workingDir ?? workingDir）
+            ...(sessionId && deps.sessionStore?.getWorkingDir(sessionId) ? { workingDir: deps.sessionStore.getWorkingDir(sessionId)! } : {}),
             ...(skillAction ? { explicitSkill: { name: skillAction.skill.name, body: skillAction.skill.body ?? "" } } : {}),
           };
 

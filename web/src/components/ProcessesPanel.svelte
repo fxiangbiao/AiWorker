@@ -4,14 +4,30 @@
    * Agent/App/Job 三类进程实时列表（WS 事件驱动）；打开时拉取最新
    */
   import { onMount } from "svelte";
-  import { processes, processStats, loadProcesses, apps } from "$lib/stores/apps.svelte";
-  import { Brain, Box, ListChecks, RefreshCw } from "lucide-svelte";
+  import { processes, processStats, processResources, loadProcesses, apps } from "$lib/stores/apps.svelte";
+  import { Brain, Box, ListChecks, RefreshCw, Gauge } from "lucide-svelte";
 
   function fmtTime(ts: number): string {
     const d = new Date(ts);
     const h = String(d.getHours()).padStart(2, "0");
     const m = String(d.getMinutes()).padStart(2, "0");
     return `${h}:${m}`;
+  }
+
+  function fmtNum(n: number): string {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(n);
+  }
+
+  /** 进程运行时长（进行中 = 至今；已结束 = 起止差） */
+  function duration(p: { startedAt?: number; endedAt?: number }): string {
+    const end = p.endedAt ?? Date.now();
+    if (typeof p.startedAt !== "number" || end < p.startedAt) return "";
+    const s = Math.round((end - p.startedAt) / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}m${r > 0 ? `${r}s` : ""}`;
   }
 
   const KIND_LABEL = { agent: "Agent", app: "应用", job: "任务" } as const;
@@ -59,6 +75,9 @@
     <span class="pp-stat"><Brain size={12} /> {$processStats.agent}</span>
     <span class="pp-stat"><Box size={12} /> {$processStats.app}</span>
     <span class="pp-stat"><ListChecks size={12} /> {$processStats.job}</span>
+    {#if $processResources}
+      <span class="pp-stat pp-res" title="本次运行累计 token（全局）"><Gauge size={12} /> tok {fmtNum($processResources.tokens.total)} <span class="pp-res-sub">入 {fmtNum($processResources.tokens.prompt)} · 出 {fmtNum($processResources.tokens.completion)}</span></span>
+    {/if}
   </div>
 
   {#if $processes.length === 0}
@@ -81,6 +100,9 @@
               {#if typeof p.startedAt === "number"}
                 <span>{fmtTime(p.startedAt)}</span>
               {/if}
+              {#if duration(p)}
+                <span class="pp-dur">{duration(p)}</span>
+              {/if}
               <span class="pp-pid">{pidShort(p.pid)}</span>
             </div>
           </div>
@@ -101,6 +123,9 @@
   .pp-refresh:hover { background: var(--hover-bg); color: var(--primary); }
   .pp-stats { display: flex; gap: 12px; padding: 0 4px 6px; font-size: 12px; color: var(--dim); }
   .pp-stat { display: flex; align-items: center; gap: 4px; }
+  .pp-res { margin-left: auto; color: var(--primary); }
+  .pp-res-sub { color: var(--dim); font-weight: 400; }
+  .pp-dur { color: var(--warn); }
   .pp-empty { color: var(--dim); font-size: 12px; text-align: center; padding: 24px 0; }
   .pp-list { display: flex; flex-direction: column; gap: 5px; }
   .pp-item {

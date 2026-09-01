@@ -161,6 +161,9 @@
               <div class="s-meta">
                 <span class="s-time">{fmtTime(c.createdAt)}</span>
                 <span>{c.turns || 0} 轮 &middot; {c.agentId || "default"}</span>
+                {#if c.workingDir}
+                  <span class="s-dir" title={`项目目录: ${c.workingDir}`}>📁</span>
+                {/if}
                 {#if statsMap[c.id]}
                   <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
                     {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
@@ -301,6 +304,7 @@
   .s-meta { font-size: 11px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
   .s-meta .bad { color: #e5484d; }
   .s-time { color: var(--primary); font-weight: 500; }
+  .s-dir { cursor: help; font-size: 10px; }
   .s-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; }
   .s-item { position: relative; }
   .sa-btn {

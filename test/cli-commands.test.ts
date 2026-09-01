@@ -182,6 +182,40 @@ describe("会话命令", () => {
     expect(parsed.items.length).toBeGreaterThan(0);
     expect(parsed.stats.turnCount).toBe(0);
   });
+
+  it("/dir 无参数展示生效目录（自定义 ?? 默认）", async () => {
+    const { ctx, writeLines, store } = makeCtx();
+    const sessionId = store.createSession("default").id;
+    const dirCtx = { ...ctx, currentSessionId: () => sessionId };
+    await find("dir").handler(dirCtx, "", "/dir");
+    expect(writeLines.join("\n")).toContain("默认");
+    // 设置后再无参查看：显示自定义
+    const proj = resolve(dirCtx.workingDir, "proj");
+    mkdirSync(proj, { recursive: true });
+    await find("dir").handler(dirCtx, proj, `/dir ${proj}`);
+    expect(store.getWorkingDir(sessionId)).toBe(proj);
+    await find("dir").handler(dirCtx, "", "/dir");
+    expect(writeLines.join("\n")).toContain("自定义");
+    // empty 恢复默认
+    await find("dir").handler(dirCtx, "empty", "/dir empty");
+    expect(store.getWorkingDir(sessionId)).toBeNull();
+  });
+
+  it("/dir 校验：相对路径/不存在拒绝；无会话提示", async () => {
+    const { ctx, writeLines, store } = makeCtx();
+    const sessionId = store.createSession("default").id;
+    const dirCtx = { ...ctx, currentSessionId: () => sessionId };
+    await find("dir").handler(dirCtx, "relative/path", "/dir relative/path");
+    expect(writeLines.join("\n")).toContain("绝对路径");
+    await find("dir").handler(dirCtx, resolve(ctx.workingDir, "no-such-dir"), "/dir no-such");
+    expect(writeLines.join("\n")).toContain("不存在");
+    expect(store.getWorkingDir(sessionId)).toBeNull();
+    // 无会话
+    const noSessCtx = { ...ctx, currentSessionId: () => undefined };
+    const writes2: string[] = [];
+    await find("dir").handler({ ...noSessCtx, writeLine: (l) => writes2.push(l) }, resolve(ctx.workingDir), "/dir set");
+    expect(writes2.join("\n")).toContain("无会话");
+  });
 });
 
 describe("模式命令", () => {

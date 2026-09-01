@@ -3,8 +3,8 @@
  */
 
 import chalk from "chalk";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, mkdirSync, existsSync, statSync } from "node:fs";
+import { resolve, isAbsolute } from "node:path";
 import { mcpManager } from "../mcp/mcp-manager.js";
 import { projectTrace, computeSessionStats } from "../core/trace.js";
 import { renderTrace } from "../terminal/trace-view.js";
@@ -290,6 +290,51 @@ export const sessionCommands: CliCommand[] = [
       }
 
       ctx.write("\n");
+      ctx.printStatus();
+      return "continue";
+    },
+  },
+  {
+    name: "dir",
+    usage: "dir [绝对路径]",
+    description: "查看/设置当前会话的项目目录",
+    detail: "无参数查看当前会话生效目录（会话自定义 ?? 全局默认）；带绝对路径设置为该会话项目目录（fs 工具/文档面板跟随）；传 empty 恢复默认",
+    handler: async (ctx, arg) => {
+      const sessionId = ctx.currentSessionId();
+      const argTrim = arg.trim();
+      if (argTrim === "empty" || argTrim === "default") {
+        if (!sessionId) { ctx.writeLine(chalk.yellow("⚠ 当前无会话（/new 开启后再设置）")); ctx.printStatus(); return "continue"; }
+        ctx.sessionStore.setWorkingDir(sessionId, null);
+        ctx.writeLine(chalk.green("✓ 已恢复默认项目目录"));
+        ctx.printStatus();
+        return "continue";
+      }
+      if (argTrim) {
+        if (!sessionId) { ctx.writeLine(chalk.yellow("⚠ 当前无会话（/new 开启后再设置）")); ctx.printStatus(); return "continue"; }
+        if (!isAbsolute(argTrim)) {
+          ctx.writeLine(chalk.red(`✗ 必须为绝对路径: ${argTrim}`));
+          ctx.printStatus();
+          return "continue";
+        }
+        if (!existsSync(argTrim) || !statSync(argTrim).isDirectory()) {
+          ctx.writeLine(chalk.red(`✗ 目录不存在或不是目录: ${argTrim}`));
+          ctx.printStatus();
+          return "continue";
+        }
+        if (!ctx.sessionStore.setWorkingDir(sessionId, resolve(argTrim))) {
+          ctx.writeLine(chalk.yellow("⚠ 会话不存在，无法设置（先发送消息建立会话或换一个会话）"));
+          ctx.printStatus();
+          return "continue";
+        }
+        ctx.writeLine(chalk.green(`✓ 当前会话项目目录: ${resolve(argTrim)}`));
+        ctx.printStatus();
+        return "continue";
+      }
+      const custom = sessionId ? ctx.sessionStore.getWorkingDir(sessionId) : null;
+      ctx.writeLine(chalk.cyan("\n📁 项目目录"));
+      ctx.writeLine(`  当前会话: ${chalk.white(custom ?? "（默认）")}${custom ? chalk.dim("（自定义）") : chalk.dim(` → ${ctx.workingDir}`)}`);
+      if (!custom) ctx.writeLine(chalk.dim("  默认: " + ctx.workingDir));
+      ctx.writeLine(chalk.gray("  /dir <绝对路径> 设置当前会话目录 · /dir empty 恢复默认"));
       ctx.printStatus();
       return "continue";
     },

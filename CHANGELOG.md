@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0 (2026-08-30)
+
+### AI OS 1.0 整合 + 每会话项目目录（Sprint 42）
+
+- **每会话项目目录**：`sessions` 表加 `working_dir` 列（旧库自动 ALTER 迁移）+ `getWorkingDir`/`setWorkingDir`；`/chat` 透传 `task.workingDir`（base-agent 既有优先逻辑，fs 工具/沙箱根/审批基线全链路跟随）；`GET/POST /sessions/:id/working-dir`（绝对路径+存在+目录+非 dataDir 校验，null 恢复默认，审计 `session:working-dir` + 广播）；CLI `/dir`（查看/设置/empty 恢复）；`/docs`+`/docs/content` 支持 `?sessionId=` 项目根跟随；**Web**：会话控制条 📁 徽标（**默认时显示实际默认目录名如 ai_default_project**，自定义显示目录名+「自定义」标记，tooltip 含完整生效路径与来源）+ 编辑器弹层（校验内联红字 + **「浏览…」目录选择弹窗**——浏览器无法取得本机绝对路径，故用服务端 `GET /api/v1/dirs` 只读浏览：面包屑导航/上级/子目录列表/路径跳转，选择后回填保存）、Sidebar 📁 标记、**StatusBar 移除全局 💻 工作目录**（目录已会话化，回归纯系统状态）；WS `session/update` 跨端联动
+- **审计 Tab**：`AuditLog.queryRecent(limit, actionPrefix?)`（最新在前 + 前缀过滤 + limit 收敛）+ `GET /api/v1/audit`；Web SystemPanel「审计」Tab（时间/动作/目标/结果/详情/会话表格 + 应用/进化/会话/工具前缀 chips + success/blocked/error 着色）
+- **设备 Tab**：`src/media/status.ts` 只读汇总三通道（ASR 未启用 / TTS engine+本地模型就绪 / 媒体服务器 WS 通道状态含连接数）+ 当前模型多模态（vision）能力；`GET /api/v1/devices`；Web「设备」Tab（通道状态卡 + 模型能力）
+- **进程资源仪表**：`/processes` 附带全局 token 占用（总/入/出）；ProcessesPanel 资源条 + 每进程运行时长；顶栏 tokens/cost 即预算占用条
+- **示例应用包 + .aw app 类型**：`.aw` 扩展支持 **app** 类型（打包 `data/apps/<id>/` 全目录；安装解压 → `appManager.installFromDir` 复用应用管线，临时目录自动清理，缺 app.json/appManager 明确报错）；`/pkg export app <id>`（app 仅 .aw 不支持裸导出）；`examples/` 三个高质量示例：**番茄钟**（webapp 纯前端）、**批量替换工具**（tool，能力桥 fs 实现）、**待办清单服务**（service，storage 持久化）
+- **正式文档**：`docs/ai-os-architecture.md`（分层架构/进程模型/应用安全/进化闭环/会话项目目录/快速开始/目录结构）；README 更新为 1.0 徽章 + 功能矩阵
+- 修复（评审）：新会话（Web 本地草稿）服务端尚无 sessions 行，保存目录报 "Session not found" → POST 时与 `/chat` 同策略 `ensureSession` 自动补建（body 带 agentId，默认 default）；CLI `/dir` 设置校验返回值；目录浏览弹窗挂载缺失修复
+- 测试 +26（working-dir 端点/校验/透传/**新会话自动补建回归**/docs 跟随/迁移、**/dirs 浏览端点**、audit 查询/端点、devices 端点、示例包 6 例：导出结构/appManager 链路/缺 app.json/未注入/3 manifest 校验/webapp 结构语法）；全量 737 全绿
+
 ## 0.12.0 (2026-08-30)
 
 ### 进化引擎第三期：测试 + 推广（Sprint 41）

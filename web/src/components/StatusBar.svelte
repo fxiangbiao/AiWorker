@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fmtN, basename } from "$lib/utils/format";
-  import { currentModel, totalTokens, promptTokens, completionTokens, workingDir, serverOnline, PRICING } from "$lib/stores/status";
+  import { fmtN } from "$lib/utils/format";
+  import { currentModel, totalTokens, promptTokens, completionTokens, serverOnline, PRICING } from "$lib/stores/status";
   import { apps, processStats, loadApps, loadProcesses, initAppsWs } from "$lib/stores/apps.svelte";
   import { Cpu, Box } from "lucide-svelte";
 
@@ -28,7 +28,6 @@
     <Cpu size={11} />{procCount}
     <Box size={11} />{runningApps}
   </div>
-  <span class="sb-dir" title="工作目录: {$workingDir}">💻 {basename($workingDir) || "--"}</span>
 </div>
 
 <style>
@@ -47,5 +46,4 @@
   .sb-item { display: flex; align-items: center; gap: 5px; }
   .sb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
   .sb-dot.online { background: var(--success); }
-  .sb-dir { max-width: 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>

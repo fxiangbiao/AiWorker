@@ -2,10 +2,109 @@
   import { onMount, tick } from "svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
   import { ImagePlus } from "lucide-svelte";
-  import { store, saveSettings, API } from "$lib/stores/chat.svelte";
+  import { store, saveSettings, API, syncServerSessions } from "$lib/stores/chat.svelte";
+  import { workingDir as defaultWorkingDirStore } from "$lib/stores/status";
+  import { onWsEvent } from "$lib/stores/ws.svelte";
+  import { basename } from "$lib/utils/format";
+  import DirBrowser from "./DirBrowser.svelte";
 
   let text = $state("");
   let ta: HTMLTextAreaElement;
+
+  // ── 每会话项目目录（Sprint 42）：会话控制条徽标 + 编辑器 + 目录浏览弹窗 ──
+  let projectDir = $state<string | null>(null);
+  let dirEditorOpen = $state(false);
+  let dirInput = $state("");
+  let dirErr = $state("");
+  let dirBusy = $state(false);
+  let dirBrowserOpen = $state(false);
+  /** 全局默认工作目录（/status 注入；未加载时为空串） */
+  const defaultDir = $derived($defaultWorkingDirStore || "");
+  /** 生效目录：会话自定义 ?? 全局默认 */
+  const effectiveDir = $derived((projectDir ?? defaultDir) || "");
+  /** 徽标文案：自定义显示目录名+标记；默认显示实际默认目录名（如 ai_default_project） */
+  const dirLabel = $derived(
+    projectDir
+      ? `${basename(projectDir) || projectDir} · 自定义`
+      : defaultDir
+        ? basename(defaultDir) || defaultDir
+        : "默认目录",
+  );
+
+  async function loadProjectDir() {
+    const sid = store.activeChatId;
+    if (!sid) {
+      projectDir = null;
+      return;
+    }
+    try {
+      const r = await fetch(`${API}/sessions/${encodeURIComponent(sid)}/working-dir`);
+      if (r.ok) {
+        const d = (await r.json()) as { workingDir?: string | null };
+        projectDir = d.workingDir ?? null;
+      }
+    } catch {
+      projectDir = null;
+    }
+  }
+
+  function openDirEditor() {
+    dirEditorOpen = true;
+    dirInput = projectDir ?? "";
+    dirErr = "";
+  }
+
+  function openDirBrowser() {
+    dirBrowserOpen = true;
+    dirErr = "";
+  }
+
+  function onDirBrowserSelect(p: string) {
+    dirInput = p;
+    dirBrowserOpen = false;
+  }
+
+  async function saveDir() {
+    const sid = store.activeChatId;
+    if (!sid) {
+      dirErr = "当前无会话（先发起新对话）";
+      return;
+    }
+    const value = dirInput.trim();
+    dirBusy = true;
+    dirErr = "";
+    try {
+      const r = await fetch(`${API}/sessions/${encodeURIComponent(sid)}/working-dir`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dir: value || null, agentId: store.agentId }),
+      });
+      const d = (await r.json()) as { ok?: boolean; workingDir?: string | null; error?: string };
+      if (!r.ok) {
+        dirErr = d.error ?? `保存失败（HTTP ${r.status}）`;
+        return;
+      }
+      projectDir = d.workingDir ?? null;
+      dirEditorOpen = false;
+      void syncServerSessions();
+    } catch (e) {
+      dirErr = (e as Error).message;
+    } finally {
+      dirBusy = false;
+    }
+  }
+
+  function resetDir() {
+    dirInput = "";
+    void saveDir();
+  }
+
+  // 切换会话 → 重载该会话项目目录（$effect 依赖 activeChatId）
+  $effect(() => {
+    void store.activeChatId;
+    dirEditorOpen = false;
+    void loadProjectDir();
+  });
   let { onSend, inputMode, onSelectMode, onRetryLast, canRetry, onPickImage, imageCount = 0, agents = [] as { id: string; name: string }[] } = $props<{
     onSend: (msg: string) => void;
     inputMode: "chat" | "plan" | "debate" | "forge";
@@ -67,6 +166,18 @@
       .catch(() => {
         skillOptions = [];
       });
+    // 其他端修改当前会话项目目录 → 徽标实时刷新
+    offWs = onWsEvent((d) => {
+      const ev = d as { type?: string; kind?: string; sessionId?: string };
+      if (ev.type === "session/update" && ev.kind === "working-dir" && ev.sessionId === store.activeChatId) {
+        void loadProjectDir();
+      }
+    });
+  });
+
+  let offWs: (() => void) | null = null;
+  $effect(() => {
+    return () => offWs?.();
   });
 
   /** 输入中 "/" 后的 token（到首个空白为止） */
@@ -241,6 +352,39 @@
     <!-- 会话控制条（输入框下方）：左=输入相关，右=执行配置 -->
     <div class="config-bar">
       <div class="cfg-group">
+        <div class="dir-wrap">
+          <button
+            class="cfg-btn img-pill"
+            class:dir-active={dirEditorOpen}
+            title={projectDir ? `项目目录: ${projectDir}（自定义）` : `项目目录: 未设置（默认 ${defaultDir}）`}
+            onclick={openDirEditor}
+          >
+            📁 {dirLabel}
+          </button>
+          {#if dirEditorOpen}
+            <div class="dir-editor">
+              <div class="dir-editor-title">当前会话项目目录</div>
+              {#if effectiveDir}
+                <div class="dir-effective" title={effectiveDir}>生效: {effectiveDir}</div>
+              {/if}
+              <div class="dir-jump">
+                <input
+                  class="dir-input"
+                  bind:value={dirInput}
+                  placeholder="粘贴绝对路径，如 D:\Projects\my-app（留空 = 默认）"
+                  onkeydown={(e) => e.key === "Enter" && saveDir()}
+                />
+                <button class="cfg-btn dir-btn" onclick={openDirBrowser} title="打开目录浏览弹窗（服务端只读浏览）">浏览…</button>
+              </div>
+              {#if dirErr}<div class="dir-err">{dirErr}</div>{/if}
+              <div class="dir-actions">
+                <button class="cfg-btn dir-btn" onclick={saveDir} disabled={dirBusy}>保存</button>
+                <button class="cfg-btn dir-btn" onclick={resetDir} disabled={dirBusy}>恢复默认</button>
+                <button class="cfg-btn dir-btn" onclick={() => (dirEditorOpen = false)}>取消</button>
+              </div>
+            </div>
+          {/if}
+        </div>
         {#if onPickImage && inputMode !== "forge"}
           <button class="cfg-btn img-pill" title="添加图片（也可直接粘贴到输入框）" onclick={onPickImage}>
             <ImagePlus size={12} />
@@ -291,6 +435,11 @@
       </div>
     </div>
   </div>
+
+  <!-- 目录浏览弹窗（服务端 /dirs 数据源） -->
+  {#if dirBrowserOpen}
+    <DirBrowser initialPath={projectDir ?? ""} onSelect={onDirBrowserSelect} onClose={() => (dirBrowserOpen = false)} />
+  {/if}
 </div>
 
 <style>
@@ -367,6 +516,42 @@
   }
   .cfg-group { display: flex; align-items: center; gap: 6px; }
   .cfg-divider { width: 1px; height: 18px; background: var(--border); }
+  .dir-wrap { position: relative; }
+  .dir-active { border-color: var(--primary); color: var(--primary); }
+  .dir-editor {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 40;
+    width: 340px;
+    max-width: 80vw;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .dir-editor-title { font-size: 12px; font-weight: 600; color: var(--text); }
+  .dir-effective { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dir-jump { display: flex; gap: 6px; align-items: center; }
+  .dir-jump .dir-btn { flex-shrink: 0; white-space: nowrap; }
+  .dir-input {
+    flex: 1;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .dir-err { font-size: 11px; color: var(--error); }
+  .dir-actions { display: flex; gap: 6px; }
+  .dir-btn { font-size: 11px; }
   .cfg-btn, .cfg-select {
     padding: 4px 10px;
     border: 1px solid var(--border);

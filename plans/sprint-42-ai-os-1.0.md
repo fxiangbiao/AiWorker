@@ -1,6 +1,6 @@
 # Sprint 42 — AI OS 1.0 整合 + 每会话项目目录（1.0.0）
 
-> 状态：📋 计划待确认
+> 状态：✅ **开发完成（735 测试全绿，待用户验收，未提交）**
 > 需求：① 设计文档 Sprint 38（1.0.0 里程碑）——控制台统一（审计/设备视图）、资源仪表、示例应用包、正式文档；② 用户新增：**每个会话可选择自己的工作目录**（当前固定 `--dir` 默认 ai_default_project）
 > 现状：0.12.0 进化引擎三期闭环已齐；Web 控制台 11 Tab 缺「审计」「设备」；工作目录全局单一
 > 前置：0.12.0（Sprint 41 验收后提交）
@@ -31,8 +31,9 @@
    - 写库 + 审计 `session:working-dir`（target=sessionId, detail=dir）+ 广播 `session/update`
 4. **CLI `/dir`**：`/dir`（查看当前会话目录）/ `/dir <绝对路径>`（设置当前会话）；无 currentSessionId 提示先选会话；并入 commands/session.ts
 5. **文档面板**：`/docs` 加 `?sessionId=` → project root = 会话目录 ?? 全局（server.ts:1538 与 1615 两处 project 分支）
-6. **Web UI（会话控制条 + 侧栏标记）**：
-   - **入口**：InputArea 下方「会话控制条」加「项目目录」徽标——展示**生效目录**（会话目录 ?? 全局默认）并标注来源：自定义显示目录名+「自定义」标记，未设置显示「默认目录」；tooltip 含完整路径与来源 → 点击展开**目录编辑器**（绝对路径输入框 + 「保存」+「恢复默认」清空）；校验失败（不存在/非目录/指向 dataDir）→ 输入框内联红字提示，不落库
+6. **Web UI（会话控制条 + 侧栏标记 + 目录浏览弹窗）**：
+   - **入口**：InputArea 下方「会话控制条」加「项目目录」徽标——展示**生效目录**（会话目录 ?? 全局默认）并标注来源：自定义显示目录名+「自定义」标记，**默认时显示实际默认目录名（如 ai_default_project）**；tooltip 含完整路径与来源 → 点击展开**目录编辑器**（绝对路径输入框 + 「浏览…」按钮 + 「保存」+「恢复默认」清空；编辑器内显示"生效: <目录>"）
+   - **目录浏览弹窗**（评审补：仅手输不便）——浏览器拿不到本机绝对路径（webkitdirectory / File System Access 均不暴露），故新增**服务端只读端点 `GET /api/v1/dirs?path=`**（校验绝对路径+存在+目录，返回子目录名+上级，无 path 回退全局 workingDir）；弹窗含路径面包屑导航 / 「..」上级 / 子目录列表 / 绝对路径跳转输入 / 「选择此目录」回填保存
    - **StatusBar 移除 💻 工作目录项**（已确认：目录会话化后全局默认仅回退值，放全局状态条误导；StatusBar 回归 model/tokens/cost/进程纯系统状态）
    - **保存流程**：`POST /sessions/:id/working-dir` → 成功刷新徽标 + 广播 `session/update` → DocPreviewPanel 项目文档根自动重载（带 sessionId 重新拉 `/docs?sessionId=`）
    - **会话列表联动**：Sidebar 会话行对有自定义目录的会话显示 📁 标记（tooltip 目录名）；`GET /sessions` 列表响应补 `workingDir` 字段（后端一处 + 前端一处）

@@ -5,7 +5,7 @@
    */
   import { onMount } from "svelte";
   import { X, RefreshCw, PanelLeftClose, PanelLeftOpen, FileText, FolderOpen } from "lucide-svelte";
-  import { API } from "$lib/stores/chat.svelte";
+  import { API, store } from "$lib/stores/chat.svelte";
   import { docViewer } from "$lib/stores/apps.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import DocRenderer from "./DocRenderer.svelte";
@@ -27,7 +27,10 @@
 
   async function loadDocs() {
     try {
-      const r = await fetch(`${API}/docs`);
+      // 项目文档根跟随当前会话项目目录（?sessionId=；服务端未设置时回退全局）
+      const sid = store.activeChatId;
+      const sidParam = sid ? `?sessionId=${encodeURIComponent(sid)}` : "";
+      const r = await fetch(`${API}/docs${sidParam}`);
       if (!r.ok) return;
       const d = (await r.json()) as { roots?: { root: string; dir: string }[]; docs?: DocItem[] };
       roots = d.roots ?? [];
@@ -36,6 +39,12 @@
       /* 忽略 */
     }
   }
+
+  // 切换会话 → 重载文档列表（项目根可能不同）
+  $effect(() => {
+    void store.activeChatId;
+    void loadDocs();
+  });
 
   const sessionDocs = $derived(docList.filter((d) => d.root === "session"));
   const projectDocs = $derived(docList.filter((d) => d.root === "project"));
@@ -201,7 +210,7 @@
       {/if}
       <div class="dp-render">
         {#if docPath}
-          <DocRenderer path={docPath} />
+          <DocRenderer path={docPath} sessionId={store.activeChatId} />
         {:else}
           <div class="dp-render-empty">← 从左侧选择文档预览</div>
         {/if}

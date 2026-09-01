@@ -46,6 +46,7 @@ import { TeamCoordinator } from "./core/team-coordinator.js";
 import { pluginManager } from "./core/plugin-manager.js";
 import { AppManager } from "./core/app-manager.js";
 import { AppFactory } from "./core/app-factory.js";
+import { packageInstaller } from "./core/package-installer.js";
 import { generatorQueue } from "./core/generator-queue.js";
 import { EvolutionEngine } from "./core/evolution-engine.js";
 import { EvolutionCases } from "./core/evolution-cases.js";
@@ -363,6 +364,8 @@ program
       onCrashed: (id, crashCount) => appManager.onCrashed(id, crashCount),
     });
     await appManager.init();
+    // .aw app 包安装注入（Sprint 42 A4：示例应用包分发链路）
+    packageInstaller.appManager = appManager;
 
     // ─── 应用工厂（Sprint 35 v2：agent-loop + fs_write 生成） ───
     const appFactory = new AppFactory(deps, appManager);

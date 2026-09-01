@@ -1,0 +1,24 @@
+{
+  "id": "batch-replace",
+  "type": "tool",
+  "name": "批量替换工具",
+  "version": "1.0.0",
+  "description": "在应用沙箱内批量替换多个文件中的文本（fs 能力桥内实现）",
+  "entry": "index.js",
+  "permissions": ["fs:data"],
+  "tools": [
+    {
+      "name": "batch_replace",
+      "description": "批量替换文件中的文本：对 files 列表中的每个文件，将 from 全部替换为 to",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "files": { "type": "array", "items": { "type": "string" }, "description": "相对沙箱根的文件路径列表" },
+          "from": { "type": "string", "description": "被替换的文本" },
+          "to": { "type": "string", "description": "替换为的文本" }
+        },
+        "required": ["files", "from", "to"]
+      }
+    }
+  ]
+}

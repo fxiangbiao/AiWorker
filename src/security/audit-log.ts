@@ -65,6 +65,19 @@ export class AuditLog {
     return stmt.all(sessionId) as AuditEntry[];
   }
 
+  /** 最近 N 条（可选 action 前缀过滤，如 "evolution:"；timestamp 降序 + id 断链，严格最新在前） */
+  queryRecent(limit = 100, actionPrefix?: string): AuditEntry[] {
+    const safeLimit = Math.max(1, Math.min(Math.floor(limit) || 100, 1000));
+    if (actionPrefix) {
+      const stmt = this.db.prepare(
+        `SELECT * FROM audit_log WHERE action LIKE ? ORDER BY timestamp DESC, id DESC LIMIT ?`,
+      );
+      return stmt.all(`${actionPrefix}%`, safeLimit) as AuditEntry[];
+    }
+    const stmt = this.db.prepare(`SELECT * FROM audit_log ORDER BY timestamp DESC, id DESC LIMIT ?`);
+    return stmt.all(safeLimit) as AuditEntry[];
+  }
+
   /** 按 action 精确匹配计数（进化观察的生成统计用） */
   countByAction(action: string): number {
     const stmt = this.db.prepare(`SELECT COUNT(*) AS c FROM audit_log WHERE action = ?`);

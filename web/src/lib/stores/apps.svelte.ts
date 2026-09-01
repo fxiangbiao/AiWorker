@@ -47,6 +47,8 @@ export interface AppWinState {
 export const apps = writable<AppInfo[]>([]);
 export const processes = writable<OsProcess[]>([]);
 export const processStats = writable<{ agent: number; app: number; job: number }>({ agent: 0, app: 0, job: 0 });
+/** 资源仪表（Sprint 42 A3）：全局 token 占用（/processes 附带） */
+export const processResources = writable<{ tokens: { total: number; prompt: number; completion: number } } | null>(null);
 
 /** 已打开窗口的应用 id 集合（app/generated 或用户打开 → true；关闭 → false）——仅当前会话，不跨刷新恢复 */
 export const openWindows = writable<Record<string, boolean>>({});
@@ -164,9 +166,14 @@ export async function loadProcesses(): Promise<void> {
   try {
     const r = await fetch(`${API}/processes`);
     if (!r.ok) return;
-    const d = (await r.json()) as { processes?: OsProcess[]; stats?: { agent: number; app: number; job: number } };
+    const d = (await r.json()) as {
+      processes?: OsProcess[];
+      stats?: { agent: number; app: number; job: number };
+      resources?: { tokens: { total: number; prompt: number; completion: number } };
+    };
     processes.set(d.processes ?? []);
     if (d.stats) processStats.set(d.stats);
+    if (d.resources) processResources.set(d.resources);
   } catch {
     /* 忽略 */
   }

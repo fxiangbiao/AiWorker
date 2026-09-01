@@ -284,6 +284,8 @@ export interface SessionRecord {
   createdAt: number;
   updatedAt: number;
   summary?: string;
+  /** 每会话项目目录（Sprint 42；未设置回退全局 workingDir） */
+  workingDir?: string;
 }
 
 export interface EpisodicEntry {
