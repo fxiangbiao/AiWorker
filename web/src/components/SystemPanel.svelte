@@ -623,6 +623,8 @@
           </div>
         {/if}
       </div>
+    {:else if tab === "trace"}
+      <TracePanel />
     {:else if tab === "mcp"}
       <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if mcpServers.length === 0}
