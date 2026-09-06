@@ -913,11 +913,19 @@ ${text}
         }
       });
 
-      // 思考内容跟踪
-      let thinkingStarted = false;
+      // 思考内容跟踪（非 TUI 降级路径使用；TUI 回合块内自带摘要）
       let thinkingFirstLine = "";
       let thinkingLineCaptured = false;
       let needThinkingBreak = false;
+
+      // Sprint 45：TUI 回合块视图（思考/工具/回答可折叠）；非 TUI 保持旧 stdout 流式
+      const turnActive = tui.isActive();
+      if (turnActive) {
+        const view = tui.startTurn();
+        // showThinking=true → thinking 块默认展开全文；false（默认）→ 折叠摘要实时滚动
+        view.openDefaultThinking = showThinking;
+        outputRenderer.setTurn(view);
+      }
 
       try {
         const streamCallbacks: StreamCallbacks = {
@@ -925,17 +933,25 @@ ${text}
             // 迭代分隔线不再展示（用户要求精简）
           },
           onThinkingStart: () => {
-            if (!showThinking) return;
-            thinkingStarted = false;
-            thinkingFirstLine = "";
-            thinkingLineCaptured = false;
-            needThinkingBreak = true;
             stopLiveStatus();
-            renderer.writeLine(chalk.dim("🧠 思考: "));
+            if (!turnActive) {
+              if (!showThinking) return;
+              thinkingFirstLine = "";
+              thinkingLineCaptured = false;
+              needThinkingBreak = true;
+              renderer.writeLine(chalk.dim("🧠 思考: "));
+              return;
+            }
+            // 首块出现时提示折叠键（每个回合一次）
+            tui.maybeHintFoldKeys();
           },
           onThinkingDelta: (text) => {
+            if (turnActive) {
+              tui.currentTurnView()?.thinkingDelta(text);
+              tui.requestRender();
+              return;
+            }
             if (showThinking) {
-              if (!thinkingStarted) thinkingStarted = true;
               renderer.write(text);
             } else if (!thinkingLineCaptured) {
               const firstBreak = text.indexOf("\n");
@@ -949,14 +965,17 @@ ${text}
           },
           onTextDelta: (text) => {
             stopLiveStatus();
-            if (!showThinking && thinkingFirstLine) {
-              renderer.writeLine(
-                chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`),
-              );
-              thinkingFirstLine = "";
-              thinkingLineCaptured = false;
-            } else if (needThinkingBreak) {
-              needThinkingBreak = false;
+            if (!turnActive) {
+              // 非 TUI：回答开始时补打思考首行摘要（旧语义）
+              if (!showThinking && thinkingFirstLine) {
+                renderer.writeLine(
+                  chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`),
+                );
+                thinkingFirstLine = "";
+                thinkingLineCaptured = false;
+              } else if (needThinkingBreak) {
+                needThinkingBreak = false;
+              }
             }
             outputRenderer.writeChunk(text);
           },
@@ -984,6 +1003,19 @@ ${text}
         stopLiveStatus();
         outputRenderer.flush();
 
+        // 回合定稿：释放注入 → meta 并入回合尾（正常/中断保留结构）
+        outputRenderer.setTurn(null);
+        const interrupted = (result.truncated ?? false) && !result.text;
+        const tokensNow = currentSessionId ? modelRouter.getSessionTokens(currentSessionId) : { prompt: 0, completion: 0 };
+        const turnPrompt = Math.max(0, tokensNow.prompt - baseBefore.prompt);
+        const turnCompletion = Math.max(0, tokensNow.completion - baseBefore.completion);
+        const pct = statusWindowPct();
+        const pctStr = pct != null ? ` (窗口 ${pct}%)` : "";
+        tui.finishTurn(
+          `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, 本轮: ↑${turnPrompt} ↓${turnCompletion} tok${pctStr}]`,
+          { interrupted },
+        );
+
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           renderer.writeLine(chalk.yellow(short));
@@ -991,20 +1023,10 @@ ${text}
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           renderer.writeLine(chalk.red(short));
         }
-
-        // 本轮 = 会话账本差分（含同轮压缩请求；不含 loop 外摘要）；窗口占比为当前上下文估算
-        const tokensNow = currentSessionId ? modelRouter.getSessionTokens(currentSessionId) : { prompt: 0, completion: 0 };
-        const turnPrompt = Math.max(0, tokensNow.prompt - baseBefore.prompt);
-        const turnCompletion = Math.max(0, tokensNow.completion - baseBefore.completion);
-        const pct = statusWindowPct();
-        const pctStr = pct != null ? ` (窗口 ${pct}%)` : "";
-        renderer.writeLine(
-          chalk.gray(
-            `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, 本轮: ↑${turnPrompt} ↓${turnCompletion} tok${pctStr}]`,
-          ),
-        );
       } catch (err) {
         stopLiveStatus();
+        outputRenderer.setTurn(null);
+        tui.finishTurn("", { interrupted: true });
         renderer.writeLine(chalk.red(`✗ 执行失败: ${(err as Error).message}`));
       }
 

@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.2.0-blue)
+![version](https://img.shields.io/badge/version-1.3.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -147,6 +147,8 @@ npm run dev -- [选项]
 | `/help [命令]` / `/exit` | 帮助 / 退出 |
 
 快捷键：`Ctrl+C` 中断，`Tab` 补全，方向键历史/滚动；输入框支持多行（`Shift+Enter` 换行、`Enter` 提交）。
+回合块视图（1.3.0）：思考/工具/回答在消息区块化展示——思考实时流式摘要、工具调用原位显示 ✓/✗ 与耗时，均可折叠回看：
+运行期间 `t` 折叠/展开最近思考、`o` 最近工具详情、`[`/`]` 切换焦点、`c`/`e` 全收/全展；空闲时按 `[` 进入浏览模式回看历史回合（`Esc`/字母退出）。
 
 ### Web UI
 
