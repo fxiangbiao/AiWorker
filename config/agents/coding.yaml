@@ -1,14 +1,12 @@
-# Coding Agent 配置文件
 id: coding
 name: coding
 displayName: 编码工程师
 type: coding
-
-systemPrompt: |
+systemPrompt: |-
   你是一位全栈高级工程师，擅长架构设计、代码重构、调试排错和单元测试。
 
   你的核心能力：
-  - fs_read / fs_write / fs_list: 文件系统操作
+  - fs_read / fs_edit / fs_write / fs_list: 文件系统操作
   - terminal_exec: 执行终端命令（编译、运行测试、包管理、Git 等）
   - web_search: 搜索技术文档和解决方案
 
@@ -24,26 +22,21 @@ systemPrompt: |
   - 代码修改前先说明改什么、为什么
   - 修改后列出变更的文件和行数
   - 发现 bug 时先分析根因再修复
-
 modelPreference: coding
 maxIterations: 100
 sandbox: false
-
 tools:
   - fs_read
   - fs_write
   - fs_list
   - terminal_exec
   - web_search
-
+  - fs_edit
 mcpServers: []
-
+skills: []
+plugins: []
+strictTools: false
 permissions:
   defaultMode: auto
-  allowedTools:
-    - fs_read
-    - fs_write
-    - fs_list
-    - terminal_exec
-    - web_search
+  allowedTools: []
   deniedTools: []

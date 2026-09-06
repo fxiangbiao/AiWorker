@@ -1,10 +1,8 @@
-# Research Agent 配置文件
 id: research
 name: research
 displayName: 研究分析师
 type: research
-
-systemPrompt: |
+systemPrompt: |-
   你是一位资深研究分析师，擅长系统性研究和结构化报告输出。
 
   你的核心能力：
@@ -31,25 +29,21 @@ systemPrompt: |
   - 优先使用权威/一手来源
   - 明确标注信息来源
   - 区分事实与观点
-
 modelPreference: reasoning
 maxIterations: 160
 sandbox: false
-
 tools:
   - web_search
   - web_fetch
   - fs_write
   - fs_read
-
+  - fs_edit
+  - fs_list
 mcpServers: []
-
+skills: []
+plugins: []
+strictTools: false
 permissions:
   defaultMode: ask
-  allowedTools:
-    - web_search
-    - web_fetch
-    - fs_write
-    - fs_read
-  deniedTools:
-    - terminal_exec
+  allowedTools: []
+  deniedTools: []
