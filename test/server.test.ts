@@ -2,7 +2,7 @@
  * HTTP Server 测试：端点覆盖 / 错误码 / SSE 流式
  */
 
-import { describe, it, expect, afterAll, beforeAll } from "vitest";
+import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
@@ -27,6 +27,9 @@ function mockModelRouter() {
     getTokenUsage: () => 100,
     getPromptTokens: () => 40,
     getCompletionTokens: () => 60,
+    getContextWindow: () => 1048576,
+    getSessionTokens: () => ({ prompt: 0, completion: 0 }),
+    deleteScope: () => {},
   } as unknown as ModelRouter;
 }
 
@@ -147,6 +150,7 @@ describe("HTTP Server", () => {
     expect(data.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(data.model).toBe("deepseek-v4-flash");
     expect(data.tokenUsage.total).toBe(100);
+    expect(data.contextWindow).toBe(1048576);
     expect(data.skills).toContain("skill-a");
   });
 
@@ -325,6 +329,40 @@ describe("HTTP Server", () => {
     const data = await resp.json();
     expect(data.breakdown.total).toBe(1234);
     local.close();
+  });
+
+  it("/context?sessionId= 会话化：按会话 agent 取 systemPrompt/agentId；未知会话 404（Sprint 44）", async () => {
+    const dir = resolve(testDir, "ctx-sess");
+    mkdirSync(dir, { recursive: true });
+    const store = new SessionStore(resolve(dir, "ctx.db"));
+    const sess = store.createSession("research");
+    const calls: { sp: string; sid: string; agentId?: string }[] = [];
+    const deps = mockDeps() as Record<string, unknown>;
+    deps.sessionStore = store;
+    deps.getAgentSystemPrompt = (agentId: string) => (agentId === "research" ? "研究专家提示" : "default 提示");
+    deps.getContextBreakdown = (sp: string, sid: string, _um: string, agentId?: string) => {
+      calls.push({ sp, sid, agentId });
+      return { total: 567, currentTurn: 12, agentId, systemPrompt: sp };
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+
+    // 未知会话 → 404
+    const miss = await fetch(`http://127.0.0.1:${port}${API}/context?sessionId=nope`);
+    expect(miss.status).toBe(404);
+
+    // 已知会话 → 按 record.agentId=research 取 agent systemPrompt + agentId
+    const ok = await fetch(`http://127.0.0.1:${port}${API}/context?sessionId=${encodeURIComponent(sess.id)}`);
+    expect(ok.status).toBe(200);
+    const data = (await ok.json()) as { breakdown: { agentId?: string } };
+    expect(data.breakdown.agentId).toBe("research");
+    expect(calls.length).toBeGreaterThan(0);
+    const last = calls[calls.length - 1];
+    expect(last?.sp).toBe("研究专家提示");
+    expect(last?.agentId).toBe("research");
+    local.close();
+    store.close();
   });
 
   it("/logs 未配置 sessionStore 时返回 500", async () => {
@@ -599,6 +637,67 @@ describe("HTTP Server", () => {
     expect(resp.status).toBe(200);
     await resp.text();
     expect(capturedTask?.mode).toBe("plan");
+  });
+
+  it("/chat done 带 turnUsage（TurnLog 结算，含压缩差分；Sprint 44）", async () => {
+    const localDir = resolve(testDir, "chat-turnusage");
+    mkdirSync(localDir, { recursive: true });
+    const localStore = new SessionStore(resolve(localDir, "tu.db"));
+    const deps = {
+      modelRouter: { ...mockModelRouter(), getContextWindow: () => 1048576 },
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () =>
+        ({
+          runStream: async (task: { sessionId?: string; instruction: string }) => {
+            // 模拟 base-agent：确保会话 + 写 TurnLog（差分已由 hooks 完成）
+            const sid = task.sessionId!;
+            localStore.ensureSession(sid, "default");
+            localStore.appendMessage(sid, { role: "user", content: task.instruction });
+            localStore.appendMessage(sid, { role: "assistant", content: "ok" });
+            localStore.createTurnLog({
+              id: "tl-1",
+              sessionId: sid,
+              agentId: "default",
+              seq: 1,
+              userInput: task.instruction,
+              startedAt: Date.now() - 1000,
+              finishedAt: Date.now(),
+              iterations: 2,
+              toolCallsTotal: 1,
+              toolCallsSuccess: 1,
+              toolCallsFailed: 0,
+              tokensPrompt: 1500,
+              tokensCompletion: 300,
+              finishReason: "stop",
+            });
+            return { success: true, text: "ok", usage: { promptTokens: 800, completionTokens: 300, totalTokens: 1100 } } as never;
+          },
+        }) as never,
+      getAgentList: () => [
+        { id: "default", name: "通用助手", modelPreference: "default" },
+      ],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: localStore,
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "任务", agentId: "default" }),
+    });
+    expect(resp.status).toBe(200);
+    const events = await readSSE(resp);
+    const done = events.find((e) => (e as { type: string }).type === "done") as {
+      turnUsage: { prompt: number; completion: number; total: number; contextPct: number } | null;
+    };
+    // TurnLog tokensPrompt=1500（turnUsage 取 TurnLog 结算值）；contextPct = 末次请求 prompt/窗口（1 位小数：800/1048576×100≈0.076 → 0.1）
+    expect(done.turnUsage).toEqual({ prompt: 1500, completion: 300, total: 1800, contextPct: 0.1 });
+    local.close();
+    localStore.close();
   });
 
   it("/chat 拦截失败时发出 tool_blocked 事件", async () => {
@@ -1004,6 +1103,32 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(store.getMessages(sess.id)).toHaveLength(0);
   });
 
+  it("DELETE /sessions/:id 级联清理会话账本 deleteScope（Sprint 44）", async () => {
+    const localDir = resolve(testDir, "sess-del-scope");
+    mkdirSync(localDir, { recursive: true });
+    const localStore = new SessionStore(resolve(localDir, "del.db"));
+    const sess = localStore.createSession("default");
+    const deleteScope = vi.fn();
+    const deps = {
+      modelRouter: { ...mockModelRouter(), deleteScope },
+      workingDir: testDir,
+      coordinator: mockCoordinator(),
+      createAgent: () => mockAgent() as never,
+      getAgentList: () => [],
+      skillNames: [],
+      dataDir: testDir,
+      sessionStore: localStore,
+    };
+    const local = startServer(deps as never, 0);
+    await new Promise<void>((resolve) => local.once("listening", () => resolve()));
+    const port = (local.address() as AddressInfo).port;
+    const resp = await fetch(`http://127.0.0.1:${port}${API}/sessions/${sess.id}`, { method: "DELETE" });
+    expect(resp.status).toBe(200);
+    expect(deleteScope).toHaveBeenCalledWith(sess.id);
+    local.close();
+    localStore.close();
+  });
+
   it("GET /sessions 返回真实轮数（用户消息条数）", async () => {
     const sess = store.createSession("default");
     store.appendMessage(sess.id, { role: "user", content: "第一轮" });
@@ -1204,17 +1329,21 @@ describe("HTTP Server — 会话管理端点", () => {
     expect(md).toContain("好的，这是代码");
   });
 
-  it("GET /sessions/:id 返回事件回放序列（含 assistant(tool_calls) 与 tool 结果）", async () => {
+  it("GET /sessions/:id 返回事件回放序列（含 assistant(tool_calls) 与 tool 结果）+ 平行 usages（Sprint 44）", async () => {
     const sess = store.createSession("default");
     store.appendMessage(sess.id, { role: "user", content: "看下文件" });
     // 中间轮 assistant(tool_calls)（agent-loop 持久化形态）
-    store.appendMessage(sess.id, {
-      role: "assistant",
-      content: "调用",
-      tool_calls: [
-        { id: "t1", type: "function", function: { name: "terminal_exec", arguments: '{"command":"dir"}' } },
-      ],
-    });
+    store.appendMessage(
+      sess.id,
+      {
+        role: "assistant",
+        content: "调用",
+        tool_calls: [
+          { id: "t1", type: "function", function: { name: "terminal_exec", arguments: '{"command":"dir"}' } },
+        ],
+      },
+      { promptTokens: 100, completionTokens: 20, totalTokens: 120 },
+    );
     store.appendEvent(sess.id, "tool/call", { callId: "t1", name: "terminal_exec", arguments: "{}" }, "agent-loop");
     store.appendEvent(
       sess.id,
@@ -1222,7 +1351,11 @@ describe("HTTP Server — 会话管理端点", () => {
       { callId: "t1", success: true, content: "文件列表", durationMs: 5 },
       "agent-loop",
     );
-    store.appendMessage(sess.id, { role: "assistant", content: "完成" });
+    store.appendMessage(
+      sess.id,
+      { role: "assistant", content: "完成" },
+      { promptTokens: 50, completionTokens: 10, totalTokens: 60 },
+    );
 
     const resp = await fetch(`${base2}${API}/sessions/${sess.id}`);
     expect(resp.status).toBe(200);
@@ -1235,6 +1368,11 @@ describe("HTTP Server — 会话管理端点", () => {
     // assistant(tool_calls) 消息带 tool_calls（Web 端重建工具卡）
     const midAssistant = (data.messages as Array<{ tool_calls?: unknown[] }>)[1];
     expect(midAssistant.tool_calls).toHaveLength(1);
+    // usages 平行数组：按 assistant 出现顺序（tool 消息不占位）
+    const usages = data.usages as Array<{ promptTokens?: number; completionTokens?: number; totalTokens?: number } | null>;
+    expect(usages).toHaveLength(2);
+    expect(usages[0]).toEqual({ promptTokens: 100, completionTokens: 20, totalTokens: 120 });
+    expect(usages[1]).toEqual({ promptTokens: 50, completionTokens: 10, totalTokens: 60 });
   });
 
   it("GET /mcp 返回服务器状态列表", async () => {

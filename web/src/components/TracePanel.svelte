@@ -88,7 +88,10 @@
     activeSession = store.activeChatId;
   }
 
+  // 请求代际：快速切换会话/重进 Tab 时丢弃过期轨迹响应（review：防旧会话数据覆盖新会话）
+  let loadSeq = 0;
   async function load() {
+    const seq = ++loadSeq;
     const sid = activeSession;
     if (!sid) {
       items = [];
@@ -101,6 +104,7 @@
     error = "";
     try {
       const r = await fetch(`${API}/trace/${encodeURIComponent(sid)}`);
+      if (seq !== loadSeq) return;
       if (!r.ok) {
         items = [];
         stats = null;
@@ -108,15 +112,17 @@
         return;
       }
       const d = await r.json();
+      if (seq !== loadSeq) return;
       items = d.items || [];
       stats = d.stats || null;
       selected = null;
     } catch {
+      if (seq !== loadSeq) return;
       items = [];
       stats = null;
       error = "加载失败";
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
@@ -217,7 +223,10 @@
             onkeydown={(e) => e.key === "Enter" && pick(a.sessionId)}
           >
             <span class="tp-act-input">{a.userInput || "(无输入)"}</span>
-            <span class="tp-act-meta">
+            <span
+              class="tp-act-meta"
+              title="token 为轮次差分（含同轮压缩请求；不含 loop 外摘要）"
+            >
               {a.agentId} · {a.iterations} 轮 · {a.toolCallsTotal} 工具
               {#if (a.toolCallsFailed ?? 0) > 0}<span class="tp-bad">失败 {a.toolCallsFailed}</span>{/if}
               · {fmtTok((a.tokensPrompt ?? 0) + (a.tokensCompletion ?? 0))} tok
@@ -245,7 +254,7 @@
             <b>{stats.toolCallsTotal}</b> 工具
             {#if (stats.toolCallsFailed ?? 0) > 0}<span class="tp-bad">失败 {stats.toolCallsFailed}</span>{/if}
           </span>
-          <span class="tp-stat"><b>{fmtTok(stats.tokensTotal)}</b> tok</span>
+          <span class="tp-stat" title="会话累计 token（事件求和，不含摘要/压缩请求）"><b>{fmtTok(stats.tokensTotal)}</b> tok</span>
           <span class="tp-stat"><b>{fmtDur(stats.wallMs)}</b></span>
           {#if (stats.errorCount ?? 0) > 0}
             <span class="tp-stat tp-bad">⚠ {stats.errorCount} 错误</span>

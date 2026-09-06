@@ -97,6 +97,8 @@ export interface ModelCompleteOptions {
   /** 思考模式覆盖（缺省用 profile；生成器传 false 省 token 防空输出） */
   thinking?: boolean;
   signal?: AbortSignal;
+  /** 会话归属（Sprint 44）：供 ModelRouter 会话账本记账；仅供路由内使用，不进 adapter 请求体 */
+  scope?: string;
 }
 
 export interface ModelResponse {
@@ -263,6 +265,8 @@ export interface ContextBreakdown {
   currentTurn: number;
   total: number;
   windowSize: number;
+  /** 剩余可用 = windowSize − total（Sprint 44，展示用；可能为负表示估算超窗） */
+  remaining: number;
   skillsMatched: string[];
   skillsTotal: number;
 }

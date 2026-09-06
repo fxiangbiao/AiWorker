@@ -33,6 +33,8 @@ interface ModelProfile {
   adapter?: string;
   /** 视觉能力（Sprint 36）：true=支持图片输入（多模态消息），缺省 false */
   vision?: boolean;
+  /** 上下文窗口（token；Sprint 44）：profile 级覆盖，缺省走顶层 contextWindow 表 → 内置兜底 */
+  contextWindow?: number;
 }
 
 interface ModelsConfig {
@@ -42,7 +44,23 @@ interface ModelsConfig {
     strategy: string;
     fallback: string;
   };
-  pricing?: Record<string, { prompt: number; completion: number }>;
+  /** provider/model 级上下文窗口表（Sprint 44）：键 "provider" 或 "provider.model"，见 getContextWindow */
+  contextWindow?: Record<string, number>;
+}
+
+/** 常用模型上下文窗口兜底表（Sprint 44；deepseek V4 官方 1M、Gemma 4 官方 256K 已核实） */
+const BUILTIN_CONTEXT_WINDOWS: Record<string, number> = {
+  deepseek: 1048576,
+  openai: 128000,
+  anthropic: 200000,
+  google: 262144,
+};
+/** 未配置任何窗口时的最终兜底（与历史 compressor 预算一致，避免行为突变） */
+export const CONTEXT_WINDOW_FALLBACK = 32768;
+
+/** 非有限/负数 token 计数归 0（Sprint 44 review：OpenAI 兼容端点 usage 字段缺失/异常时不污染全局与账本） */
+function sanitize(n: number): number {
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,8 +71,8 @@ export class ModelRouter {
   private totalPromptTokens = 0;
   private totalCompletionTokens = 0;
   private currentProfile = "";
-  /** 最近一次请求的 usage（assistant/message 事件携带，供轨迹/遥测消费） */
-  private lastUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
+  /** 会话级 token 账本（Sprint 44）：scope=sessionId 的请求差分结算"本轮"；仅 token 无费用 */
+  private sessionScopes = new Map<string, { prompt: number; completion: number }>();
   /** 运行时覆盖（/config 命令设置，持久化到文件） */
   private runtimeProfileKey = "";
   private runtimeModel = "";
@@ -72,6 +90,7 @@ export class ModelRouter {
       if (p.apiKey) p.apiKey = this.resolveEnv(p.apiKey);
       if (p.baseURL) p.baseURL = this.resolveEnv(p.baseURL);
     }
+    // contextWindow 校验：非法值（非正整数）回退兜底（不修改原配置，查询时兜底）
     this.config = parsed;
   }
 
@@ -100,8 +119,8 @@ export class ModelRouter {
       const p = this.config.profiles[preference];
       profile = p ? this.mergeProfile(this.config.default, p) : this.config.default;
     }
-    // 应用运行时覆盖
-    if (this.runtimeModel) profile = { ...profile, model: this.runtimeModel };
+    // 应用运行时覆盖（显式切换模型名时丢弃 profile 声明窗口，回退顶层表按新模型查询）
+    if (this.runtimeModel) profile = { ...profile, model: this.runtimeModel, contextWindow: undefined };
     if (this.runtimeTemperature !== null) profile = { ...profile, temperature: this.runtimeTemperature };
     if (this.runtimeMaxTokens !== null) profile = { ...profile, maxTokens: this.runtimeMaxTokens };
     return profile;
@@ -110,11 +129,15 @@ export class ModelRouter {
   /**
    * 合并 profile。thinking 是供应商专属参数（DeepSeek），
    * 仅在子 profile 显式声明时生效，不随 default 继承（避免 lite 等本地模型误传）。
+   * contextWindow 同理：未显式声明的子 profile 不继承 default 窗口，回退顶层表按自身 provider.model 查询。
    */
   private mergeProfile(base: ModelProfile, override: Partial<ModelProfile>): ModelProfile {
     const merged = { ...base, ...override };
     if (!("thinking" in override)) {
       delete merged.thinking;
+    }
+    if (!("contextWindow" in override)) {
+      delete merged.contextWindow;
     }
     return merged;
   }
@@ -142,7 +165,7 @@ export class ModelRouter {
     preference: string,
     messages: Message[],
     tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; scope?: string },
   ): Promise<ModelResponse> {
     const profile = this.getProfile(preference);
     // 用 preference profile 的完整连接（provider/baseURL/apiKey 等）执行，
@@ -154,6 +177,7 @@ export class ModelRouter {
       temperature: options?.temperature ?? profile.temperature,
       maxTokens: options?.maxTokens ?? profile.maxTokens,
       signal: options?.signal,
+      scope: options?.scope,
     });
   }
 
@@ -173,17 +197,25 @@ export class ModelRouter {
       signal: options.signal,
     });
 
-    this.lastUsage = response.usage;
-    this.totalTokensUsed += response.usage.totalTokens;
-    this.totalPromptTokens += response.usage.promptTokens;
-    this.totalCompletionTokens += response.usage.completionTokens;
+    this.accumulate(options.scope, response.usage);
 
     return response;
   }
 
-  /** 最近一次请求的 usage（供 appendMessage 写入 assistant/message 事件） */
-  getLastUsage(): { promptTokens: number; completionTokens: number; totalTokens: number } | undefined {
-    return this.lastUsage ?? undefined;
+  /** 计量收口：全局累计 + scope（会话账本）累计；非法 usage（非有限/负数）按 0 处理，防一个异常 provider 污染全部计数 */
+  private accumulate(scope: string | undefined, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    const p = sanitize(usage.promptTokens);
+    const c = sanitize(usage.completionTokens);
+    const t = sanitize(usage.totalTokens);
+    this.totalTokensUsed += t;
+    this.totalPromptTokens += p;
+    this.totalCompletionTokens += c;
+    if (scope) {
+      const bucket = this.sessionScopes.get(scope) ?? { prompt: 0, completion: 0 };
+      bucket.prompt += p;
+      bucket.completion += c;
+      this.sessionScopes.set(scope, bucket);
+    }
   }
 
   getTokenUsage(): number {
@@ -198,19 +230,53 @@ export class ModelRouter {
     return this.totalCompletionTokens;
   }
 
-  getCost(): number {
-    const provider = this.config.default.provider;
-    const price = this.config.pricing?.[provider];
-    if (!price) return 0;
-    return (
-      (this.totalPromptTokens / 1_000_000) * price.prompt + (this.totalCompletionTokens / 1_000_000) * price.completion
-    );
+  /** 会话账本当前累计（scope=sessionId；供 hooks 轮次差分/本轮展示；重启后清空，持久口径走事件/TurnLog） */
+  getSessionTokens(scope: string): { prompt: number; completion: number } {
+    return this.sessionScopes.get(scope) ?? { prompt: 0, completion: 0 };
+  }
+
+  /** 删除会话账本（Web DELETE /sessions/:id 调用，防 Map 无界增长） */
+  deleteScope(sessionId: string): void {
+    this.sessionScopes.delete(sessionId);
   }
 
   resetTokenUsage(): void {
     this.totalTokensUsed = 0;
     this.totalPromptTokens = 0;
     this.totalCompletionTokens = 0;
+    this.sessionScopes.clear();
+  }
+
+  /**
+   * 解析指定偏好（缺省 default）的上下文窗口（token；Sprint 44）
+   * 优先级：profile.contextWindow > 顶层 contextWindow["provider.model"] > contextWindow["provider"] > 内置表 > 兜底
+   */
+  getContextWindow(preference?: string): number {
+    const profile = this.getProfile(preference);
+    const own = profile.contextWindow;
+    if (typeof own === "number" && Number.isInteger(own) && own > 0) return own;
+    return this.lookupContextWindow(profile);
+  }
+
+  /** 顶层表/内置表查询：provider.model 精确键 > provider 默认键 > 内置表；
+   *  精确键未命中时做大小写不敏感兜底（review：profile.model 大小写与配置键漂移仍命中，防窗口静默虚高） */
+  private lookupContextWindow(profile: ModelProfile): number {
+    const provider = (profile.provider || "").trim().toLowerCase();
+    const table = this.config.contextWindow;
+    const modelKey = `${provider}.${profile.model}`;
+    const exact = table?.[modelKey] ?? table?.[provider];
+    if (typeof exact === "number" && Number.isInteger(exact) && exact > 0) return exact;
+    if (table) {
+      const lowerKey = `${provider}.${(profile.model || "").trim().toLowerCase()}`;
+      const lowerProv = provider.toLowerCase();
+      for (const k of Object.keys(table)) {
+        if (k.toLowerCase() === lowerKey || k.toLowerCase() === lowerProv) {
+          const v = table[k];
+          if (typeof v === "number" && Number.isInteger(v) && v > 0) return v;
+        }
+      }
+    }
+    return BUILTIN_CONTEXT_WINDOWS[provider] ?? CONTEXT_WINDOW_FALLBACK;
   }
 
   getCurrentModel(): string {
@@ -238,12 +304,20 @@ export class ModelRouter {
 
   // ── 运行时配置（/config 命令支持）──
 
-  /** 可用的默认模型选项：default + profiles */
-  getAvailableModels(): Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number; adapter?: string }> {
-    const out: Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number; adapter?: string }> = [];
-    out.push({ key: "default", model: this.config.default.model, provider: this.config.default.provider, baseURL: this.config.default.baseURL, temperature: this.config.default.temperature, maxTokens: this.config.default.maxTokens, adapter: this.config.default.adapter });
+  /**
+   * 可用模型列表（default + profiles 静态视图，不含运行时 profile 覆盖——
+   * 否则 /config model 切换 runtime 后 default 行会显示被覆盖的模型/窗口，误导选择）
+   */
+  getAvailableModels(): Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number; adapter?: string; contextWindow: number }> {
+    const out: Array<{ key: string; model: string; provider: string; baseURL: string; temperature: number; maxTokens: number; adapter?: string; contextWindow: number }> = [];
+    const push = (key: string, profile: ModelProfile) => {
+      const own = profile.contextWindow;
+      const window = typeof own === "number" && Number.isInteger(own) && own > 0 ? own : this.lookupContextWindow(profile);
+      out.push({ key, model: profile.model, provider: profile.provider, baseURL: profile.baseURL, temperature: profile.temperature, maxTokens: profile.maxTokens, adapter: profile.adapter, contextWindow: window });
+    };
+    push("default", this.config.default);
     for (const [key, p] of Object.entries(this.config.profiles)) {
-      out.push({ key, model: p.model ?? this.config.default.model, provider: p.provider ?? this.config.default.provider, baseURL: p.baseURL ?? this.config.default.baseURL, temperature: p.temperature ?? this.config.default.temperature, maxTokens: p.maxTokens ?? this.config.default.maxTokens, adapter: p.adapter ?? this.config.default.adapter });
+      push(key, this.mergeProfile(this.config.default, p));
     }
     return out;
   }
@@ -263,10 +337,10 @@ export class ModelRouter {
     this.runtimeProfileKey = profileKey.trim().toLowerCase();
   }
 
-  /** 动态添加模型 profile（立即生效；持久化由调用方写回 config/models.json） */
+  /** 动态添加模型 profile（立即生效；持久化由调用方写回 config/models.json；contextWindow 缺省走回退链） */
   addProfile(
     key: string,
-    profile: { model: string; baseURL: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number; adapter?: string },
+    profile: { model: string; baseURL: string; provider?: string; apiKey?: string; temperature?: number; maxTokens?: number; adapter?: string; contextWindow?: number },
   ): boolean {
     const k = key.trim().toLowerCase();
     if (!k || k === "default" || this.config.profiles[k]) return false;
@@ -281,6 +355,7 @@ export class ModelRouter {
       temperature: profile.temperature ?? this.config.default.temperature,
       maxTokens: profile.maxTokens ?? this.config.default.maxTokens,
       adapter: profile.adapter ?? this.config.default.adapter,
+      ...(Number.isInteger(profile.contextWindow) && profile.contextWindow! > 0 ? { contextWindow: profile.contextWindow } : {}),
     };
     return true;
   }
@@ -298,6 +373,7 @@ export class ModelRouter {
       temperature: p.temperature,
       maxTokens: p.maxTokens,
       adapter: p.adapter,
+      ...(p.contextWindow ? { contextWindow: p.contextWindow } : {}),
     };
   }
 
@@ -332,7 +408,7 @@ export class ModelRouter {
     preference: string,
     messages: Message[],
     tools?: ToolDefinition[],
-    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void },
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal; scope?: string; onUsage?: (usage: { promptTokens: number; completionTokens: number; totalTokens: number }) => void },
   ): AsyncGenerator<StreamChunk> {
     const profile = this.getProfile(preference);
     this.currentProfile = profile.model;
@@ -347,10 +423,7 @@ export class ModelRouter {
       signal: options?.signal,
       onUsage: (usage) => {
         // 流式 usage 只在流结束时一次性回调（防多 chunk 计数膨胀）
-        this.lastUsage = usage;
-        this.totalPromptTokens += usage.promptTokens;
-        this.totalCompletionTokens += usage.completionTokens;
-        this.totalTokensUsed += usage.totalTokens;
+        this.accumulate(options?.scope, usage);
         // 透传调用方回调（agent-loop 用其收集"本轮主请求"usage，避开压缩请求污染单槽）
         options?.onUsage?.(usage);
       },

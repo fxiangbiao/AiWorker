@@ -201,6 +201,14 @@ export class SessionStore {
     return next_seq;
   }
 
+  /** 会话事件数（Sprint 44：breakdown 缓存失效键，避免高频全量回放） */
+  getEventCount(sessionId: string): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM session_events WHERE session_id = ?`)
+      .get(sessionId) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
   /** 追加消息（单点入口：同时写事件日志 + messages 投影，同事务；assistant 可携带 usage 供轨迹/遥测） */
   appendMessage(
     sessionId: string,
@@ -307,11 +315,14 @@ export class SessionStore {
     }));
   }
 
-  /** 事件回放 → 消息序列（保持消息语义顺序：助手消息的 tool_calls 后紧跟对应 tool 结果） */
-  replayEvents(sessionId: string): Message[] {
-    const events = this.getEvents(sessionId);
+  /**
+   * 事件回放 → 消息序列（保持消息语义顺序：助手消息的 tool_calls 后紧跟对应 tool 结果）
+   * @param events 可选预取事件（Sprint 44 review：避免 GET /sessions/:id 对同一会话读取两遍全量事件）
+   */
+  replayEvents(sessionId: string, events?: SessionEvent[]): Message[] {
+    const evs = events ?? this.getEvents(sessionId);
     const toolResults = new Map<string, Message>();
-    for (const ev of events) {
+    for (const ev of evs) {
       if (ev.type === "tool/result") {
         const d = ev.data as { callId: string; success: boolean; content: string; error?: string };
         toolResults.set(d.callId, {
@@ -322,7 +333,7 @@ export class SessionStore {
       }
     }
     const messages: Message[] = [];
-    for (const ev of events) {
+    for (const ev of evs) {
       if (ev.type === "user/message") {
         messages.push(ev.data as unknown as Message);
       } else if (ev.type === "assistant/message") {
@@ -405,6 +416,15 @@ export class SessionStore {
       firstUserMsg: r.first_user ? r.first_user.replace(/\s+/g, " ").slice(0, 60) : null,
       workingDir: r.working_dir,
     }));
+  }
+
+  /** 单会话直查（Sprint 44 review：/context、GET /sessions/:id 避免 listSessions(1000) 全表 O(n) 扫描与截断误判 404） */
+  getSession(sessionId: string): { id: string; agentId: string; createdAt: number; updatedAt: number; summary: string | null } | null {
+    const row = this.db
+      .prepare(`SELECT id, agent_id, created_at, updated_at, summary FROM sessions WHERE id = ?`)
+      .get(sessionId) as { id: string; agent_id: string; created_at: number; updated_at: number; summary: string | null } | undefined;
+    if (!row) return null;
+    return { id: row.id, agentId: row.agent_id, createdAt: row.created_at, updatedAt: row.updated_at, summary: row.summary };
   }
 
   /** 会话项目目录（未设置返回 null → 调用方回退全局默认） */

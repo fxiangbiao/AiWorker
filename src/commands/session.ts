@@ -77,7 +77,7 @@ export const sessionCommands: CliCommand[] = [
         ctx.write(
           chalk.gray(
             `累计: ${turns.length} 轮, ${(totalDur / 1000).toFixed(1)}s, ${totalTools} 次工具调用, ` +
-              `输入 ${fmtK(totalPrompt)} tok, 输出 ${fmtK(totalCompletion)} tok`,
+              `输入 ${fmtK(totalPrompt)} tok, 输出 ${fmtK(totalCompletion)} tok（轮次差分求和）`,
           ),
         );
         if (!sessionId) {
@@ -256,10 +256,11 @@ export const sessionCommands: CliCommand[] = [
         return `${color("█".repeat(w))}${chalk.gray("░".repeat(Math.max(0, 20 - w)))}`;
       };
       const fmtN = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+      const fmtWin = (n: number): string => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(0)}M` : fmtN(n));
 
-      ctx.write(`\n${chalk.bold("── 上下文占用 ──")}\n`);
+      ctx.write(`\n${chalk.bold("── 上下文占用 ──")} ${chalk.dim(`窗口 ${fmtWin(ws)}（估算，含 tool 消息）`)}\n`);
       const fmt = (label: string, tok: number, extra?: string) => {
-        const pct = ws > 0 ? `(${((tok / ws) * 100).toFixed(0)}%)` : "";
+        const pct = ws > 0 ? `(${((tok / ws) * 100).toFixed(2)}%)` : "";
         const ext = extra ? ` ${chalk.dim(extra)}` : "";
         ctx.write(
           `│ ${chalk.dim(padToWidth(label, 10))} ${bar(tok)} ${chalk.white(fmtN(tok))}/${chalk.white(fmtN(ws))} ${pct}${ext}\n`,
@@ -276,7 +277,11 @@ export const sessionCommands: CliCommand[] = [
       fmt("当前消息", breakdown.currentTurn);
       const totalLabel = padToWidth("合计", 12);
       ctx.write(
-        `│ ${totalLabel}${" ".repeat(20)} ${chalk.bold(fmtN(breakdown.total))}/${chalk.bold(fmtN(ws))} (${((breakdown.total / ws) * 100).toFixed(0)}%)\n`,
+        `│ ${totalLabel}${" ".repeat(20)} ${chalk.bold(fmtN(breakdown.total))}/${chalk.bold(fmtN(ws))} (${((breakdown.total / ws) * 100).toFixed(2)}%)\n`,
+      );
+      const remaining = Math.max(0, ws - breakdown.total);
+      ctx.write(
+        chalk.dim(`└ 剩余可用: ${fmtN(remaining)} tok（估算 ${(remaining / ws) * 100 > 0 ? ((remaining / ws) * 100).toFixed(2) : "0.00"}%）\n`),
       );
 
       const mcpStatuses = mcpManager.getStatuses();

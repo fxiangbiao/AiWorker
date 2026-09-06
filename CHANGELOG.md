@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 (2026-09-06)
+
+### Token 统计与上下文窗口展示＋费用移除（Sprint 44）
+- **三档 token 口径**：本轮＝会话账本差分（ModelRouter.sessionScopes 按 scope=sessionId 记账，TurnLog 轮次结算，含同轮压缩请求、不含 loop 外摘要）；会话＝session_events 事件求和持久（assistant/message 携带单次请求 usage，`GET /sessions/:id` 返回 usages 平行数组）；全局＝进程级计数器（TUI `/status`、Web 状态栏标注"全局"）
+- **上下文窗口可配置**：`config/models.json` 顶层 `contextWindow` 表按 provider / provider.model 声明；解析链 profile.contextWindow → 顶层表 → 内置表（deepseek 1M、openai 128k、anthropic 200k、google 256k）→ 32768 兜底；profile 级覆盖与键大小写兜底；`ModelRouter.getContextWindow()` 供 TUI/Web 展示与占比计算
+- **占比展示**：TUI `/context`（分层占用＋窗口＋剩余可用）、`/status`、回合 footer「本轮 ↑x ↓y tok（窗口 p%）」保留 1 位小数；Web 上下文 Tab（每会话按 agent 窗口）、气泡脚注「本轮/请求」区分实时与历史口径、设备徽标窗口、StatusBar 全局 tok
+- **压缩预算与物理窗口分离**：COMPRESS_BUDGET=32768 作成本护栏；物理窗口小于预算时（本地 16384 模型）按窗口收紧触发阈值与保留目标，防输入溢出（review 补充）
+- **计费统计移除**：`getCost()`/PRICING/pricing 全仓删除，费用由模型平台账单核对
+- **Web 修复**：Svelte 5 snippet `{@render}` 用法（修复 "Ye is not a function"）、智能体工具勾选保存不生效/回显丢失（内置 agent 构造时热载 YAML）、恢复默认 400（无 body 不解 JSON）、permissions 嵌套读写
+- **Code review（第 4 轮）**：/chat 同会话并发 409 护栏＋done TurnLog 归属校验＋回传真实 sessionId、GET /sessions/:id 单次读事件与 404 语义、usage NaN 护栏与死代码清理、Web 会话切换/上下文/轨迹请求竞态守卫、AnswerBlock 本轮/请求口径、Sidebar token 徽标随回合刷新等
+- 测试 +21：token-usage（估算/账本并发隔离/窗口收紧/键大小写）、agent-hot-reload、server done.turnUsage、agents-api reset/delete 无 body、context 会话化等；全量 778 全绿
+
 ## 1.1.0 (2026-08-30)
 
 ### 语音输入（离线 ASR）+ TTS 补齐（Sprint 43）

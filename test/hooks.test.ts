@@ -600,22 +600,27 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(await p1).toBeNull();
   });
 
-  // 13f. TurnLogger token 增量
-  it("turnLogger onMessage 记录基线，onTaskComplete 结算增量", async () => {
+  // 13f. TurnLogger token 增量（Sprint 44：会话账本差分，替代全局计数器）
+  it("turnLogger onMessage 记录基线，onTaskComplete 结算增量（会话账本，并发隔离）", async () => {
     const { createTurnLogger } = await import("../src/hooks/handlers.js");
     const sessionStore = new SessionStore(resolve(testDir, "test-turnlog.db"));
+    // 模拟 ModelRouter 会话账本：按 sessionId 记账（替代原全局 getPromptTokens 差分）
+    const ledger = new Map<string, { prompt: number; completion: number }>();
     let promptTokens = 100;
     let completionTokens = 50;
     const modelRouter = {
       getPromptTokens: () => promptTokens,
       getCompletionTokens: () => completionTokens,
+      getSessionTokens: (sid: string) => ledger.get(sid) ?? { prompt: 0, completion: 0 },
     };
     const handler = createTurnLogger({ sessionStore, modelRouter } as never);
     const sess = sessionStore.createSession("test-agent");
+    ledger.set(sess.id, { prompt: promptTokens, completion: completionTokens });
 
     await handler({ event: "onMessage", agentId: "test-agent", sessionId: sess.id, data: {} } as never);
     promptTokens = 1500;
     completionTokens = 800;
+    ledger.set(sess.id, { prompt: 1500, completion: 800 });
     await handler({
       event: "onTaskComplete",
       agentId: "test-agent",
@@ -628,6 +633,20 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(turns[0].tokensPrompt).toBe(1400); // 1500 - 100
     expect(turns[0].tokensCompletion).toBe(750); // 800 - 50
     expect(turns[0].userInput).toBe("问题");
+
+    // 并发隔离：另一会话账本增长不影响本会话差分
+    const other = sessionStore.createSession("other-agent");
+    ledger.set(other.id, { prompt: 9999, completion: 9999 });
+    await handler({ event: "onMessage", agentId: "test-agent", sessionId: sess.id, data: {} } as never);
+    await handler({
+      event: "onTaskComplete",
+      agentId: "test-agent",
+      sessionId: sess.id,
+      data: { iterations: 1, toolCallsExecuted: 0, truncated: false, messages: [{ role: "user", content: "q2" }] },
+    } as never);
+    const turns2 = sessionStore.getTurnLogs(sess.id);
+    expect(turns2).toHaveLength(2);
+    expect(turns2[1].tokensPrompt).toBe(0); // 本会话账本无新增，其他会话增长不计入
     sessionStore.close();
   });
 });

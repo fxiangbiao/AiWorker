@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.1.0-blue)
+![version](https://img.shields.io/badge/version-1.2.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -31,7 +31,7 @@
 ## 特性
 
 - **Agent 核心**：流式输出 + 中断 + 断路器 + 防循环提醒 + token 压缩；**迭代预算管理**（每专家上限可调、剩余 ≤5 轮收敛提示、空转/失败自动终止）；7 专家路由（正则 → LLM 语义）；`/plan` DAG 协作 + `/debate` 双专家互审
-- **模型**：多 profile 路由（`config/models.json`，支持 `${ENV}`）+ DeepSeek 思考模式；`/config` 或 Web「配置」可切换模型、调整温度/max-tokens/迭代上限，并**添加新模型/Provider**
+- **模型**：多 profile 路由（`config/models.json`，支持 `${ENV}`）+ DeepSeek 思考模式；**上下文窗口可配置**（顶层 `contextWindow` 表按 provider/model 声明，TUI/Web 展示窗口与上下文占比、压缩预算独立成本护栏）；`/config` 或 Web「配置」可切换模型、调整温度/max-tokens/迭代上限，并**添加新模型/Provider**；token 用量可查（TUI `/status`、Web 状态栏/轨迹），费用请在模型平台账单核对
 - **工具与扩展**：8 内置工具（fs / terminal_exec / terminal_session / web / ask_user 等）+ MCP（stdio/HTTP、内置服务器、自动重连）+ 38 技能（SKILL.md、正则触发、自沉淀）+ **插件系统**（`setup(ctx)` 即插即用、scope 注册、fail-soft）+ scoped 工具注册
 - **安全**：Ask/Plan/Auto 三权限模式 + 审批服务（fail-closed）+ 危险操作拦截 + 路径防护 + 策略化命令沙箱（cwd 越界/黑名单/敏感环境变量剥离）+ 60s 工具超时 + Hooks 6 事件 14 handlers
 - **记忆与上下文**：三层记忆（工作 / 情景 FTS5 / 语义 MEMORY.md）+ 会话事件溯源（replay + `/trace`）+ 超长结果 spill 落盘 + 自动标题 + 上下文压缩

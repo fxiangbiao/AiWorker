@@ -42,7 +42,11 @@
       })
       .catch(() => {});
   }
+  // 会话 token 徽标刷新：回合结束（diffVersion++）或会话列表变化（新会话/重命名/删除）时重取 /stats，
+  // 否则仅挂载时加载一次，长对话期间徽标永远是旧值（Sprint 44 review）
   $effect(() => {
+    void store.diffVersion;
+    void store.chats;
     loadStats();
   });
 
@@ -165,7 +169,7 @@
                   <span class="s-dir" title={`项目目录: ${c.workingDir}`}>📁</span>
                 {/if}
                 {#if statsMap[c.id]}
-                  <span class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
+                  <span title="会话累计 token（事件求和，不含摘要/压缩请求）" class:bad={(statsMap[c.id].toolCallsFailed ?? 0) > 0}>
                     {(statsMap[c.id].tokensTotal ?? 0) >= 1000 ? `${((statsMap[c.id].tokensTotal ?? 0) / 1000).toFixed(1)}k` : (statsMap[c.id].tokensTotal ?? 0)} tok
                     {#if (statsMap[c.id].toolCallsFailed ?? 0) > 0}· 失败 {statsMap[c.id].toolCallsFailed}{/if}
                   </span>

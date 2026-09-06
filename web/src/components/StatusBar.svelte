@@ -1,12 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fmtN } from "$lib/utils/format";
-  import { currentModel, totalTokens, promptTokens, completionTokens, serverOnline, PRICING } from "$lib/stores/status";
+  import { currentModel, totalTokens, promptTokens, completionTokens, contextWindow, serverOnline } from "$lib/stores/status";
   import { apps, processStats, loadApps, loadProcesses, initAppsWs } from "$lib/stores/apps.svelte";
   import { Cpu, Box } from "lucide-svelte";
 
-  /** 费用 = prompt×单价 + completion×单价（每 1M token），不再用总 token 混算 */
-  const cost = $derived((($promptTokens || 0) * PRICING.prompt + ($completionTokens || 0) * PRICING.completion) / 1e6);
+  /** 上下文窗口展示：≥1M 显 M（如 1M），≥1000 显 k（如 128k） */
+  function fmtWin(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
+    return String(n);
+  }
   /** 运行中的应用数（含系统插件；业务语义） */
   const runningApps = $derived($apps.filter((a) => a.status === "running").length);
   /** 运行中的进程总数（Agent 会话 + 应用 + 后台任务；来自进程注册表） */
@@ -21,9 +25,12 @@
 
 <div class="statusbar">
   <div class="sb-item"><span class="sb-dot" class:online={$serverOnline}></span></div>
-  <div class="sb-item">model: {$currentModel}</div>
-  <div class="sb-item">tokens: {fmtN($totalTokens)}</div>
-  <span>cost: ¥{cost.toFixed(4)}</span>
+  <div class="sb-item" title="进程级全局累计（本次运行所有会话）">
+    model: {$currentModel}{$contextWindow ? ` · 窗口 ${fmtWin($contextWindow)}` : ""}
+  </div>
+  <div class="sb-item" title="进程级全局累计 token（本次运行，跨会话；本轮/会话用量见气泡与轨迹）">
+    全局 tok: {fmtN($totalTokens)}（↑{fmtN($promptTokens)} ↓{fmtN($completionTokens)}）
+  </div>
   <div class="sb-item" title="运行中的进程 / 运行中的应用">
     <Cpu size={11} />{procCount}
     <Box size={11} />{runningApps}

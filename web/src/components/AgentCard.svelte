@@ -70,7 +70,7 @@
         <PlanStepsBlock steps={msg._steps} meta={msg._meta} />
       {/if}
       {#if msg.content}
-        <AnswerBlock content={msg.content} />
+        <AnswerBlock content={msg.content} usage={msg._usage} />
       {/if}
     </div>
   {/if}

@@ -402,7 +402,7 @@ program
             if (!modelRouter.addProfile(v.key, { model: m, baseURL: b, provider: v.provider, apiKey: v.apiKey, temperature: v.temperature, maxTokens: v.maxTokens })) {
               return { ok: false, error: `添加失败: key「${v.key}」已存在或非法` };
             }
-            // 写回 config/models.json（保留 default/pricing/routing 等字段）
+            // 写回 config/models.json（保留 default/contextWindow/routing 等字段；pricing 已移除——费用由平台统计）
             const modelsPath = resolve(process.cwd(), "config", "models.json");
             const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & { profiles?: Record<string, unknown> };
             if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
@@ -682,8 +682,19 @@ ${text}
           sessionStore,
           dataDir,
           getContextBreakdown: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) =>
-            contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
+            contextManager.getContextBreakdown(
+              systemPrompt,
+              sessionId,
+              userMessage,
+              agentId,
+              // 窗口按会话 agent 的模型偏好解析（server /context?sessionId 会话化用）
+              agentId
+                ? modelRouter.getContextWindow(agents[agentId]?.getConfig().modelPreference)
+                : modelRouter.getContextWindow(),
+            ),
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
+          getAgentSystemPrompt: (agentId: string) =>
+            (agents[agentId] as { getConfig?: () => { systemPrompt?: string } } | undefined)?.getConfig?.().systemPrompt,
           getMcpStatuses: () => mcpManager.getStatuses(),
           getPlugins: () => pluginManager.getPlugins(),
           appManager,
@@ -727,7 +738,7 @@ ${text}
     const lastAnswer = { value: "" };
     let currentSessionId: string | undefined;
 
-    // 计算当前上下文窗口占用百分比（低频调用：仅 printStatus / 命令后）
+    // 计算当前上下文窗口占用百分比（低频调用：仅 printStatus / 命令后；分母为当前 agent 生效模型窗口）
     const statusWindowPct = (): number | undefined => {
       try {
         const agent = agents[routeToExpert("")];
@@ -735,8 +746,11 @@ ${text}
           agent.getConfig().systemPrompt,
           currentSessionId ?? "",
           "",
+          agent.getId(),
+          modelRouter.getContextWindow(agent.getConfig().modelPreference),
         );
-        return bd.windowSize > 0 ? Math.round((bd.total / bd.windowSize) * 100) : undefined;
+        // 1 位小数（review：1M 窗口下真实占比常 <1%，Math.round 归 0 会把"有占用"显示成"0%"）
+        return bd.windowSize > 0 ? Math.max(0, Math.round(((bd.total / bd.windowSize) * 100) * 10) / 10) : undefined;
       } catch {
         return undefined;
       }
@@ -771,7 +785,13 @@ ${text}
       saveAgentConfig: (cfg) => saveAgentConfig(cfg.id, cfg),
       getContextBreakdown: (query: string) => {
         const agent = agents[routeToExpert("")]!;
-        return contextManager.getContextBreakdown(agent.getConfig().systemPrompt, currentSessionId ?? "", query);
+        return contextManager.getContextBreakdown(
+          agent.getConfig().systemPrompt,
+          currentSessionId ?? "",
+          query,
+          agent.getId(),
+          modelRouter.getContextWindow(agent.getConfig().modelPreference),
+        );
       },
       listCommands: () => cliCommands,
       appManager,
@@ -949,6 +969,9 @@ ${text}
           },
         };
 
+        // 本轮 token 差分：运行前快照会话账本（无当前会话则 0 基线）
+        const sidBefore = currentSessionId;
+        const baseBefore = (sidBefore ? modelRouter.getSessionTokens(sidBefore) : { prompt: 0, completion: 0 });
         const result = await agent.runStream(
           { instruction: trimmed, mode: currentMode, workingDir, sessionId: currentSessionId },
           workingDir,
@@ -969,11 +992,15 @@ ${text}
           renderer.writeLine(chalk.red(short));
         }
 
-        const cost = modelRouter.getCost();
-        const costStr = cost > 0 ? `, ¥${cost.toFixed(4)}` : "";
+        // 本轮 = 会话账本差分（含同轮压缩请求；不含 loop 外摘要）；窗口占比为当前上下文估算
+        const tokensNow = currentSessionId ? modelRouter.getSessionTokens(currentSessionId) : { prompt: 0, completion: 0 };
+        const turnPrompt = Math.max(0, tokensNow.prompt - baseBefore.prompt);
+        const turnCompletion = Math.max(0, tokensNow.completion - baseBefore.completion);
+        const pct = statusWindowPct();
+        const pctStr = pct != null ? ` (窗口 ${pct}%)` : "";
         renderer.writeLine(
           chalk.gray(
-            `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}${costStr}]`,
+            `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, 本轮: ↑${turnPrompt} ↓${turnCompletion} tok${pctStr}]`,
           ),
         );
       } catch (err) {

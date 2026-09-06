@@ -25,7 +25,9 @@ function modelRouterMock() {
     getCompletionTokens: vi.fn(() => 0),
     getCurrentModel: vi.fn(() => "m"),
     getDisplayModel: vi.fn(() => "test-model"),
-    getCost: vi.fn(() => 0),
+    getContextWindow: vi.fn(() => 32768),
+    getSessionTokens: vi.fn(() => ({ prompt: 0, completion: 0 })),
+    getAvailableModels: vi.fn(() => [{ key: "default", model: "m", provider: "deepseek", baseURL: "", temperature: 0, maxTokens: 100, contextWindow: 32768 }]),
   } as unknown as ModelRouter;
 }
 

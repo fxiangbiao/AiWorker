@@ -37,6 +37,8 @@ export interface UIMessage {
   _activeStep?: string;
   /** 技能模式：/技能名 激活的技能（SSE skill_activated 事件写入，助手消息顶部徽标） */
   _skills?: { name: string; description?: string }[];
+  /** 本轮用量（Sprint 44：/chat done 下发 turnUsage 写入；reload 时按 GET /sessions usages 回填单次请求值） */
+  _usage?: { prompt?: number; completion?: number; total?: number; contextPct?: number; perTurn?: boolean };
 }
 
 export interface PlanStep {
@@ -240,6 +242,9 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
     const msgs: UIMessage[] = [];
     // 待归属的 tool_call_id → 所在 assistant 消息
     const pendingTools: { id: string; msg: UIMessage }[] = [];
+    // assistant 单次请求 usage（Sprint 44：与 messages 中 assistant 按出现顺序一一对应）
+    const usages = (data.usages as Array<{ promptTokens?: number; completionTokens?: number; totalTokens?: number } | null> | undefined) ?? [];
+    let assistantIdx = 0;
 
     for (const m of data.messages || []) {
       const role = m.role as string;
@@ -260,6 +265,18 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
           }));
           for (const tc of tcs) pendingTools.push({ id: tc.id, msg: um });
         }
+        // 单次请求 usage 回填（历史口径：非整轮；tool 调用中间消息也可能带 usage）
+        const u = usages[assistantIdx];
+        if (u && (u.totalTokens ?? (u.promptTokens ?? 0) + (u.completionTokens ?? 0)) > 0) {
+          um._usage = {
+            prompt: u.promptTokens ?? 0,
+            completion: u.completionTokens ?? 0,
+            total: u.totalTokens ?? ((u.promptTokens ?? 0) + (u.completionTokens ?? 0)),
+            contextPct: 0,
+            perTurn: false,
+          };
+        }
+        assistantIdx++;
         msgs.push(um);
       } else if (role === "tool") {
         const target = pendingTools.find((p) => p.id === m.tool_call_id);

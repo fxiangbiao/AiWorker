@@ -7,7 +7,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const financialConfig: AgentConfig = loadAgentConfig("financial") ?? {
+const financialDefault: AgentConfig = {
   id: "financial",
   name: "financial",
   displayName: "理财投资顾问",
@@ -60,6 +60,6 @@ const financialConfig: AgentConfig = loadAgentConfig("financial") ?? {
 
 export class FinancialAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(financialConfig, deps);
+    super(loadAgentConfig("financial") ?? financialDefault, deps);
   }
 }

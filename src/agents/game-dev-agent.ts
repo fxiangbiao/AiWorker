@@ -7,7 +7,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const gameDevConfig: AgentConfig = loadAgentConfig("game-dev") ?? {
+const gameDevDefault: AgentConfig = {
   id: "game-dev",
   name: "game-dev",
   displayName: "游戏设计师",
@@ -58,6 +58,6 @@ Godot 4.x 关键知识：
 
 export class GameDevAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(gameDevConfig, deps);
+    super(loadAgentConfig("game-dev") ?? gameDevDefault, deps);
   }
 }

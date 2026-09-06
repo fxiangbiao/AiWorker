@@ -7,7 +7,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const dataAnalysisConfig: AgentConfig = loadAgentConfig("data-analysis") ?? {
+const dataAnalysisDefault: AgentConfig = {
   id: "data-analysis",
   name: "data-analysis",
   displayName: "数据分析师",
@@ -53,6 +53,6 @@ Python 分析环境使用 terminal_exec 执行脚本，可用库：pandas、nump
 
 export class DataAnalysisAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(dataAnalysisConfig, deps);
+    super(loadAgentConfig("data-analysis") ?? dataAnalysisDefault, deps);
   }
 }

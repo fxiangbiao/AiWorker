@@ -94,6 +94,8 @@ interface ServerDeps {
   }[];
   getContextBreakdown?: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) => unknown;
   getSystemPrompt?: () => string;
+  /** 指定智能体的 systemPrompt（Sprint 44 /context?sessionId 会话化：按会话 agent 计算，非恒 default） */
+  getAgentSystemPrompt?: (agentId: string) => string | undefined;
   getMcpStatuses?: () => Record<
     string,
     { name: string; transport: string; connected: boolean; toolCount: number; state?: string; error?: string; tools?: { name: string; description: string }[] }
@@ -117,6 +119,14 @@ interface ServerDeps {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(__dirname, "..", "web", "dist");
 const oldWebDir = resolve(__dirname, "..", "web");
+
+/** 取智能体的模型偏好（Sprint 44：done.turnUsage.contextPct 按会话 agent 窗口计算） */
+function agentPref(deps: ServerDeps, agentId: string): string | undefined {
+  return deps.getAgentList().find((a) => a.id === agentId)?.modelPreference;
+}
+
+/** /chat 同会话并发护栏（Sprint 44 review：同一 sessionId 并行 run 会使账本差分与 done 末条 TurnLog 归属错乱） */
+const chatInFlight = new Set<string>();
 
 /** API 统一前缀（与静态资源托管区分，静态托管只需排除该前缀） */
 const API_PREFIX = "/api/v1";
@@ -212,7 +222,8 @@ function validateAgentPayload(
     return { ok: false, error: "maxIterations 需在 1-200 之间" };
   }
   const strArr = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : []);
-  const mode = String((body.permissions as Record<string, unknown> | undefined)?.defaultMode ?? "ask");
+  const perm = (body.permissions ?? {}) as Record<string, unknown>;
+  const mode = String(perm.defaultMode ?? body.defaultMode ?? "ask");
   if (mode !== "ask" && mode !== "plan" && mode !== "auto") {
     return { ok: false, error: "defaultMode 非法（ask / plan / auto）" };
   }
@@ -234,8 +245,8 @@ function validateAgentPayload(
       strictTools: body.strictTools === true,
       permissions: {
         defaultMode: mode as PermissionMode,
-        allowedTools: strArr(body.allowedTools),
-        deniedTools: strArr(body.deniedTools),
+        allowedTools: strArr(perm.allowedTools ?? body.allowedTools),
+        deniedTools: strArr(perm.deniedTools ?? body.deniedTools),
       },
     },
   };
@@ -635,20 +646,6 @@ export function startServer(deps: ServerDeps, port: number) {
         return;
       }
       const rest = decodeURIComponent(url.slice(apiUrl("/agents/").length));
-      let body: string;
-      try {
-        body = await parseBody(req);
-      } catch {
-        sendJSON(res, 413, { error: "Body too large" });
-        return;
-      }
-      let payload: Record<string, unknown>;
-      try {
-        payload = JSON.parse(body) as Record<string, unknown>;
-      } catch {
-        sendJSON(res, 400, { error: "Invalid JSON" });
-        return;
-      }
       if (rest.endsWith("/reset")) {
         const id = rest.slice(0, -"/reset".length);
         if (!deps.isBuiltinAgent(id)) {
@@ -671,6 +668,20 @@ export function startServer(deps: ServerDeps, port: number) {
       }
       if (rest.endsWith("/config")) {
         const id = rest.slice(0, -"/config".length);
+        let body: string;
+        try {
+          body = await parseBody(req);
+        } catch {
+          sendJSON(res, 413, { error: "Body too large" });
+          return;
+        }
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(body) as Record<string, unknown>;
+        } catch {
+          sendJSON(res, 400, { error: "Invalid JSON" });
+          return;
+        }
         const v = validateAgentPayload(id, payload, deps.isBuiltinAgent(id));
         if (!v.ok) {
           sendJSON(res, 400, { error: v.error });
@@ -694,6 +705,7 @@ export function startServer(deps: ServerDeps, port: number) {
         uptime: Date.now() - startTime,
         version: getAppVersion(),
         model: deps.modelRouter.getCurrentModel(),
+        contextWindow: deps.modelRouter.getContextWindow(),
         tokenUsage: {
           total: deps.modelRouter.getTokenUsage(),
           prompt: deps.modelRouter.getPromptTokens(),
@@ -747,11 +759,26 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export") && !url.endsWith("/working-dir")) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
-      // 事件回放（含 tool_calls + tool 结果，TUI/Web 会话完整消息序列）；
+      // 会话不存在（已删除/从未建立）→ 404，与 /context、/trace 语义一致（Web loadRemoteMessages 已容错 404）
+      if (!deps.sessionStore.getSession(sessionId)) {
+        sendJSON(res, 404, { error: "Session not found" });
+        return;
+      }
+      // 事件回放（含 tool_calls + tool 结果，TUI/Web 会话完整消息序列）；单次读取事件，避免 replayEvents 内部二次全量查询；
       // 事件日志为空（Sprint 24 之前创建的旧会话）时回退投影表
-      let messages = deps.sessionStore.replayEvents(sessionId);
+      const events = deps.sessionStore.getEvents(sessionId);
+      let messages = events.length > 0 ? deps.sessionStore.replayEvents(sessionId, events) : [];
       if (messages.length === 0) messages = deps.sessionStore.getMessages(sessionId);
-      sendJSON(res, 200, { sessionId, messages });
+      // assistant 单次请求 usage 平行数组（Sprint 44：与 messages 中 assistant 按出现顺序一一对应；
+      // 旧会话/投影回退无 usage → 空数组）
+      const usages: Array<{ promptTokens: number; completionTokens: number; totalTokens: number } | null> = [];
+      for (const ev of events) {
+        if (ev.type === "assistant/message") {
+          const u = (ev.data as { usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }).usage;
+          usages.push(u ?? null);
+        }
+      }
+      sendJSON(res, 200, { sessionId, messages, usages });
       return;
     }
 
@@ -760,7 +787,10 @@ export function startServer(deps: ServerDeps, port: number) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       const ok = deps.sessionStore.deleteSession(sessionId);
-      if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
+      if (ok) {
+        deps.modelRouter.deleteScope(sessionId);
+        eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
+      }
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
@@ -919,9 +949,20 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    if (url === apiUrl("/context") && req.method === "GET") {
+    if (url.startsWith(apiUrl("/context")) && req.method === "GET") {
       if (!deps.getContextBreakdown) { sendJSON(res, 500, { error: "Context breakdown not available" }); return; }
-      const breakdown = deps.getContextBreakdown(deps.getSystemPrompt?.() ?? "", "", "", "default");
+      const u = new URL(req.url ?? "", "http://localhost");
+      const sid = u.searchParams.get("sessionId") ?? "";
+      let agentId = "default";
+      let systemPrompt = deps.getSystemPrompt?.() ?? "";
+      if (sid) {
+        // 会话化：按会话 record.agentId 取对应 agent（含技能匹配与窗口）；会话不存在返回 404（直查，避免 listSessions 全表扫描与截断误判）
+        const rec = deps.sessionStore?.getSession(sid);
+        if (!rec) { sendJSON(res, 404, { error: "Session not found" }); return; }
+        agentId = rec.agentId ?? "default";
+        systemPrompt = deps.getAgentSystemPrompt?.(agentId) ?? systemPrompt;
+      }
+      const breakdown = deps.getContextBreakdown(systemPrompt, sid, "", agentId);
       sendJSON(res, 200, { breakdown });
       return;
     }
@@ -1936,6 +1977,16 @@ export function startServer(deps: ServerDeps, port: number) {
         eventBus.broadcast({ type: "session/update", sessionId, kind: "create" });
       }
 
+      // 同会话已在生成（双 Tab/脚本并发）→ 409，避免账本差分/TurnLog 末条归属错乱
+      if (sessionId && deps.sessionStore) {
+        if (chatInFlight.has(sessionId)) {
+          sendJSON(res, 409, { error: "该会话正在生成回复，请等待完成后再发送" });
+          return;
+        }
+        chatInFlight.add(sessionId);
+      }
+      const runStartedAt = Date.now();
+
       const abort = new AbortController();
       req.on("close", () => abort.abort());
       req.on("error", () => abort.abort());
@@ -1966,8 +2017,7 @@ export function startServer(deps: ServerDeps, port: number) {
           write({ type: "skill_activated", name: skillAction.skill.name, description: skillAction.skill.description ?? "" });
         }
 
-        // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
-        await runWithChannels(write, async () => {
+        const runResult = await runWithChannels(write, async () => {
           const callbacks: StreamCallbacks = {
             onTextDelta: (text) => write({ type: "text", content: text }),
             onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
@@ -1992,13 +2042,35 @@ export function startServer(deps: ServerDeps, port: number) {
             ...(skillAction ? { explicitSkill: { name: skillAction.skill.name, body: skillAction.skill.body ?? "" } } : {}),
           };
 
-          await agent.runStream(task, deps.workingDir, callbacks, abort.signal);
+          return agent.runStream(task, deps.workingDir, callbacks, abort.signal);
         });
+
+        // 本轮 usage：TurnLog（hooks onTaskComplete 已结算，持久权威值）；
+        // done 回传真实会话 id（匿名 http-* 会话也可被客户端定位/DELETE，账本随删清理）
+        const doneSid = sessionId ?? (runResult as { sessionId?: string } | null)?.sessionId ?? "";
+        let turnUsage: { prompt: number; completion: number; total: number; contextPct: number } | null = null;
+        if (deps.sessionStore && doneSid) {
+          const turns = deps.sessionStore.getTurnLogs(doneSid);
+          const last = turns.length > 0 ? turns[turns.length - 1] : null;
+          // 归属校验：仅采纳本轮（runStartedAt 之后）结算的 TurnLog，防并发/落库失败把上轮数字标成本轮
+          if (last && last.finishedAt >= runStartedAt) {
+            const promptOfLast = runResult?.usage?.promptTokens ?? last.tokensPrompt;
+            const win = deps.modelRouter.getContextWindow(agentPref(deps, agentId));
+            turnUsage = {
+              prompt: last.tokensPrompt,
+              completion: last.tokensCompletion,
+              total: last.tokensPrompt + last.tokensCompletion,
+              // 保留 1 位小数：1M 窗口下真实占比常 <1%，Math.round 归 0 会误导"占比缺失"
+              contextPct: win > 0 ? Math.max(0, Math.min(100, Math.round((promptOfLast / win) * 1000) / 10)) : 0,
+            };
+          }
+        }
 
         write({
           type: "done",
-          sessionId,
+          sessionId: doneSid || undefined,
           model: deps.modelRouter.getCurrentModel(),
+          turnUsage,
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),
@@ -2008,6 +2080,9 @@ export function startServer(deps: ServerDeps, port: number) {
       } catch (err) {
         write({ type: "error", message: (err as Error).message });
       } finally {
+        if (sessionId && deps.sessionStore) {
+          chatInFlight.delete(sessionId);
+        }
         if (!res.writableEnded) {
           res.end();
         }

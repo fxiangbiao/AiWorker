@@ -19,6 +19,7 @@ import type {
   Message,
 } from "../types.js";
 import type { ModelRouter } from "./model-router.js";
+import { CONTEXT_WINDOW_FALLBACK } from "./model-router.js";
 import type { ContextManager } from "./context-manager.js";
 import type { SessionStore } from "../memory/session-store.js";
 import { toolRegistry, type ToolScopeView } from "./tool-registry.js";
@@ -56,6 +57,9 @@ async function runAgentLoopInner(
   /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
   const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
+  /** 生效模型物理窗口（review：压缩触发阈值按 min(成本预算, 物理窗口) 收紧，本地小窗口模型防溢出；mock/旧实现缺该方法时回退兜底预算） */
+  const windowSize = modelRouter.getContextWindow?.(config.modelPreference) ?? CONTEXT_WINDOW_FALLBACK;
+
   contextManager.freezeSnapshot();
 
   let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill);
@@ -85,11 +89,11 @@ async function runAgentLoopInner(
   while (iterations < MAX_ITER) {
     try {
       sessionStore.appendEvent(sessionId, "step/start", { step: iterations }, "agent-loop");
-      const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages);
+      const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages, sessionId, windowSize);
       if (didCompress) {
         messages = compressed;
       } else if (iterations >= 5 && iterations % 5 === 0) {
-        const { messages: forced } = await contextManager.maybeCompress(messages);
+        const { messages: forced } = await contextManager.maybeCompress(messages, sessionId, windowSize);
         messages = forced;
       }
 
@@ -114,7 +118,9 @@ async function runAgentLoopInner(
       const isPluginRegistered = (name: string) => (toolView ? toolView.isPluginTool(name) : toolRegistry.isPluginTool(name));
       const tools = filterVisibleTools(availableTools, config, isPluginRegistered);
 
-      const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools);
+      const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools, {
+        scope: sessionId,
+      });
       if (response.text) lastAssistantText = response.text;
 
       // 模型达到 token 上限导致截断 → 压缩重试（含断路器）
@@ -130,7 +136,7 @@ async function runAgentLoopInner(
             toolCallsExecuted,
           };
         }
-        const { messages: compressed } = await contextManager.maybeCompress(messages);
+        const { messages: compressed } = await contextManager.maybeCompress(messages, sessionId, windowSize);
         messages = compressed;
         endStep();
         iterations++;
@@ -283,6 +289,9 @@ async function runAgentLoopStreamInner(
   /** 工具作用域视图（scope 遮蔽 + 全局回退；无 scope 时用全局注册表） */
   const toolView: ToolScopeView | null = toolScope ? toolRegistry.getScope(toolScope) : null;
 
+  /** 生效模型物理窗口（review：压缩触发阈值按 min(成本预算, 物理窗口) 收紧，本地小窗口模型防溢出；mock/旧实现缺该方法时回退兜底预算） */
+  const windowSize = modelRouter.getContextWindow?.(config.modelPreference) ?? CONTEXT_WINDOW_FALLBACK;
+
   contextManager.freezeSnapshot();
 
   let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill);
@@ -324,11 +333,11 @@ async function runAgentLoopStreamInner(
 
     try {
       sessionStore.appendEvent(sessionId, "step/start", { step: iterations }, "agent-loop");
-      const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages);
+      const { messages: compressed, compressed: didCompress } = await contextManager.maybeCompress(messages, sessionId, windowSize);
       if (didCompress) {
         messages = compressed;
       } else if (iterations >= 5 && iterations % 5 === 0) {
-        const { messages: forced } = await contextManager.maybeCompress(messages);
+        const { messages: forced } = await contextManager.maybeCompress(messages, sessionId, windowSize);
         messages = forced;
       }
 
@@ -358,6 +367,7 @@ async function runAgentLoopStreamInner(
       callbacks.onThinkingStart?.();
       const stream = modelRouter.completeStream(config.modelPreference, messages, tools, {
         signal,
+        scope: sessionId,
         onUsage: (usage) => {
           lastUsage = usage;
         },
@@ -512,7 +522,7 @@ async function runAgentLoopStreamInner(
             toolCallsExecuted,
           };
         }
-        const { messages: compressed } = await contextManager.maybeCompress(messages);
+        const { messages: compressed } = await contextManager.maybeCompress(messages, sessionId, windowSize);
         messages = compressed;
         endStep();
         iterations++;

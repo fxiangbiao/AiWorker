@@ -6,7 +6,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const defaultConfig: AgentConfig = loadAgentConfig("default") ?? {
+const defaultAgentDefault: AgentConfig = {
   id: "default",
   name: "general",
   displayName: "通用助手",
@@ -43,6 +43,6 @@ const defaultConfig: AgentConfig = loadAgentConfig("default") ?? {
 
 export class DefaultAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(defaultConfig, deps);
+    super(loadAgentConfig("default") ?? defaultAgentDefault, deps);
   }
 }

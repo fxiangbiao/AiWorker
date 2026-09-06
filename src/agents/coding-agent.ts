@@ -7,7 +7,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const codingConfig: AgentConfig = loadAgentConfig("coding") ?? {
+const codingDefault: AgentConfig = {
   id: "coding",
   name: "coding",
   displayName: "编码工程师",
@@ -49,6 +49,7 @@ const codingConfig: AgentConfig = loadAgentConfig("coding") ?? {
 
 export class CodingAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(codingConfig, deps);
+    // 每次构造重读 YAML（保存后 reloadAgent → new → 最新配置生效，避免模块级一次性加载缓存旧值）
+    super(loadAgentConfig("coding") ?? codingDefault, deps);
   }
 }
