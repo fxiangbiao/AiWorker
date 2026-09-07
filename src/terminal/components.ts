@@ -228,36 +228,44 @@ export class MessageList implements Component {
   }
 
   private wrapSingle(line: string, width: number, out: string[]): void {
-    if (displayWidth(line) <= width) {
+    // 提取行首样式组（SGR/OSC），wrap 切分后每段重放，防长行换行后丢色（如 dim 思考行变灰白交替）
+    let styles = "";
+    let i = 0;
+    while (i < line.length && line[i] === "\x1b") {
+      const end = escapeEnd(line, i);
+      if (end === -1) break;
+      styles += line.slice(i, end);
+      i = end;
+    }
+    const body = line.slice(i);
+    if (displayWidth(body) <= width) {
       out.push(line);
       return;
     }
-    // 逐字符拆分，维护原始索引（含 ANSI）
-    let i = 0;
     let w = 0;
     let chunk = "";
-    while (i < line.length) {
-      if (line[i] === "\x1b") {
-        // 完整转义序列（SGR / OSC 8 超链接）零宽整段跳过，防拆断产生未闭合序列
-        const end = escapeEnd(line, i);
+    let j = 0;
+    while (j < body.length) {
+      if (body[j] === "\x1b") {
+        const end = escapeEnd(body, j);
         if (end !== -1) {
-          chunk += line.slice(i, end);
-          i = end;
+          chunk += body.slice(j, end);
+          j = end;
           continue;
         }
       }
-      const ch = line[i]!;
+      const ch = body[j]!;
       const cw = charWidth(ch);
       if (w + cw > width && chunk) {
-        out.push(chunk);
+        out.push(`${styles}${chunk}`);
         chunk = "";
         w = 0;
       }
       chunk += ch;
       w += cw;
-      i += 1;
+      j += 1;
     }
-    if (chunk) out.push(chunk);
+    if (chunk) out.push(`${styles}${chunk}`);
   }
 
   render(width: number): string[] {

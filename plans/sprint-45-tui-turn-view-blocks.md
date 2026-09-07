@@ -98,35 +98,33 @@ items: Array<{ kind:"line"; text:string } | { kind:"turn"; view: TurnView }>
 - `finishTurn(meta?, opts?)`：关 thinking/tool、压 meta、置 running=false（结构保留）。
 - **ask 块化（v2 修订 A1）**：`ask(question, options, timeout, multiple)` 在 running turn 时创建 ask 块并复用现有键盘交互状态机（`handleAskKey` 的 ↑↓/Tab/Enter/超时/Ctrl+C 逻辑），结算转终态后按 `turn.finishAsk(value|null)` **压缩为一行结果**（`❓ 问题 → 回答/已超时/已取消`，不可折叠但保留下历史）；无 running turn（防御）走旧静态行路径。askPending 期间**所有折叠快捷键不生效**（现有 `askPending` 分支优先，`tui.ts:452-455`）。
 - **输出重定向（A1）**：`appendMessage/appendInline/setPartial/bufferStdout` 统一经私有 `appendToViewport`，检测 `currentTurn?.running` → 内容进 `turn.rawLines`；否则原静态行为。
-- **键位（v2 修订 A3 + 实施补充：浏览模式替代"空闲裸字母"）**：
+- **键位（v2 修订 A3 + 实测反馈修正：空闲改为"导航"而非"浏览模式"，彻底不占用字母键）**：
 
 | 时段 | 键 | 动作 |
 |---|---|---|
-| agent 运行期（字符键已被忽略 `tui.ts:466-481`，无输入冲突） | `t` | 折叠/展开当前回合最近 thinking 块 |
+| agent 运行期（字符键已被忽略，无输入冲突） | `t` | 折叠/展开当前回合最近 thinking 块 |
 | | `o` | 折叠/展开当前回合最近 tool 块详情 |
 | | `[` / `]` | 当前回合可折叠块间移动焦点（标题高亮） |
 | | `c` / `e` | 收起 / 展开当前回合全部可折叠块 |
 | | `Space`/`Enter` | 不使用（Enter 提交、Space 输入） |
-| 空闲期·浏览模式（回看历史） | `[`（或直接 ↑ 滚动后按 `[`） | **进入浏览模式**（状态栏/首行提示） |
-| 浏览模式中 | ↑↓/PgUp/PgDn | 滚动历史 |
-| | `[` / `]` | 焦点在**全部回合**可折叠块环上移动（逆时间序：最近回合优先） |
-| | `t` / `o` | 折叠/展开焦点 thinking / tool 块 |
-| | `Space`/`Enter` | 折叠/展开焦点块 |
-| | `c` / `e` | 收起 / 展开焦点所在回合全部块 |
-| | `Esc`/任意字母数字 | 退出浏览模式；字母数字键继续进入输入 |
-| | 其余字符 | 退出浏览并输入 |
-| 空闲期·普通输入态 | 无折叠键 | `[` 视为进入浏览（输入行非空时 `[` 照常输入，不进浏览） |
+| 空闲期（输入为空且存在可折叠块） | `←` / `→` | 在**全部回合**可折叠块间移动焦点（高亮；无焦点时定位最近 thinking） |
+| | `Enter` | 折叠/展开焦点块（无焦点 → 定位最近 thinking 并展开） |
+| | `Esc` | 清除焦点高亮（解除"加亮") |
+| | `↑↓`/`PgUp/PgDn` | 滚动历史（保留） |
+| | 任意字母数字 | **照常输入**（输入前自动清除焦点；绝不误触发折叠） |
+| | `Space` | 照常输入空格（不用于折叠） |
 
-实现要点：浏览模式为 tui 布尔状态 + 全局折叠焦点（跨回合逆序），焦点高亮由 TurnView.renderRows 的 focusId 驱动；
-不引入"视口行→条目"映射（滚动与折叠解耦，v1 焦点按回合时间序而非可视位置）。
-- **首次提示（hint 独立于输入补全槽）**：running turn 出现首个 thinking/tool 块时，在 turn 内插一条 dim note（`t 展开思考 · o 工具详情 · [ ] 切换`），首个折叠键按下或回合定稿时移除。不复用 `completionHints`（该槽与 Tab 补全耦合，`tui.ts:174-180`）。
+实现要点：空闲期不是独立模式，而是"焦点导航态"——由 `navFocus`（全局可折叠块下标）与块 `focusId` 高亮驱动；
+只有输入为空时才用 ←/→/Enter/Esc 做导航，输入任意字符即退出导航并正常输入，因此不存在字母/空格/回车冲突。
+运行期仍有 `t/o/[/]/c/e`（字符此时被忽略，无输入冲突）。
+- **首次提示（hint 独立于输入补全槽）**：running turn 出现首个 thinking/tool 块时，在 turn 内插一条 dim note（`t/o 折叠思考与工具详情 · [ ] 切换焦点 · c/e 全收/全展`），首个折叠键按下或回合定稿时移除。不复用 `completionHints`（该槽与 Tab 补全耦合）。
 - `endAgentSession`：保持现状（定稿后追加空行 = turn 后静态空行，呼吸感不变）。
 
 ## 四、渲染外观
-- thinking 标题：`dim 🧠 思考 · {summary 截 80 字}… · 已 {charCount} 字 {▸|▾}`（done 后加 ✓，去掉计数或改静态）
-- thinking 正文（展开）：dim 灰、整体缩进 2 格，超视口按 §二 惰性截断
-- tool 标题：`blue 🔧 name argsPreview dim ⌁dur ✓|✗`（running 显示进行态）；详情子块（展开）dim 灰
-- ask 块：沿用现有选项行样式（cyan 高亮 / 绿勾选），结算后压缩为一行结果（见 §三 tui）
+- thinking 标题：`🧠 思考 · {summary 截 80 字}… · 已 {charCount} 字 {▸|▾}`（dim，done 后 ✓；焦点块反白）
+- thinking 正文（展开）：统一 dim 灰 + `│` 缩进前缀，与回答正文区分；长行 wrap 后分段由渲染层**样色重放**保持颜色一致（修复灰白交替）
+- tool 标题：`blue 🔧 name argsPreview dim ⌁dur ✓|✗`（running 显示进行态）；详情子块 dim + `│` 前缀
+- 区域分界：回答正文块与外部输出（raw）前各插一条 dim 分隔线，thinking/tool 用 emoji+色+缩进纹理区分
 - 折叠记号 ▸/▾ 放标题行尾；焦点块标题反白/下划线；meta 尾注 dim、不参与折叠
 
 ## 五、非 TUI / 降级

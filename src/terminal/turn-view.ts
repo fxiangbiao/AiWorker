@@ -429,6 +429,8 @@ export class TurnView {
           this.renderAsk(b, out);
           break;
         case "text": {
+          // 区域分界：回答正文与上方思考/工具/提示显式隔开
+          if (out.length > 0) out.push(chalk.gray("  " + "─".repeat(48)));
           // 主回答全量输出（不裁剪，防丢阅读内容；行数兜底由渲染层条目上限负责）
           const rows = b.lastPartial ? [...b.lines, b.lastPartial] : b.lines;
           out.push(...rows);
@@ -440,22 +442,27 @@ export class TurnView {
       }
     }
     // rawLines：全部事件块之后、meta 之前（全量；异常量级由渲染层上限兜底）
-    out.push(...this.rawLines);
+    if (this.rawLines.length > 0) {
+      if (out.length > 0) out.push(chalk.gray("  " + "─".repeat(48)));
+      out.push(...this.rawLines);
+    }
     if (this.meta) out.push(chalk.gray(this.meta));
     return out;
   }
 
   private renderThinking(b: ThinkingBlock, out: string[]): void {
-    const status = b.done ? chalk.green("✓") : "▍";
+    const status = b.done ? chalk.green("✓") : chalk.cyan("▍");
     const marker = b.open ? "▾" : "▸";
-    const summary = b.summary ? ` ${b.summary}` : "";
-    const count = b.done ? "" : ` · 已 ${b.charCount} 字`;
-    let title = `  ${status} ${chalk.dim("思考")}${chalk.dim(summary)}${count} ${marker}`;
+    const summary = b.summary ? ` ${chalk.dim(b.summary)}` : "";
+    const count = b.done ? chalk.dim(" · 已结束") : ` · 已 ${b.charCount} 字`;
+    // 标题统一 dim 灰（仅状态/焦点着色），避免与正文色差产生"区域割裂感"
+    let title = `  ${status} ${chalk.dim("思考")}${summary}${chalk.dim(count)} ${chalk.dim(marker)}`;
     if (b.id === this.focusId) title = chalk.inverse(title);
     out.push(title);
     if (!b.open) return;
     const lines = this.thinkLines.get(b.id) ?? this.buildThinkLines(b.id);
-    out.push(...sliceRows(lines.map((l) => chalk.dim(`  ${l}`)), MAX_CONTENT_ROWS));
+    // 正文统一 dim 灰 + │ 纹理前缀（与回答正文区分）；长行 wrap 后颜色由渲染层重放保持
+    out.push(...sliceRows(lines.map((l) => chalk.dim(`  │ ${l}`)), MAX_CONTENT_ROWS));
   }
 
   private buildThinkLines(id: number): string[] {
@@ -481,8 +488,8 @@ export class TurnView {
     out.push(title);
     if (!b.detailOpen) return;
     const detail: string[] = [];
-    if (b.argsFull) detail.push(chalk.dim(`   参数: ${trunc(b.argsFull)}`));
-    if (b.resultFull) detail.push(chalk.dim(`   结果: ${trunc(b.resultFull)}`));
+    if (b.argsFull) detail.push(chalk.dim(`    │ 参数: ${trunc(b.argsFull)}`));
+    if (b.resultFull) detail.push(chalk.dim(`    │ 结果: ${trunc(b.resultFull)}`));
     out.push(...sliceRows(detail, 6));
   }
 

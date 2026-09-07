@@ -121,19 +121,38 @@ describe("Tui 回合交互（Sprint 45）", () => {
     t.finishTurn("");
     t.endAgentSession();
 
-    // 空闲浏览：需要 promptActive
+    // 空闲导航：需要 promptActive
     force(t, { promptActive: true, promptResolve: () => {} });
-    t.simulateKey(key({ type: "char", char: "[" })); // 进入浏览
-    // 初始焦点 = 最近 thinking（v2）
-    force(t, { browseMode: true }); // 由 enterBrowse 设置，仅防竞态
     expect(t.messages.foldableBlocks().length).toBe(2);
-    // t：折叠/展开最近 thinking（v2）
-    t.simulateKey(key({ type: "char", char: "t" }));
+
+    // 输入为空 → → 定位最近 thinking（v2）
+    t.simulateKey(key({ type: "right" }));
+    expect(v2.focusId).not.toBeNull();
+    // Enter：折叠/展开焦点块 → v2 展开
+    t.simulateKey(key({ type: "enter" }));
     expect(v2.renderRows().length).toBeGreaterThan(1);
-    // Esc 退出浏览
+    // Esc：清除焦点高亮
     t.simulateKey(key({ type: "escape" }));
-    // 字符恢复输入
+    expect(v2.focusId).toBeNull();
+    // 字母输入不误触发折叠：输入 'a' 进输入行
     t.simulateKey(key({ type: "char", char: "a" }));
     expect(t.input.getValue()).toBe("a");
+    // 输入非空时方向键不再触发导航/折叠
+    const before = v2.renderRows().length;
+    t.simulateKey(key({ type: "right" }));
+    expect(v2.renderRows().length).toBe(before);
+  });
+
+  it("运行期 t 折叠当前回合（输入被忽略，无冲突）", () => {
+    t.startAgentSession();
+    t.startTurn();
+    const v = t.currentTurnView()!;
+    v.thinkingDelta("第一段思考\n第二行");
+    expect(v.renderRows().length).toBe(1);
+    t.simulateKey(key({ type: "char", char: "t" }));
+    expect(v.renderRows().length).toBeGreaterThan(1);
+    t.simulateKey(key({ type: "char", char: "c" }));
+    expect(v.renderRows().length).toBe(1);
+    t.endAgentSession();
   });
 });

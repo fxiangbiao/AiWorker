@@ -51,10 +51,8 @@ export class Tui {
   private currentTurn: TurnView | null = null;
   /** 折叠键提示已展示（当前回合首个可折叠块出现时） */
   private foldHintShown = false;
-  /** 空闲期浏览模式（回看历史折叠；Esc/字母退出） */
-  private browseMode = false;
-  /** 浏览焦点：全局可折叠块列表下标（见 MessageList.foldableBlocks） */
-  private browseFocus = -1;
+  /** 空闲导航焦点（全局可折叠块下标；-1=无）。输入为空时 ←→ 移动、Enter 折叠、Esc 清除 */
+  private navFocus = -1;
 
   /** Sprint 45：回合开始。用户提问行已由 enter 路径入静态历史，回合从 assistant 侧开始 */
   startTurn(): TurnView {
@@ -65,8 +63,7 @@ export class Tui {
     this.messages.appendTurn(view);
     this.currentTurn = view;
     this.foldHintShown = false;
-    this.browseMode = false;
-    this.browseFocus = -1;
+    this.navFocus = -1;
     this.requestRender();
     return view;
   }
@@ -80,8 +77,7 @@ export class Tui {
     view.finish(metaText === "" && interrupted ? "（已中断）" : metaText, interrupted);
     this.currentTurn = null;
     this.foldHintShown = false;
-    this.browseMode = false;
-    this.browseFocus = -1;
+    this.navFocus = -1;
     this.requestRender();
   }
 
@@ -561,41 +557,13 @@ export class Tui {
     return true;
   }
 
-  /** 空闲期进入浏览模式（回看历史折叠；Esc/字母退出） */
-  private enterBrowse(): void {
-    this.browseMode = true;
-    this.browseFocus = -1;
-    this.setBrowseStatus(true);
-    this.requestRender();
-  }
-
-  private exitBrowse(): void {
-    if (!this.browseMode) return;
-    this.browseMode = false;
-    this.browseFocus = -1;
-    // 清除全部回合焦点高亮
-    for (const b of this.messages.foldableBlocks()) b.view.focusId = null;
-    this.setBrowseStatus(false);
-    this.requestRender();
-  }
-
-  /** 浏览提示：状态栏 status 字段轮播（退出还原） */
-  private setBrowseStatus(on: boolean): void {
-    const cur = this.status.getData();
-    if (on) {
-      this.status.setData({ ...cur, status: "浏览：[/] 移动 · t/o 折叠 · 空格 切换 · c/e 全收展 · Esc 退出" });
-    } else {
-      this.status.setData({ ...cur, status: "" });
-    }
-  }
-
   /** 全局可折叠块（时间正序）焦点辅助 */
   private foldBlocks(): Array<{ view: TurnView; kind: "thinking" | "tool"; id: number }> {
     return this.messages.foldableBlocks();
   }
 
   /** 定位初始焦点：最近的 thinking（无则最近块） */
-  private resolveBrowseFocus(): boolean {
+  private navResolve(): boolean {
     const blocks = this.foldBlocks();
     if (blocks.length === 0) return false;
     let idx = blocks.length - 1;
@@ -605,128 +573,65 @@ export class Tui {
         break;
       }
     }
-    this.applyBrowseFocus(idx);
+    this.navApply(idx);
     return true;
   }
 
   /** 应用焦点：清全部高亮 → 目标块高亮 */
-  private applyBrowseFocus(idx: number): void {
+  private navApply(idx: number): void {
     const blocks = this.foldBlocks();
     if (blocks.length === 0) return;
     const n = blocks.length;
     const i = ((idx % n) + n) % n;
-    this.browseFocus = i;
+    this.navFocus = i;
     for (const b of blocks) b.view.focusId = null;
-    const target = blocks[i]!;
-    target.view.focusId = target.id;
+    blocks[i]!.view.focusId = blocks[i]!.id;
     this.requestRender();
   }
 
-  private moveBrowseFocus(dir: -1 | 1): void {
-    const blocks = this.foldBlocks();
-    if (blocks.length === 0) return;
-    const base = this.browseFocus < 0 ? blocks.length - 1 : this.browseFocus;
-    this.applyBrowseFocus(base + dir);
+  private navClear(): void {
+    if (this.navFocus < 0) return;
+    this.navFocus = -1;
+    for (const b of this.foldBlocks()) b.view.focusId = null;
+    this.requestRender();
   }
 
-  /** t/o：跳到最近同类块并折叠/展开；焦点已是该类型则原地切换 */
-  private browseToggleKind(kind: "thinking" | "tool"): void {
-    const blocks = this.foldBlocks();
-    if (blocks.length === 0) return;
-    if (this.browseFocus >= 0 && blocks[this.browseFocus]!.kind === kind) {
-      blocks[this.browseFocus]!.view.toggleById(blocks[this.browseFocus]!.id);
-      this.requestRender();
+  private navMove(dir: -1 | 1): void {
+    if (this.foldBlocks().length === 0) return;
+    if (this.navFocus < 0) {
+      this.navResolve();
       return;
     }
-    // 从最近块向前找最近同类
-    for (let i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i]!.kind === kind) {
-        this.applyBrowseFocus(i);
-        blocks[i]!.view.toggleById(blocks[i]!.id);
-        this.requestRender();
-        return;
-      }
-    }
+    this.navApply(this.navFocus + dir);
   }
 
-  private toggleBrowseFocusBlock(): void {
+  /** Enter：折叠/展开焦点块（无焦点 → 最近 thinking） */
+  private navToggle(): void {
     const blocks = this.foldBlocks();
     if (blocks.length === 0) return;
-    const idx = this.browseFocus < 0 ? blocks.length - 1 : this.browseFocus;
+    if (this.navFocus < 0) {
+      this.navResolve();
+    }
+    const idx = this.navFocus < 0 ? blocks.length - 1 : this.navFocus;
     const b = blocks[Math.min(idx, blocks.length - 1)]!;
     b.view.toggleById(b.id);
     this.requestRender();
   }
 
-  private collapseExpandBrowseRound(open: boolean): void {
-    const blocks = this.foldBlocks();
-    if (blocks.length === 0) return;
-    const idx = this.browseFocus < 0 ? blocks.length - 1 : Math.min(this.browseFocus, blocks.length - 1);
-    const view = blocks[idx]!.view;
-    if (open) view.expandAll();
-    else view.collapseAll();
-    this.requestRender();
-  }
-
-  /** 浏览模式键处理 */
-  private handleBrowseKey(ev: KeyEvent): void {
+  /** 空闲导航键（输入为空、存在可折叠块）：←→ 焦点环、Enter 折叠/展开、Esc 清除高亮 */
+  private handleNavKey(ev: KeyEvent): void {
     switch (ev.type) {
-      case "up":
-      case "wheelup":
-      case "pageup":
-        this.messages.scroll(ev.type === "pageup" ? 10 : 3, this.messageViewport());
-        this.requestRender();
+      case "left":
+        this.navMove(-1);
         return;
-      case "down":
-      case "wheeldown":
-      case "pagedown":
-        this.messages.scroll(ev.type === "pagedown" ? -10 : -3, this.messageViewport());
-        this.requestRender();
-        return;
-      case "char":
-        if (ev.char === "[") {
-          this.moveBrowseFocus(-1);
-          return;
-        }
-        if (ev.char === "]") {
-          this.moveBrowseFocus(1);
-          return;
-        }
-        if (ev.char === "t") {
-          this.browseToggleKind("thinking");
-          return;
-        }
-        if (ev.char === "o") {
-          this.browseToggleKind("tool");
-          return;
-        }
-        if (ev.char === " ") {
-          this.toggleBrowseFocusBlock();
-          return;
-        }
-        if (ev.char === "c") {
-          this.collapseExpandBrowseRound(false);
-          return;
-        }
-        if (ev.char === "e") {
-          this.collapseExpandBrowseRound(true);
-          return;
-        }
-        // 其余字符：退出浏览并输入
-        this.exitBrowse();
-        this.input.type(ev.char);
-        this.requestRender();
+      case "right":
+        this.navMove(1);
         return;
       case "enter":
-        this.toggleBrowseFocusBlock();
+        this.navToggle();
         return;
       case "escape":
-        this.exitBrowse();
-        return;
-      case "paste":
-        this.exitBrowse();
-        for (const ch of ev.text) this.input.type(ch);
-        this.requestRender();
+        this.navClear();
         return;
       default:
         return;
@@ -777,15 +682,16 @@ export class Tui {
 
     if (!this.promptActive) return;
 
-    // 空闲期：浏览模式（回看历史折叠）
-    if (this.browseMode) {
-      this.handleBrowseKey(ev);
+    // 空闲导航（回看历史折叠）：输入为空且存在可折叠块时，←→ 焦点环、Enter 折叠/展开、Esc 清除高亮
+    // 不占用任何字母键（t/o/c/e 等照常输入，避免误识别）；方向键滚动仍走下方 switch
+    const emptyInput = this.input.getValue() === "";
+    if (emptyInput && this.foldBlocks().length > 0 && (ev.type === "left" || ev.type === "right" || ev.type === "enter" || ev.type === "escape")) {
+      this.handleNavKey(ev);
       return;
     }
-    // 输入行为空且存在回合时，[ 进入浏览模式（非空输入时 [ 照常输入）
-    if (ev.type === "char" && ev.char === "[" && this.input.getValue() === "" && this.messages.lastTurnView()) {
-      this.enterBrowse();
-      return;
+    // 普通输入若曾处于导航焦点态：任意字符输入前清除高亮
+    if (this.navFocus >= 0 && ev.type === "char") {
+      this.navClear();
     }
 
     switch (ev.type) {
