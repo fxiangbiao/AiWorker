@@ -59,6 +59,20 @@ describe("StreamOutputRenderer 回合注入（Sprint 45）", () => {
     r.setTurn(null);
   });
 
+  it("writeChunk + flush 后残行不重复（lastPartial 清除，防重复渲染）", () => {
+    const r = new StreamOutputRenderer();
+    const v = new TurnView();
+    v.start();
+    r.setTurn(v);
+    // 流式含换行：次行先作为半行进入 lastPartial，flush 时提交为成品行
+    r.writeChunk("第一行\n第二行");
+    r.flush();
+    r.setTurn(null);
+    const t = strip(v.renderRows().join("\n"));
+    expect((t.match(/第一行/g) || []).length).toBe(1);
+    expect((t.match(/第二行/g) || []).length).toBe(1);
+  });
+
   it("注入新回合时 fence/table/半行状态重置（防跨回合残留）", () => {
     const r = new StreamOutputRenderer();
     const v1 = new TurnView();

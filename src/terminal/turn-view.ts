@@ -266,6 +266,8 @@ export class TurnView {
     }
     const textBlock = this.blocks[this.blocks.length - 1] as TextBlock;
     textBlock.lines.push(text);
+    // 该行已随换行提交为成品行：清除同内容半行，防 renderRows 用 lastPartial 重复展示（含 flush/textCommit 二次提交）
+    textBlock.lastPartial = "";
   }
 
   /** 流式半行：覆盖 lastPartial（replace 语义） */

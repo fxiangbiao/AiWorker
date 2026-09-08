@@ -148,6 +148,15 @@ describe("TurnView 块模型（Sprint 45）", () => {
     expect(toolArg.indexOf("│")).toBe(2);
   });
 
+  it("text 半行被提交为成品行后不重复（lastPartial 清除）", () => {
+    const v = new TurnView();
+    v.start();
+    v.textPartial("半行内容");
+    v.textLine("半行内容"); // 后续 chunk 使该半行随换行完成并提交
+    const r = rows(v);
+    expect(r.filter((l) => l.includes("半行内容")).length).toBe(1);
+  });
+
   it("collapseAll/expandAll", () => {
     const v = new TurnView();
     v.start();
