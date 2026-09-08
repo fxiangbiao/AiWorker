@@ -132,6 +132,22 @@ describe("TurnView 块模型（Sprint 45）", () => {
     void toolId;
   });
 
+  it("tool 详情与 thinking 正文 gutter 对齐（│ 同为列 2）", () => {
+    const v = new TurnView();
+    v.start();
+    v.thinkingDelta("思考正文");
+    v.addTool("c1", "fs_read", "", '{"path":"/x"}');
+    v.toolResult("c1", true, "ok", "冗余", 5);
+    // 展开 thinking 与 tool，使正文/详情行出现
+    for (const t of v.foldTargets()) v.toggleById(t.id);
+    const r = rows(v);
+    const thinkContent = r.find((l) => l.startsWith("  │ 思考正文"))!;
+    const toolArg = r.find((l) => l.startsWith("  │ 参数"))!;
+    // 两区块竖线应落在同一列（col 2），与各自标题首列对齐
+    expect(thinkContent.indexOf("│")).toBe(2);
+    expect(toolArg.indexOf("│")).toBe(2);
+  });
+
   it("collapseAll/expandAll", () => {
     const v = new TurnView();
     v.start();

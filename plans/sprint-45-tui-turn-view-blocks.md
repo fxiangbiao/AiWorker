@@ -122,8 +122,8 @@ items: Array<{ kind:"line"; text:string } | { kind:"turn"; view: TurnView }>
 
 ## 四、渲染外观
 - thinking 标题：`🧠 思考 · {summary 截 80 字}… · 已 {charCount} 字 {▸|▾}`（dim，done 后 ✓；焦点块反白）
-- thinking 正文（展开）：统一 dim 灰 + `│` 缩进前缀，与回答正文区分；长行 wrap 后分段由渲染层**样色重放**保持颜色一致（修复灰白交替）
-- tool 标题：`blue 🔧 name argsPreview dim ⌁dur ✓|✗`（running 显示进行态）；详情子块 dim + `│` 前缀
+- thinking 正文（展开）：统一 dim 灰 + `  │ ` 缩进前缀，与回答正文区分；长行 wrap 后分段由渲染层**样色重放**保持颜色一致（修复灰白交替），且**行首悬挂边界（gutter：空格+`│`/左块）逐段重放**（修复长行折行后竖线中断、续行文字顶到边界的问题）
+- tool 标题：`blue 🔧 name argsPreview dim ⌁dur ✓|✗`（running 显示进行态）；详情子块 dim + `  │ ` 前缀（与 thinking 正文同列 2 gutter 对齐，修复工具详情竖线与标题首列错位）
 - 区域分界：回答正文块与外部输出（raw）前各插一条 dim 分隔线，thinking/tool 用 emoji+色+缩进纹理区分
 - 折叠记号 ▸/▾ 放标题行尾；焦点块标题反白/下划线；meta 尾注 dim、不参与折叠
 

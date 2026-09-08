@@ -94,6 +94,25 @@ describe("MessageList 条目化（Sprint 45）", () => {
     expect(rows).toContain("b2");
   });
 
+  it("折行保留行首悬挂边界（长行 ├ │ gutter 不中断）", () => {
+    const m = new MessageList();
+    // 模拟 thinking 正文 gutter：长行折行后每段都应重放 `  │ ` 前缀（竖线不中断）
+    const long = "  │ " + Array.from({ length: 60 }, (_, i) => `词${i}`).join(" ");
+    m.append(long);
+    const rows = m.renderViewport(20, 40).map(strip).filter((l) => l !== "");
+    expect(rows.length).toBeGreaterThan(1);
+    for (const r of rows) expect(r.startsWith("  │ ")).toBe(true);
+  });
+
+  it("无 gutter 的普通长行折行不额外加前缀（不改变原有换行语义）", () => {
+    const m = new MessageList();
+    m.append("The quick brown fox jumps over the lazy dog again and again");
+    const rows = m.renderViewport(20, 40).map(strip).filter((l) => l !== "");
+    expect(rows.length).toBeGreaterThan(1);
+    // 首行不含前置空格；各段均为原始内容切分
+    for (const r of rows) expect(r === r.trimStart()).toBe(true);
+  });
+
   it("条目上限裁剪：保留尾部（整条目移除）", () => {
     const m = new MessageList();
     const total = 3100;

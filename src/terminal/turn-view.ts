@@ -488,8 +488,9 @@ export class TurnView {
     out.push(title);
     if (!b.detailOpen) return;
     const detail: string[] = [];
-    if (b.argsFull) detail.push(chalk.dim(`    │ 参数: ${trunc(b.argsFull)}`));
-    if (b.resultFull) detail.push(chalk.dim(`    │ 结果: ${trunc(b.resultFull)}`));
+    // 与 thinking 正文同 gutter：│ 对齐块标题首列（🔧 起始列），防左右偏移造成区域割裂
+    if (b.argsFull) detail.push(chalk.dim(`  │ 参数: ${trunc(b.argsFull)}`));
+    if (b.resultFull) detail.push(chalk.dim(`  │ 结果: ${trunc(b.resultFull)}`));
     out.push(...sliceRows(detail, 6));
   }
 

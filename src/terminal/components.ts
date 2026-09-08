@@ -43,6 +43,32 @@ function fit(line: string, width: number): string {
   return truncateToWidth(line, width);
 }
 
+/** 可作"悬挂边界"重放的行首字符（空格 + 纵向制表线 + 左块），折行后保持 gutter 对齐 */
+const GUTTER_CHARS = new Set([
+  " ",
+  "|",
+  "│",
+  "┃",
+  "┆",
+  "┇",
+  "┊",
+  "┋",
+  "║",
+  "╎",
+  "╏",
+  "▏",
+  "▎",
+  "▍",
+  "▌",
+  "▋",
+  "▊",
+  "▉",
+]);
+
+function isGutterChar(ch: string): boolean {
+  return GUTTER_CHARS.has(ch);
+}
+
 // ──────────────────────────────────────────────
 // MessageList — 消息区（滚动回看；Sprint 45 条目化：静态行 + 回合块视图）
 // ──────────────────────────────────────────────
@@ -237,27 +263,46 @@ export class MessageList implements Component {
       styles += line.slice(i, end);
       i = end;
     }
+    // 提取行首"悬挂边界"字面量前缀（空格 + 纵向制表线/左块），折行后每段重放，
+    // 防长行丢 gutter（thinking/tool 的 │ 竖线中断、回答正文空格缩进丢失）
+    let gutter = "";
+    let k = i;
+    while (k < line.length) {
+      const ch = line[k]!;
+      if (ch === " " || isGutterChar(ch)) {
+        gutter += ch;
+        k++;
+      } else break;
+    }
     const body = line.slice(i);
     if (displayWidth(body) <= width) {
       out.push(line);
       return;
     }
+    let content = body.slice(k - i);
+    let budget = width - displayWidth(gutter);
+    if (budget <= 0) {
+      // 极窄终端：gutter 已超宽，退化为整体换行（gutter 不再重放）
+      gutter = "";
+      content = body;
+      budget = width;
+    }
     let w = 0;
     let chunk = "";
     let j = 0;
-    while (j < body.length) {
-      if (body[j] === "\x1b") {
-        const end = escapeEnd(body, j);
+    while (j < content.length) {
+      if (content[j] === "\x1b") {
+        const end = escapeEnd(content, j);
         if (end !== -1) {
-          chunk += body.slice(j, end);
+          chunk += content.slice(j, end);
           j = end;
           continue;
         }
       }
-      const ch = body[j]!;
+      const ch = content[j]!;
       const cw = charWidth(ch);
-      if (w + cw > width && chunk) {
-        out.push(`${styles}${chunk}`);
+      if (w + cw > budget && chunk) {
+        out.push(`${styles}${gutter}${chunk}`);
         chunk = "";
         w = 0;
       }
@@ -265,7 +310,7 @@ export class MessageList implements Component {
       w += cw;
       j += 1;
     }
-    if (chunk) out.push(`${styles}${chunk}`);
+    if (chunk) out.push(`${styles}${gutter}${chunk}`);
   }
 
   render(width: number): string[] {
