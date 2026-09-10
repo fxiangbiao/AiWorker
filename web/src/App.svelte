@@ -22,7 +22,7 @@
     loadRemoteMessages,
     API,
   } from "./lib/stores/chat.svelte";
-  import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, contextWindow, workingDir } from "./lib/stores/status";
+  import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, contextWindow, workingDir, refreshStatus } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
   import { PanelRightClose, FileText, Box } from "lucide-svelte";
   import { get } from "svelte/store";
@@ -51,19 +51,7 @@
   }
 
   function pollStatus() {
-    fetch(`${API}/status`)
-      .then((r) => r.json())
-      .then((d) => {
-        totalTokens.set(d.tokenUsage?.total || 0);
-        promptTokens.set(d.tokenUsage?.prompt || 0);
-        completionTokens.set(d.tokenUsage?.completion || 0);
-        currentModel.set(d.model || "--");
-        contextWindow.set(d.contextWindow || 0);
-        workingDir.set(d.workingDir || "");
-        skills.set(d.skills || []);
-        serverOnline.set(true);
-      })
-      .catch(() => serverOnline.set(false));
+    void refreshStatus();
   }
 
   function loadAgents() {

@@ -24,6 +24,14 @@ function segmentChinese(text: string): string {
 
 const TITLE_MAX_CHARS = 24;
 
+/**
+ * 协作工作会话前缀（多智能体 /plan、/debate 的步骤/轮次运行会话）：
+ * 每步独立会话保证上下文隔离（assembleContext 按会话回放历史），
+ * 但这类内部工作会话不是用户发起的对话，列表（/sessions、TUI /sessions）应隐藏。
+ * 隐藏由 listSessions 的 `NOT LIKE 'wk-%'` 过滤实现。
+ */
+export const WORKER_SESSION_PREFIX = "wk-";
+
 /** 会话自动标题：首条非空行，压缩空白，超长截断 */
 export function generateSessionTitle(content: string): string {
   const line = content.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? content.trim();
@@ -390,10 +398,11 @@ export class SessionStore {
                 (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id AND m3.role = 'user') AS turn_count,
                 (SELECT content FROM messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.seq ASC LIMIT 1) AS first_user
          FROM sessions s
+         WHERE s.id NOT LIKE ?
          ORDER BY s.updated_at DESC
          LIMIT ?`,
       )
-      .all(limit) as Array<{
+      .all(`${WORKER_SESSION_PREFIX}%`, limit) as Array<{
       id: string;
       agent_id: string;
       created_at: number;

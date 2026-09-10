@@ -1,3 +1,5 @@
+import type { ToolArtifact } from "$lib/artifacts";
+
 export interface ChatItem {
   id: string;
   title: string;
@@ -78,6 +80,7 @@ export interface TimelineItem {
   toolName?: string;
   error?: string;
   pending?: boolean;
+  artifacts?: ToolArtifact[];
 }
 
 /** ask_user 等工具的 args 展示：解析 JSON 显示问题与选项数，避免原始 JSON 刷屏 */
@@ -179,7 +182,7 @@ export function bumpChatTurn(text: string): void {
 /** 从服务器 /sessions 合并会话列表（服务器为轮数/标题事实源；本地无的补进来，按创建时间最新在前） */
 export async function syncServerSessions(): Promise<boolean> {
   try {
-    const resp = await fetch(`${API}/sessions`);
+    const resp = await fetch(`${API}/sessions?limit=1000`); // 全量比对（服务端封顶 1000），避免仅前 50 误删本地仍在的旧会话
     if (!resp.ok) return false;
     const data = await resp.json();
     const remote: ChatItem[] = (data.sessions || [])
@@ -207,6 +210,7 @@ export async function syncServerSessions(): Promise<boolean> {
     });
     const merged = [...store.chats];
     const remoteById = new Map(remote.map((r) => [r.id, r]));
+    const remoteIds = new Set(remote.map((r) => r.id));
     let hadNew = false;
     // 服务器有的会话：更新轮数（服务器为准）；本地没有的补进来
     for (let i = 0; i < merged.length; i++) {
@@ -214,6 +218,14 @@ export async function syncServerSessions(): Promise<boolean> {
       if (remoteItem) {
         merged[i] = { ...merged[i]!, turns: remoteItem.turns, workingDir: remoteItem.workingDir };
         remoteById.delete(merged[i]!.id);
+      }
+    }
+    // 本地残留、后端已不存在的会话（如协作工作会话被清理/后端删除的孤儿）→ 移除幽灵条目；
+    // 跳过当前活动会话与新建空会话（turns=0，可能尚未上报后端）
+    for (let i = merged.length - 1; i >= 0; i--) {
+      const c = merged[i]!;
+      if (!remoteIds.has(c.id) && c.id !== store.activeChatId && (c.turns ?? 0) > 0) {
+        merged.splice(i, 1);
       }
     }
     for (const r of remoteById.values()) {

@@ -42,7 +42,26 @@ export interface ToolResult {
   content: string;
   success: boolean;
   error?: string;
+  /** 结构化产物（文件/链接/diff），供 TUI 与 Web 高亮、点击预览；由工具 handler 填充，LLM 不可见 */
+  artifacts?: ToolArtifact[];
 }
+
+// ===== 工具产物（文件/链接/diff 预览元数据） =====
+
+export type ArtifactKind =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "office"
+  | "binary"
+  | "other";
+
+export type ToolArtifact =
+  | { type: "file"; path: string; mime: string; size: number; kind: ArtifactKind; root?: "session" | "project"; rel?: string; truncated?: boolean }
+  | { type: "link"; url: string; title?: string; site?: string; snippet?: string }
+  | { type: "diff"; path: string; patch?: string };
 
 // ===== 工具定义 =====
 
@@ -135,7 +154,7 @@ export interface StreamCallbacks {
   onThinkingStart?: () => void;
   onIterationStart?: (iteration: number) => void;
   onToolCall?: (name: string, args: string, id: string) => void;
-  onToolResult?: (name: string, success: boolean, summary: string, id?: string) => void;
+  onToolResult?: (name: string, success: boolean, summary: string, id?: string, artifacts?: ToolArtifact[]) => void;
   onStepStart?: (stepId: string, expertId: string, desc: string) => void;
   onStepEnd?: (stepId: string, success: boolean) => void;
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
@@ -422,7 +441,7 @@ export interface SessionEventMap {
     usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
   };
   "tool/call": { callId: string; name: string; arguments: string };
-  "tool/result": { callId: string; success: boolean; content: string; error?: string; durationMs?: number };
+  "tool/result": { callId: string; success: boolean; content: string; error?: string; durationMs?: number; artifacts?: ToolArtifact[] };
   "memory/update": { kind: "episodic" | "semantic"; summary?: string };
   "title/set": { title: string };
 }

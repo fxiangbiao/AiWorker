@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.4.0 (2026-09-10)
+
+### 工具产物预览：文件/链接/diff 全链路（Sprint 46）
+- **产物模型**：`ToolResult.artifacts`（`ToolArtifact` = file/link/diff，含 mime/kind/size/root/rel）；新增 `src/core/preview.ts`（扩展名 MIME 表、kind 归类、文本判定、头字节二进制嗅探、极简行 diff、大小格式化），纯函数无副作用
+- **工具产出**：`fs_read`（文本整读＋超阈值标 truncated；未知扩展名先读 512 字节嗅探，二进制改回短元信息，不再把二进制毁成乱码）、`fs_write`/`fs_edit`（文件产物；`fs_edit` 另附局部 `-/+` diff）、`web_search`/`web_fetch`（链接产物含站点/标题/摘要）
+- **TUI**：工具块下渲染产物 chips（📄 文件 + 大小、🔗 链接、📝 变更），终端支持 OSC 8 时文件 `file://` / 链接可点击；URL 与标签先剥控制字符防终端注入
+- **Web**：工具卡产物 chips + 预览窗口 `FilePreview`——Markdown 复用 `DocRenderer`，代码/文本走 `/files` 原文，图片/视频/音频/PDF 原生元素（支持 Range seek），Office 前端转换（docx→mammoth、xlsx/csv→SheetJS，DOMPurify 净化），pptx 等下载兜底，diff `+/-` 着色
+- **文件端口** `GET /api/v1/files`：realpath ＋ 根白名单（会话项目目录 + data 下仅 `docs`/`spills`）反遍历、64MB 上限、单区间 Range（206/416）、`download=1` 附件下载（RFC 5987 `filename*` 支持中文名）、`file:preview` 审计（成功/拦截）
+- **预览窗口交互**：右下角拖拽调大小（最小 300×180、视口夹紧、尺寸跨打开记忆）、全屏切换、`Esc` 先退全屏再关闭、切换产物滚动归零
+
+### 模型状态栏即时刷新（修复"Web 设置模型不生效/状态栏不变"）
+- `/status` 与各 `done` 事件统一返回 `getDisplayModel()`（profile 生效时含 `(key)` 后缀）
+- 新增 `refreshStatus()` 单点实现（App 轮询与 SystemPanel 保存后共用）；SystemPanel 模型下拉改读事件目标值，保存后立即刷新状态栏，无需等 30s 轮询
+
+### 协作工作会话隔离（修复"一次协作拆出多个会话"）
+- 多智能体 `/plan`、`/debate` 的每步/每轮运行会话统一带 `wk-` 前缀：保留上下文隔离（`assembleContext` 按会话回放），但不出现在 `/sessions`、TUI 与 Web 侧栏
+- Web `syncServerSessions` 增加幽灵会话清理（后端已删除的本地残留），并以 `?limit=1000` 全量比对避免仅取前 50 误删
+
+### Code review 修复（第 5 轮）
+- `/files` Range 解析健壮化：畸形头不再产生 `NaN` 送进 `createReadStream`（进程崩溃风险），多区间显式 416，206 分片不再重复记审计
+- data 根收窄为 `docs`/`spills` 白名单：`aiworker.db`、运行时配置等不再可经 `/files` 下载
+- 空文本文件预览不再永久停在"加载中…"；根外 Markdown 产物回退原文渲染（避免 DocRenderer 404）
+- `listSessions` 过滤改 SQL 参数绑定；`appendEvent` JSDoc 格式回归还原；移除未使用的 `isWorkerSession`
+- 测试：新增 `/files` Range 边界、CJK 下载名、data 根白名单隔离用例；全量 824 全绿
+
 ## 1.3.0 (2026-09-06)
 
 ### TUI 块式会话视图：思考/工具/回答可折叠（Sprint 45）

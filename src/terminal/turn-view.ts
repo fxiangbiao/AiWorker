@@ -10,6 +10,9 @@
  */
 
 import chalk from "chalk";
+import type { ToolArtifact, ArtifactKind } from "../types.js";
+import { supportsHyperlinks } from "./markdown.js";
+import { formatSize } from "../core/preview.js";
 
 /** 展开正文/详情/文本的渲染行预算（超出部分裁剪并标注省略） */
 const MAX_CONTENT_ROWS = 400;
@@ -38,6 +41,7 @@ export interface ToolBlock {
   resultPreview: string;
   resultFull: string;
   detailOpen: boolean;
+  artifacts?: ToolArtifact[];
 }
 
 export interface AskBlock {
@@ -201,13 +205,14 @@ export class TurnView {
   }
 
   /** 工具结果：按 callId 匹配置终态 */
-  toolResult(callId: string, ok: boolean, preview: string, full: string, durMs: number): void {
+  toolResult(callId: string, ok: boolean, preview: string, full: string, durMs: number, artifacts?: ToolArtifact[]): void {
     const tool = this.findTool(callId);
     if (!tool) return;
     tool.status = ok ? "done" : "error";
     tool.durMs = durMs;
     tool.resultPreview = preview;
     tool.resultFull = full;
+    tool.artifacts = artifacts;
   }
 
   private findTool(callId: string): ToolBlock | null {
@@ -488,6 +493,22 @@ export class TurnView {
     let title = `  ${chalk.blue(`🔧 ${b.name}`)}${preview}${dur}${result}${marker}`;
     if (b.id === this.focusId) title = chalk.inverse(title);
     out.push(title);
+    // 产物 chips（OSC 8 超链接）：文件 → file:// 打开默认应用，链接 → https 打开浏览器
+    if (b.artifacts && b.artifacts.length > 0) {
+      for (const art of b.artifacts) {
+        if (art.type === "file") {
+          const uri = toFileUri(art.path);
+          const name = baseNameOf(art.path);
+          const link = uri ? osc8(uri, chalk.cyan(name)) : chalk.cyan(name);
+          out.push(`  ${chalk.dim(artifactKindIcon(art.kind))} ${link} ${chalk.gray(formatSize(art.size))}`);
+        } else if (art.type === "link") {
+          const label = art.title || art.site || art.url;
+          out.push(`  ${chalk.dim("🔗")} ${osc8(art.url, chalk.cyan(label))}`);
+        } else if (art.type === "diff") {
+          out.push(`  ${chalk.dim("📝")} ${chalk.dim(`变更 ${baseNameOf(art.path)}`)}`);
+        }
+      }
+    }
     if (!b.detailOpen) return;
     const detail: string[] = [];
     // 与 thinking 正文同 gutter：│ 对齐块标题首列（🔧 起始列），防左右偏移造成区域割裂
@@ -535,4 +556,60 @@ function fmtDur(ms: number): string {
 function trunc(s: string, max = MAX_DETAIL_CHARS): string {
   const clean = s.replace(/\s+/g, " ").trim();
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+/** basename（兼容 Win/Unix 分隔符） */
+function baseNameOf(p: string): string {
+  const parts = p.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] ?? p;
+}
+
+/** 文件产物类型图标 */
+function artifactKindIcon(kind: ArtifactKind): string {
+  switch (kind) {
+    case "text":
+      return "📄";
+    case "image":
+      return "🖼️";
+    case "video":
+      return "🎬";
+    case "audio":
+      return "🎧";
+    case "pdf":
+      return "📕";
+    case "office":
+      return "📊";
+    case "binary":
+      return "📦";
+    default:
+      return "📄";
+  }
+}
+
+/** 绝对路径 → file:// URI（Win: C:\a → file:///C:/a；posix: /a → file:///a） */
+function toFileUri(path: string): string {
+  try {
+    const p = path.replace(/\\/g, "/");
+    const abs = p.startsWith("/") ? p : `/${p}`;
+    return `file://${encodeURI(abs)}`;
+  } catch {
+    return "";
+  }
+}
+
+/** 剥除 C0/C1 控制字符与 DEL（防终端注入；逐字符过滤避免 no-control-regex） */
+function stripCtl(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) continue;
+    out += s[i];
+  }
+  return out;
+}
+
+/** OSC 8 超链接（仅支持的终端；否则回落纯文本；URL/标签先剥控制字符防终端注入） */
+function osc8(url: string, label: string): string {
+  if (!supportsHyperlinks()) return label;
+  return `\x1b]8;;${stripCtl(url)}\x1b\\${stripCtl(label)}\x1b]8;;\x1b\\`;
 }

@@ -468,6 +468,7 @@ async function runAgentLoopStreamInner(
               result.success,
               result.success ? result.content.slice(0, 100) : (result.error ?? ""),
               result.tool_call_id,
+              result.artifacts,
             );
             messages.push({
               role: "tool",
@@ -705,6 +706,7 @@ async function executeTool(
       content: result.success ? result.content : `Error: ${result.error ?? ""}`,
       error: result.error,
       durationMs: Date.now() - startedAt,
+      artifacts: result.artifacts,
     },
     "agent-loop",
   );

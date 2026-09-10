@@ -8,6 +8,7 @@
   import InputArea from "./InputArea.svelte";
   import GenCard from "./GenCard.svelte";
   import { spawnGenCard } from "$lib/stores/apps.svelte";
+  import type { ToolArtifact } from "$lib/artifacts";
   import {
     store,
     saveChats,
@@ -512,6 +513,7 @@
             t.result = true;
             t.resultPreview = data.summary as string;
             t.pending = false;
+            t.artifacts = (data.artifacts as ToolArtifact[] | undefined) ?? [];
             if (!data.success) t.error = data.summary as string;
             break;
           }

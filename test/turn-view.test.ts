@@ -157,6 +157,27 @@ describe("TurnView 块模型（Sprint 45）", () => {
     expect(r.filter((l) => l.includes("半行内容")).length).toBe(1);
   });
 
+  it("tool 产物 chips：文件/链接/diff 渲染（类型徽标 + basename + size）", () => {
+    const v = new TurnView();
+    v.start();
+    v.addTool("c1", "fs_read", "", '{"path":"/proj/note.md"}');
+    v.toolResult("c1", true, "内容", "full", 12, [
+      { type: "file", path: "/proj/note.md", mime: "text/markdown", size: 1234, kind: "text", root: "project", rel: "note.md" },
+      { type: "link", url: "https://example.com/x", title: "示例", site: "example.com", snippet: "x" },
+      { type: "diff", path: "/proj/note.md", patch: "-a\n+b" },
+    ]);
+    const r = rows(v).join("\n");
+    // 文件 chip：📄 + basename + 大小（OSC 8 是否输出取决于终端，此处断言可见文本）
+    expect(r).toContain("note.md");
+    expect(r).toContain("1.2 KB");
+    expect(r).toContain("📄");
+    // 链接 chip：🔗 + 标题
+    expect(r).toContain("🔗");
+    expect(r).toContain("示例");
+    // diff chip：📝 + 变更 basename
+    expect(r).toContain("📝 变更 note.md");
+  });
+
   it("collapseAll/expandAll", () => {
     const v = new TurnView();
     v.start();

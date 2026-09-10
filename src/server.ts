@@ -4,7 +4,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync, createReadStream, realpathSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
@@ -22,6 +22,7 @@ import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
 import { eventBus } from "./server/event-bus.js";
+import { mimeFromPath } from "./core/preview.js";
 import { auditLogger } from "./core/audit-logger.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
@@ -163,6 +164,32 @@ function parseBody(req: IncomingMessage): Promise<string> {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+
+/** 工具产物文件预览上限（bytes），超大文件走下载而非内嵌预览 */
+const FILE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** /files 文件预览的审计记录（result: success|blocked） */
+function auditFilePreview(sessionId: string, path: string, mime: string, result: "success" | "blocked"): void {
+  try {
+    auditLogger.log({
+      timestamp: Date.now(),
+      agentId: "",
+      sessionId,
+      action: "file:preview",
+      target: path,
+      result,
+      detail: mime,
+    });
+  } catch {
+    /* 审计失败不阻断响应 */
+  }
+}
+
+/** Content-Disposition：ASCII 兜底 filename + RFC 5987 filename*（CJK 文件名可正确显示） */
+function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, "").replace(/["\\;/]/g, "_").trim() || "download";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown) {
@@ -704,7 +731,7 @@ export function startServer(deps: ServerDeps, port: number) {
         status: "ok",
         uptime: Date.now() - startTime,
         version: getAppVersion(),
-        model: deps.modelRouter.getCurrentModel(),
+        model: deps.modelRouter.getDisplayModel(),
         contextWindow: deps.modelRouter.getContextWindow(),
         tokenUsage: {
           total: deps.modelRouter.getTokenUsage(),
@@ -733,7 +760,11 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === apiUrl("/sessions") && req.method === "GET") {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
-      const sessions = deps.sessionStore.listSessions(50);
+      // ?limit= 可放宽（幽灵清理按远端全集比对，避免仅取前 50 造成误删），上限 1000
+      const u = new URL(req.url ?? "", "http://localhost");
+      const limitRaw = Number(u.searchParams.get("limit") ?? "50");
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 50;
+      const sessions = deps.sessionStore.listSessions(limit);
       sendJSON(res, 200, { sessions });
       return;
     }
@@ -749,7 +780,7 @@ export function startServer(deps: ServerDeps, port: number) {
       const md = renderSessionMarkdown(title, sessionId, messages);
       res.writeHead(200, {
         "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(title)}.md"`,
+        "Content-Disposition": attachmentDisposition(`${title}.md`),
         "Access-Control-Allow-Origin": "*",
       });
       res.end(md);
@@ -1297,7 +1328,7 @@ export function startServer(deps: ServerDeps, port: number) {
         }
         res.writeHead(200, {
           "Content-Type": type === "skill" ? "text/markdown; charset=utf-8" : "application/json",
-          "Content-Disposition": `attachment; filename="${encodeURIComponent(out.filename)}"`,
+          "Content-Disposition": attachmentDisposition(out.filename),
           "Access-Control-Allow-Origin": "*",
         });
         res.end(out.data);
@@ -1310,7 +1341,7 @@ export function startServer(deps: ServerDeps, port: number) {
       }
       res.writeHead(200, {
         "Content-Type": "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(`${out.manifest.name}-${out.manifest.version}.aw`)}"`,
+        "Content-Disposition": attachmentDisposition(`${out.manifest.name}-${out.manifest.version}.aw`),
         "Access-Control-Allow-Origin": "*",
       });
       res.end(out.data);
@@ -1547,8 +1578,8 @@ export function startServer(deps: ServerDeps, port: number) {
           onStepStart: (stepId, expertId, desc) => write({ type: "step_start", stepId, expertId, desc }),
           onStepEnd: (stepId, success) => write({ type: "step_end", stepId, success }),
           onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
-          onToolResult: (name, success, summary) =>
-            write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
+          onToolResult: (name, success, summary, _id, artifacts) =>
+            write({ type: "tool_result", name, success, summary: summary.slice(0, 500), artifacts }),
         };
 
         const result = await runWithChannels(write, () =>
@@ -1564,7 +1595,7 @@ export function startServer(deps: ServerDeps, port: number) {
           type: "done",
           content: result.text,
           failedSteps: result.failedSteps,
-          model: deps.modelRouter.getCurrentModel(),
+          model: deps.modelRouter.getDisplayModel(),
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),
@@ -1625,8 +1656,8 @@ export function startServer(deps: ServerDeps, port: number) {
         const callbacks: StreamCallbacks = {
           onToolCall: (expertId, desc) =>
             write({ type: "tool_call", name: expertId, args: desc, expertId, phase: desc }),
-          onToolResult: (name, success, summary) =>
-            write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
+          onToolResult: (name, success, summary, _id, artifacts) =>
+            write({ type: "tool_result", name, success, summary: summary.slice(0, 500), artifacts }),
         };
 
         const result = await runWithChannels(write, () =>
@@ -1645,7 +1676,7 @@ export function startServer(deps: ServerDeps, port: number) {
           content: result.text,
           agentA,
           agentB,
-          model: deps.modelRouter.getCurrentModel(),
+          model: deps.modelRouter.getDisplayModel(),
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),
@@ -1822,6 +1853,96 @@ export function startServer(deps: ServerDeps, port: number) {
       } else {
         sendJSON(res, 404, { error: "Doc not found" });
       }
+      return;
+    }
+
+    // ─── 工具产物文件预览（Sprint 45+：GET /api/v1/files，二值字节 + Range 流式 + 下载） ───
+    if (req.method === "GET" && url.startsWith(apiUrl("/files"))) {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const rel = u.searchParams.get("path") ?? "";
+      const sessionIdParam = u.searchParams.get("session") ?? u.searchParams.get("sessionId") ?? "";
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const projectDir =
+        sessionIdParam && deps.sessionStore
+          ? deps.sessionStore.getWorkingDir(sessionIdParam) ?? deps.workingDir
+          : deps.workingDir;
+
+      // 根：会话项目目录 + 数据目录仅白名单子目录（docs/spills；排除 aiworker.db/runtime-config 等敏感文件）
+      const roots = [resolve(projectDir), resolve(dataDir, "docs"), resolve(dataDir, "spills")];
+      const abs = isAbsolute(rel) ? resolve(rel) : resolve(projectDir, rel);
+      let real = abs;
+      try {
+        if (existsSync(abs)) real = realpathSync(abs);
+      } catch {
+        /* 路径不存在或无法解析则维持 abs */
+      }
+      const inRoot = (target: string) =>
+        roots.some((r) => {
+          const rr = relative(r, target);
+          return !rr.startsWith("..") && !isAbsolute(rr);
+        });
+
+      if (!existsSync(real) || !statSync(real).isFile() || !inRoot(real)) {
+        auditFilePreview(sessionIdParam, rel || real, "", "blocked");
+        sendJSON(res, 404, { error: "File not found" });
+        return;
+      }
+
+      const stt = statSync(real);
+      if (stt.size > FILE_MAX_BYTES) {
+        auditFilePreview(sessionIdParam, rel || real, "toolarge", "blocked");
+        sendJSON(res, 413, { error: `文件过大（${Math.round(stt.size / 1024 / 1024)} MB），请下载查看` });
+        return;
+      }
+
+      const mime = mimeFromPath(real);
+      const range = req.headers.range;
+
+      // Range 单区间支持（视频/音频 seek）；多区间不支持 → 416；分片不重复记审计
+      if (range && /^bytes=/.test(range)) {
+        if (range.includes(",")) {
+          res.writeHead(416, { "Content-Range": `bytes */${stt.size}` });
+          res.end();
+          return;
+        }
+        const m = range.match(/bytes=(\d*)-(\d*)/);
+        let start = 0;
+        let end = stt.size - 1;
+        if (m && m[1] !== "") start = parseInt(m[1], 10);
+        if (m && m[2] !== "") end = parseInt(m[2], 10);
+        if (m && m[1] === "" && m[2] !== "") {
+          // 后缀区间：最后 N 字节
+          start = Math.max(0, stt.size - parseInt(m[2], 10));
+          end = stt.size - 1;
+        }
+        // 畸形/越界（含两端皆空的 bytes=-）一律 416，防 NaN 传入 createReadStream 崩溃
+        if (!m || !Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= stt.size) {
+          res.writeHead(416, { "Content-Range": `bytes */${stt.size}` });
+          res.end();
+          return;
+        }
+        end = Math.min(end, stt.size - 1);
+        res.writeHead(206, {
+          "Content-Type": mime,
+          "Content-Length": String(end - start + 1),
+          "Content-Range": `bytes ${start}-${end}/${stt.size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "no-store",
+        });
+        createReadStream(real, { start, end }).pipe(res);
+        return;
+      }
+
+      const asDownload = u.searchParams.get("download") === "1";
+      auditFilePreview(sessionIdParam, real, mime, "success");
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Content-Length": String(stt.size),
+        ...(asDownload ? { "Content-Disposition": attachmentDisposition(basename(real)) } : {}),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+      });
+      createReadStream(real).pipe(res);
       return;
     }
 
@@ -2021,8 +2142,8 @@ export function startServer(deps: ServerDeps, port: number) {
           const callbacks: StreamCallbacks = {
             onTextDelta: (text) => write({ type: "text", content: text }),
             onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
-            onToolResult: (name, success, summary) => {
-              write({ type: "tool_result", name, success, summary: summary.slice(0, 500) });
+            onToolResult: (name, success, summary, _id, artifacts) => {
+              write({ type: "tool_result", name, success, summary: summary.slice(0, 500), artifacts });
               if (!success && /拦截|禁止|不允许/.test(summary)) {
                 write({ type: "tool_blocked", name, message: summary.slice(0, 200) });
               }
@@ -2069,7 +2190,7 @@ export function startServer(deps: ServerDeps, port: number) {
         write({
           type: "done",
           sessionId: doneSid || undefined,
-          model: deps.modelRouter.getCurrentModel(),
+          model: deps.modelRouter.getDisplayModel(),
           turnUsage,
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),

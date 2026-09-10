@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.3.0-blue)
+![version](https://img.shields.io/badge/version-1.4.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -150,6 +150,8 @@ npm run dev -- [选项]
 回合块视图（1.3.0）：思考/工具/回答以区块展示——思考实时流式摘要、工具调用原位显示 ✓/✗ 与耗时，均可折叠回看。
 运行期间按 `t`/`o` 折叠最近思考/工具、`[`/`]` 切换焦点、`c`/`e` 全收/全展（字符此时无法输入、无冲突）；
 空闲（输入为空）时用 `←`/`→` 在历史回合的可折叠块间移动焦点、`Enter` 折叠/展开、`Esc` 清除高亮——不占用字母键，正常输入不受影响。
+工具产物预览（1.4.0）：工具结果以 chips 展示产物（📄 文件 / 🔗 链接 / 📝 变更），终端支持 OSC 8 时文件与链接可直接点击打开；
+Web 端点击 chip 打开预览窗口（Markdown / 代码文本 / 图片 / 视频 / 音频 / PDF / Office 文档 / diff），窗口可拖拽右下角调整大小、可全屏。
 
 ### Web UI
 

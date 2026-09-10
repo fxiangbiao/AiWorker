@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { RefreshCw } from "lucide-svelte";
   import { API, store } from "$lib/stores/chat.svelte";
+  import { refreshStatus } from "$lib/stores/status";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
   import AppsPanel from "./AppsPanel.svelte";
@@ -392,12 +393,14 @@
       return false;
     }
     if (data.state) configState = data.state;
+    // 立即刷新底部状态栏（模型/窗口等），避免等 30s 轮询或下一轮 done
+    void refreshStatus();
     loadConfig();
     return true;
   }
 
-  function onModelChange() {
-    void applyConfig("model", cfgModel);
+  function onModelChange(e: Event) {
+    void applyConfig("model", (e.target as HTMLSelectElement).value);
   }
   function onTemperature() {
     void applyConfig("temperature", parseFloat(cfgTemperature));

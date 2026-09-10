@@ -17,6 +17,8 @@
     "dompurify": "^3.4.13",
     "highlight.js": "^11",
     "lucide-svelte": "^1.0.0",
-    "marked": "^15"
+    "mammoth": "^1.12.2",
+    "marked": "^15",
+    "xlsx": "^0.18.5"
   }
 }

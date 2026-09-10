@@ -24,6 +24,7 @@ const testDir = makeTestDir("server");
 function mockModelRouter() {
   return {
     getCurrentModel: () => "deepseek-v4-flash",
+    getDisplayModel: () => "deepseek-v4-flash",
     getTokenUsage: () => 100,
     getPromptTokens: () => 40,
     getCompletionTokens: () => 60,
@@ -170,6 +171,94 @@ describe("HTTP Server", () => {
     const names = data.tools.map((t: { name: string }) => t.name);
     expect(names).toContain("fs_read");
     expect(names).toContain("web_search");
+  });
+
+  it("GET /files 返回受根目录限制的字节（mime + Range + 下载 + 反遍历）", async () => {
+    const dir = resolve(testDir, "file-arts");
+    mkdirSync(dir, { recursive: true });
+    const f = resolve(dir, "note.md");
+    writeFileSync(f, "# 标题\n正文内容", "utf-8");
+    const rel = "file-arts/note.md";
+
+    // 文本文件（inline，markdown mime）
+    const r1 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(rel)}`);
+    expect(r1.status).toBe(200);
+    expect(r1.headers.get("content-type")).toContain("text/markdown");
+    expect(await r1.text()).toContain("标题");
+
+    // Range（媒体/大文件 seek 语义）
+    const r2 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(rel)}`, {
+      headers: { Range: "bytes=0-3" },
+    });
+    expect(r2.status).toBe(206);
+    expect(r2.headers.get("content-range")).toContain("bytes 0-3/");
+
+    // download=1 → attachment 头部
+    const r3 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(rel)}&download=1`);
+    expect(r3.status).toBe(200);
+    expect(r3.headers.get("content-disposition")).toContain("attachment");
+
+    // 相对逃逸 ../..  → 404
+    const r4 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent("../../package.json")}`);
+    expect(r4.status).toBe(404);
+
+    // 绝对路径（在根外，如仓库 package.json）→ 404
+    const absOutside = resolve(process.cwd(), "package.json");
+    const r5 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(absOutside)}`);
+    expect(r5.status).toBe(404);
+
+    // 不存在 → 404
+    const r6 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent("file-arts/nope.md")}`);
+    expect(r6.status).toBe(404);
+
+    // 多区间不支持 → 416（而非静默取首段）
+    const r7 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(rel)}`, {
+      headers: { Range: "bytes=0-1,3-4" },
+    });
+    expect(r7.status).toBe(416);
+
+    // 畸形后缀区间（bytes=-）不崩、不产生 NaN，返回完整内容
+    const r8 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(rel)}`, {
+      headers: { Range: "bytes=-" },
+    });
+    expect(r8.status).toBe(206);
+    expect(await r8.text()).toContain("标题");
+
+    // 超出文件长度的起点 → 416
+    const r9 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent(rel)}`, {
+      headers: { Range: "bytes=99999-" },
+    });
+    expect(r9.status).toBe(416);
+
+    // CJK 文件名下载：RFC 5987 filename* 供浏览器正确解码
+    writeFileSync(resolve(dir, "报告.md"), "# 报告", "utf-8");
+    const r10 = await fetch(`${base}${API}/files?session=test&path=${encodeURIComponent("file-arts/报告.md")}&download=1`);
+    expect(r10.status).toBe(200);
+    expect(r10.headers.get("content-disposition")).toContain("filename*=UTF-8''");
+  });
+
+  it("GET /files 根收窄：data 根仅 docs/spills 白名单（aiworker.db 等不可下载）", async () => {
+    const projDir = resolve(testDir, "proj-root");
+    const dataRoot = resolve(testDir, "data-root");
+    mkdirSync(resolve(dataRoot, "docs"), { recursive: true });
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(resolve(dataRoot, "aiworker.db"), "secret", "utf-8");
+    writeFileSync(resolve(dataRoot, "docs", "note.md"), "# 会话文档", "utf-8");
+
+    const srv = startServer({ ...mockDeps(), workingDir: projDir, dataDir: dataRoot } as never, 0);
+    await new Promise<void>((r) => srv.once("listening", () => r()));
+    const port = (srv.address() as AddressInfo).port;
+    const b = `http://127.0.0.1:${port}`;
+    try {
+      const blocked = await fetch(`${b}${API}/files?path=${encodeURIComponent(resolve(dataRoot, "aiworker.db"))}`);
+      expect(blocked.status).toBe(404);
+
+      const okDoc = await fetch(`${b}${API}/files?path=${encodeURIComponent(resolve(dataRoot, "docs", "note.md"))}`);
+      expect(okDoc.status).toBe(200);
+      expect(await okDoc.text()).toContain("会话文档");
+    } finally {
+      srv.close();
+    }
   });
 
   it("GET /audit 返回审计记录列表（limit/action 参数）", async () => {

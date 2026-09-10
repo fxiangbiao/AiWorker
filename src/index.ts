@@ -983,8 +983,8 @@ ${text}
             stopLiveStatus();
             outputRenderer.toolStart(name, args, id);
           },
-          onToolResult: (name, success, summary, id) => {
-            outputRenderer.toolResult(name, success, summary, id ?? "");
+          onToolResult: (name, success, summary, id, artifacts) => {
+            outputRenderer.toolResult(name, success, summary, id ?? "", artifacts);
           },
         };
 

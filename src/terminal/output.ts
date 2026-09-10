@@ -22,6 +22,7 @@ import {
 import { highlightLine } from "./highlight.js";
 import { tui } from "./tui.js";
 import type { TurnView } from "./turn-view.js";
+import type { ToolArtifact } from "../types.js";
 
 /** 工具调用计时（回合注入后仍由本渲染器记录耗时，供 turn 块展示） */
 const toolStarts = new Map<string, number>();
@@ -185,14 +186,14 @@ export class StreamOutputRenderer {
   }
 
   /** 工具调用结束（onToolResult） */
-  toolResult(name: string, success: boolean, summary: string, id: string): void {
+  toolResult(name: string, success: boolean, summary: string, id: string, artifacts?: ToolArtifact[]): void {
     const durMs = toolStarts.has(id) ? Date.now() - toolStarts.get(id)! : 0;
     toolStarts.delete(id);
     const summaryPreview = this.sanitizePreview(summary, 80);
     if (this.turn) {
       // ask_user 不在回合工具块中（已由 addAsk 块展示），无需置终态
       if (name !== "ask_user") {
-        this.turn.toolResult(id, success, summaryPreview, summary, durMs);
+        this.turn.toolResult(id, success, summaryPreview, summary, durMs, artifacts);
       }
       this.turnChanged();
       return;
