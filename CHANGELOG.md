@@ -16,7 +16,7 @@
 - **权限规则化**（`config/permissions.json`）：模式之上叠加 `Tool(specifier)` 级规则——`rules`（`tool` glob + `match` 目标 glob + `action`）按 **deny > ask > allow** 求值；`never_auto_approve`（永不自动批准）与 `protected_paths`（受保护路径，写入类工具强制确认）；`allow` 仅 auto 模式免确认、不绕过只读模式、不可覆盖前两者；plan 模式保持全确认
 - **目标串（specifier）语义**：fs 类 = 解析后的绝对路径；`terminal_exec`/`terminal_session` = 命令文本；其余 = 参数 JSON（`extractTarget()` 导出供测试复用）
 - **Windows 最小沙箱**（`config/sandbox.json` 新增 `allowWriteDirs`）：`terminal_exec` 与 `terminal_session` 统一走沙箱——重定向（`>`/`>>`）与写入类命令/程序片段内**所有**像路径的参数（源与目标）必须落在可写根内；含变量/通配无法静态解析的目标 fail-closed 拒绝；伪目标（`2>&1`/`>nul`/`/dev/null`）与注释文本不误判。**如实标注为策略级启发式防线，非 OS 级隔离**
-- **测试确定性**：修复两处 captureDiff 用例依赖共享快照目录 + mtime 排序的潜在竞态（改为每次运行独立 sessionId，断言快照唯一）；新增 `permissions-rules` 14 例、沙箱写入约束 12 例；全量 **862 / 59 文件** 全绿
+- **测试确定性**：修复两处 captureDiff 用例依赖共享快照目录 + mtime 排序的潜在竞态（改为每次运行独立 sessionId，断言快照唯一）；新增 `permissions-rules` 14 例、沙箱写入约束 12 例；全量 **863 / 59 文件** 全绿
 - **文档**：新增 `plans/roadmap-next.md`（P0/P1/P2 路线图）、`plans/sprint-47-credibility-baseline.md`（设计与验收）；README 补充权限规则 schema、沙箱边界与 `verify` 命令
 
 ### 代码审查跟进：沙箱写入约束与受保护路径加固
@@ -27,6 +27,12 @@
 - **`allow` 免确认显式限定 auto 模式**，不再依赖 `permissionCheck` 先于 `confirmHighRisk` 的隐式钩子顺序
 - **行为变更**：写入根约束现**先于**危险检测生效，`rm -rf /` 由"确认后可执行"变为"任何模式直接拒绝（写入越界）"；需终端写入项目根之外时请在 `allowWriteDirs` 中声明
 - **顺带修复**：`FileDiffPanel.sessionTitle` 读 `DiffSession` 上不存在的 `id`（无 summary 时会 `undefined.slice` 抛错）→ 改 `sessionId`；`asset-url` 的 `/files` 前缀补边界判断；`DocPreviewPanel` 行类型 `collapsed` 改为仅目录行必填；`check:web` 统一走 `web` 的 `check` 脚本
+
+### CI 首次运行修复（Linux runner）
+- **根因**：`data/` 被 `.gitignore` 忽略，全新检出没有该目录，而 `AuditLog` / `SessionStore` 直接 `new Database(路径)`（better-sqlite3 **不会自动创建父目录**）→ 审计写入抛 `Cannot open database because the directory does not exist`。`app-runtime` 的 `onExit` 恰好在**安排重启之前**写审计，异常导致退避重启整段不执行 → 崩溃重启用例失败
+- **修复**：两个构造函数在打开前 `mkdirSync(dirname(路径), { recursive: true })`（同时对"首次运行没有 data 目录"是产品级健壮性修复）
+- **顺带修复崩溃语义**（原实现与"指数退避重启 ≤3 次"不符）：① 崩溃计数原本存在 `proc` 上、每次重启都是新对象 → 计数重置，退避永远停在 1s 且永不触发 `onCrashed`；现改为运行时级 `crashCounts`（跨重启保留，用户显式 `start`/`stop` 时重置）。② `waitReady` 超时与心跳无响应走 `kill()` 会把 `stopped` 置真 → `onExit` 直接 return，既不重启也不回调；现区分"用户停止"与"按崩溃处理"（`killAsCrash`）。③ 退避间隔可通过 `crashDelaysMs` 注入（测试用）
+- **测试**：`scheduler` / `app-runtime` 用例把审计日志初始化到各自测试目录（不再依赖 cwd 下的 `data/`）；新增"启动始终未就绪 → 计崩溃、退避 ≤3 次后 onCrashed"用例；`extractTarget` 断言改为平台无关（Windows 盘符在 POSIX 下按 `resolve` 口径）；`app-runtime` 的 ready 超时与轮询上限放宽以适配 CI 负载
 
 ## 1.4.0 (2026-09-10)
 

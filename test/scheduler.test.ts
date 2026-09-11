@@ -3,14 +3,24 @@
  * 覆盖：cron 下次触发计算 / 配置加载（BOM/缺失） / 增删持久化 / 到点触发 submit / 非法 cron 拒绝
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { resolve } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { makeTestDir } from "./helpers.js";
+import { makeTestDir, teardownEnv } from "./helpers.js";
+import { initAuditLog } from "../src/core/audit-logger.js";
 import { nextFireAt, loadScheduleConfig, saveScheduleConfig, Scheduler } from "../src/core/scheduler.js";
 
 const dir = makeTestDir("scheduler");
 const cfgPath = resolve(dir, "schedule.json");
+
+// 审计日志落到本测试目录：定时触发会写审计，不能依赖 cwd 下存在 data/
+beforeAll(() => {
+  initAuditLog(dir);
+});
+
+afterAll(() => {
+  teardownEnv();
+});
 
 describe("22. Scheduler 定时调度", () => {
   it("nextFireAt：合法 cron 返回未来时间戳，非法返回 null", () => {

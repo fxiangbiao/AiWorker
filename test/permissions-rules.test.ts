@@ -101,8 +101,11 @@ describe("PermissionModel 规则引擎", () => {
   });
 
   it("extractTarget：fs 类取绝对路径、terminal_exec 取命令文本、其它取 JSON", () => {
+    const absOutside = resolve(BASE, "..", "outside.txt");
+    expect(extractTarget("fs_write", { path: absOutside }, BASE)).toBe(absOutside);
     expect(extractTarget("fs_write", { path: "src/a.ts" }, BASE)).toBe(resolve(BASE, "src/a.ts"));
-    expect(extractTarget("fs_write", JSON.stringify({ path: "C:/tmp/b.txt" }), BASE)).toBe(resolve("C:/tmp/b.txt"));
+    // 盘符路径：win32 下为绝对路径（忽略 baseDir），POSIX 下退化为相对 baseDir —— 两种口径都按 resolve 断言
+    expect(extractTarget("fs_write", JSON.stringify({ path: "C:/tmp/b.txt" }), BASE)).toBe(resolve(BASE, "C:/tmp/b.txt"));
     expect(extractTarget("terminal_exec", { command: "npm test" }, BASE)).toBe("npm test");
     expect(extractTarget("web_fetch", { url: "https://x" }, BASE)).toContain("https://x");
   });

@@ -5,7 +5,8 @@
 
 import Database from "better-sqlite3";
 import type { Database as DBType } from "better-sqlite3";
-import { resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 export interface AuditEntry {
   id?: number;
@@ -22,7 +23,10 @@ export class AuditLog {
   private db: DBType;
 
   constructor(dbPath: string) {
-    this.db = new Database(resolve(dbPath));
+    // better-sqlite3 不创建父目录：数据目录缺失时（首次运行 / 全新检出）会直接抛错
+    const abs = resolve(dbPath);
+    mkdirSync(dirname(abs), { recursive: true });
+    this.db = new Database(abs);
     this.db.pragma("journal_mode = WAL");
     this.init();
   }

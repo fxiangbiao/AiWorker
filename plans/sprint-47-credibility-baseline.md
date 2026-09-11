@@ -90,6 +90,14 @@
 5. **`allow` 免确认显式限定 auto 模式**：不再依赖 `permissionCheck` 钩子先于 `confirmHighRisk` 执行的隐式顺序。
 6. **行为变更（需知悉）**：写入根约束现会**先于**危险检测拦截越界写入，`rm -rf /` 这类命令由"确认后可执行"变为"任何模式直接拒绝并提示写入越界"；需要终端写入项目根之外时，请在 `config/sandbox.json` 的 `allowWriteDirs` 中显式声明。
 
+### 2.7 CI 首次运行修复（Linux runner，同日）
+
+CI 在 GitHub 首次运行暴露 3 处问题，均已修复：
+
+1. **审计/会话库不建目录（#2、#3 的共同根因）**：`data/` 被 gitignore，全新检出无此目录，`AuditLog` / `SessionStore` 直接 `new Database()` → better-sqlite3 抛 `Cannot open database because the directory does not exist`；`app-runtime.onExit` 在安排重启前写审计，异常使退避重启整段不执行。→ 两个构造函数 `mkdirSync(dirname, { recursive: true })`。
+2. **崩溃语义与文档不符**：崩溃计数存在 `proc` 上而重启会新建 `proc` → 计数重置，退避恒为 1s、`onCrashed` 永不触发；`waitReady` 超时与心跳无响应经 `kill()` 置 `stopped` → `onExit` 直接 return，既不重启也不回调。→ 计数提升到运行时级（显式 start/stop 重置）、新增 `killAsCrash` 区分"用户停止"与"按崩溃处理"、退避间隔可注入。
+3. **测试平台假设**：`extractTarget` 断言依赖 Windows 盘符绝对语义（POSIX 下按 baseDir 解析）→ 改为用 `resolve` 表达两种口径；`app-runtime` 的 ready 超时/轮询放宽；`scheduler`/`app-runtime` 的审计日志初始化到各自测试目录，不再依赖 cwd 下的 `data/`。
+
 ---
 
 ## 三、验收
@@ -98,7 +106,7 @@
 |---|---|
 | 后端 `tsc` | ✅ |
 | `eslint src/` | ✅ |
-| 全量测试 | ✅ **862 / 59 文件**（824 → 862：新增权限规则 14 例、沙箱写入 12 例、文档资源 11 例、越界写入提前拦截 1 例） |
+| 全量测试 | ✅ **863 / 59 文件**（824 → 863：新增权限规则 14 例、沙箱写入 12 例、文档资源 11 例、越界写入提前拦截 1 例、崩溃退避封顶 1 例） |
 | `web:build` | ✅ |
 | `svelte-check --threshold error` | ✅ 62 错 → **0 错**（65 warnings 不阻断；修复 31 个系统性配置问题 + 约 28 个真实类型错误） |
 | `npm run verify` | ✅ exit 0（build → lint → test → web:build → check:web 一条命令全绿） |
