@@ -13,6 +13,13 @@ import { padToWidth } from "./format.js";
 import type { CliCommand } from "./types.js";
 import type { PermissionMode } from "../types.js";
 
+/** 上下文窗口展示：≥1e6 显示 M（如 1M），≥1000 显示 k（如 256k），否则原值 */
+function fmtWin(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
+  return String(n);
+}
+
 export const configCommands: CliCommand[] = [
   {
     name: "setup",
@@ -76,14 +83,13 @@ export const configCommands: CliCommand[] = [
     description: "显示运行状态",
     detail: "版本/模式/模型/token/专家/技能/排队",
     handler: async (ctx) => {
-      const cost = ctx.modelRouter.getCost();
-      ctx.write(chalk.gray(`AiWorker v${getAppVersion()} | 模式: ${ctx.mode()} | 模型: ${ctx.modelRouter.getDisplayModel()}\n`));
+      const win = ctx.modelRouter.getContextWindow();
+      ctx.write(chalk.gray(`AiWorker v${getAppVersion()} | 模式: ${ctx.mode()} | 模型: ${ctx.modelRouter.getDisplayModel()} (窗口 ${fmtWin(win)})\n`));
       ctx.write(
         chalk.gray(
           `Token: ${ctx.modelRouter.getTokenUsage()} (提示: ${ctx.modelRouter.getPromptTokens()}, 生成: ${ctx.modelRouter.getCompletionTokens()})`,
         ),
       );
-      if (cost > 0) ctx.write(chalk.gray(` | 成本: ¥${cost.toFixed(4)}`));
       const experts = Object.values(ctx.agents)
         .map((a) => a.getName())
         .join(" / ");
@@ -240,17 +246,15 @@ export const configCommands: CliCommand[] = [
       } else {
         // 默认：显示当前配置
         const rt = ctx.modelRouter.getRuntimeConfig();
-        const cost = ctx.modelRouter.getCost();
         ctx.write(chalk.bold("\n── 模型配置 ──\n"));
         ctx.write(chalk.gray(`当前模型: ${ctx.modelRouter.getDisplayModel()}`));
         if (rt.profileKey) ctx.write(chalk.yellow(` (profile: ${rt.profileKey})`));
         ctx.write("\n");
         ctx.write(chalk.gray(`温度: ${rt.temperature ?? "默认"} | max-tokens: ${rt.maxTokens ?? "默认"}\n`));
-        ctx.write(chalk.gray(`成本: ¥${cost.toFixed(4)}\n`));
         ctx.write(chalk.bold("\n── 可用模型 ──\n"));
         for (const m of ctx.modelRouter.getAvailableModels()) {
           const active = m.key === (rt.profileKey || "default") ? chalk.green(" ●") : "";
-          ctx.write(chalk.gray(`  ${padToWidth(m.key, 10)} ${m.model} (${m.provider})${active}\n`));
+          ctx.write(chalk.gray(`  ${padToWidth(m.key, 10)} ${m.model} (${m.provider}) · 窗口 ${fmtWin(m.contextWindow)}${active}\n`));
         }
         ctx.write(chalk.bold("\n── 系统参数 ──\n"));
         ctx.write(chalk.gray(`  权限模式: ${ctx.mode()} (用 /mode 切换)\n`));

@@ -1,5 +1,98 @@
 # Changelog
 
+## 1.5.0 (2026-09-11)
+
+### 修复：文档预览不显示 Markdown 中的图片
+- **原因**：`marked` 渲染出的 `<img src="assets/x.svg">` 是相对路径，浏览器按 Web 页面 URL（而非文档所在目录）解析 → 404；文档面板与工具产物预览共用 `DocRenderer`，两条路径都受影响
+- **修复**：新增纯函数模块 `web/src/lib/asset-url.ts`，渲染后把**明确的本地引用**改写为 `/api/v1/files`——相对路径按文档所在目录归一化（`./`、`../`、反斜杠、中文/空格编码、丢弃 query 但**保留 `#fragment`**）；本地绝对路径（Windows 盘符 / UNC / `file://`）交给服务端做根白名单校验；越界 `..` **不静默夹回根内**，交由服务端 fail-closed 拒绝
+- **兼容性（既支持本地文件也支持外部链接）**：外部链接（`http(s):`、协议相对 `//cdn`）、内联（`data:`、`blob:`）、锚点、**站点根相对（`/logo.png`，如 `web/public` 下的静态资源）** 与已改写引用一律**原样保留**；改写后的本地引用若加载失败（404 / 被根白名单拒绝），前端会自动回退为原引用，保证不因改写而丢图
+- **服务端**：`GET /api/v1/files` 新增 `root=session|project` 参数（session=`data/docs`、project=会话工作目录），与 `/docs/content` 的根语义对称，用于解析文档内图片
+- **渲染**：`DocRenderer` 图片样式自适应（`max-width:100%`，独占段落居中）
+- **测试**：`test/doc-assets.test.ts` 11 例（相对/盘符/UNC/`file://`/外部链接/站点资源/内联/片段/越界/中文编码 + `rewriteDocAssetUrls` 混合文档契约）+ server `/files` 的 `root` 语义与越界用例；另用仓库真实文档与其 `assets/*.svg` 做了端到端验证（本地图片 200/`image/svg+xml`，外链与站点资源逐字未改写）
+
+### 可信基线：CI 门禁 + 权限规则化 + Windows 最小沙箱（Sprint 47）
+- **CI 门禁**（`.github/workflows/ci.yml`）：push/PR 双 job——后端（`npm ci` → build → lint → test）与 Web（`npm ci` → svelte-check → build）；新增 `npm run verify`（一条命令跑全部门禁）与 `npm run check:web`
+- **Web 静态检查**：引入 `svelte-check` 依赖与 `web/svelte.config.js`，修复既有 62 个错误（其中 31 个为"读不到 Svelte 配置"的系统性问题、约 28 个为类型滞后于功能的真实错误：Tab 联合类型缺项、`possibly null`、接口缺字段等），门禁阈值 `--threshold error`；不引入 `any`/`ts-ignore`
+- **权限规则化**（`config/permissions.json`）：模式之上叠加 `Tool(specifier)` 级规则——`rules`（`tool` glob + `match` 目标 glob + `action`）按 **deny > ask > allow** 求值；`never_auto_approve`（永不自动批准）与 `protected_paths`（受保护路径，写入类工具强制确认）；`allow` 仅 auto 模式免确认、不绕过只读模式、不可覆盖前两者；plan 模式保持全确认
+- **目标串（specifier）语义**：fs 类 = 解析后的绝对路径；`terminal_exec`/`terminal_session` = 命令文本；其余 = 参数 JSON（`extractTarget()` 导出供测试复用）
+- **Windows 最小沙箱**（`config/sandbox.json` 新增 `allowWriteDirs`）：`terminal_exec` 与 `terminal_session` 统一走沙箱——重定向（`>`/`>>`）与写入类命令/程序片段内**所有**像路径的参数（源与目标）必须落在可写根内；含变量/通配无法静态解析的目标 fail-closed 拒绝；伪目标（`2>&1`/`>nul`/`/dev/null`）与注释文本不误判。**如实标注为策略级启发式防线，非 OS 级隔离**
+- **测试确定性**：修复两处 captureDiff 用例依赖共享快照目录 + mtime 排序的潜在竞态（改为每次运行独立 sessionId，断言快照唯一）；新增 `permissions-rules` 14 例、沙箱写入约束 12 例；全量 **863 / 59 文件** 全绿
+- **文档**：新增 `plans/roadmap-next.md`（P0/P1/P2 路线图）、`plans/sprint-47-credibility-baseline.md`（设计与验收）；README 补充权限规则 schema、沙箱边界与 `verify` 命令
+
+### 代码审查跟进：沙箱写入约束与受保护路径加固
+- **沙箱**：原"取命令位置后第一个非开关 token"被三类常见写法绕过——带值开关顶位（`Set-Content -Encoding utf8 <越界>`、`New-Item -ItemType Directory -Path <越界>`、`Add-Content -Value hi -Path <越界>`）、目标不在首位（`Copy-Item a.txt <越界>`）、别名与未列举程序（`rm -rf`、`ni`/`sc`/`cp`/`mv`/`ri`、`curl -o`、`Invoke-WebRequest -OutFile`、`robocopy`、`xcopy`、`tar -C`、`Expand-Archive`、`git clone`、`npm install --prefix`）。现改为校验片段内**所有**像路径参数并纳入上述别名/程序；引号内文本用等长掩码定位、回取原文取参数
+- **重定向引号感知**：非包裹命令中引号内的 `>` 不再视为重定向（`echo "compare > C:\x"` 不再误拒）；解释器包裹（`cmd /c "echo x > …"`）仍按引号不敏感扫描，越界照样拦截
+- **受保护路径按路径段匹配**：`.git` 不再误伤 `.gitignore` / `.gitattributes` / `.github/**`（原实现在 auto 模式下会强制确认、无确认通道时直接拒绝）；命令文本先拆候选片段再切段，`git config --file .git/config` 仍命中；默认补 `.envrc`
+- **规则加载校验**：`tool` 非空串、`action ∈ deny|ask|allow`、`match` 为字符串或缺省，否则丢弃并告警——避免 `"action": "denyy"` 使 deny 规则**静默失效**
+- **`allow` 免确认显式限定 auto 模式**，不再依赖 `permissionCheck` 先于 `confirmHighRisk` 的隐式钩子顺序
+- **行为变更**：写入根约束现**先于**危险检测生效，`rm -rf /` 由"确认后可执行"变为"任何模式直接拒绝（写入越界）"；需终端写入项目根之外时请在 `allowWriteDirs` 中声明
+- **顺带修复**：`FileDiffPanel.sessionTitle` 读 `DiffSession` 上不存在的 `id`（无 summary 时会 `undefined.slice` 抛错）→ 改 `sessionId`；`asset-url` 的 `/files` 前缀补边界判断；`DocPreviewPanel` 行类型 `collapsed` 改为仅目录行必填；`check:web` 统一走 `web` 的 `check` 脚本
+
+### CI 首次运行修复（Linux runner）
+- **根因**：`data/` 被 `.gitignore` 忽略，全新检出没有该目录，而 `AuditLog` / `SessionStore` 直接 `new Database(路径)`（better-sqlite3 **不会自动创建父目录**）→ 审计写入抛 `Cannot open database because the directory does not exist`。`app-runtime` 的 `onExit` 恰好在**安排重启之前**写审计，异常导致退避重启整段不执行 → 崩溃重启用例失败
+- **修复**：两个构造函数在打开前 `mkdirSync(dirname(路径), { recursive: true })`（同时对"首次运行没有 data 目录"是产品级健壮性修复）
+- **顺带修复崩溃语义**（原实现与"指数退避重启 ≤3 次"不符）：① 崩溃计数原本存在 `proc` 上、每次重启都是新对象 → 计数重置，退避永远停在 1s 且永不触发 `onCrashed`；现改为运行时级 `crashCounts`（跨重启保留，用户显式 `start`/`stop` 时重置）。② `waitReady` 超时与心跳无响应走 `kill()` 会把 `stopped` 置真 → `onExit` 直接 return，既不重启也不回调；现区分"用户停止"与"按崩溃处理"（`killAsCrash`）。③ 退避间隔可通过 `crashDelaysMs` 注入（测试用）
+- **测试**：`scheduler` / `app-runtime` 用例把审计日志初始化到各自测试目录（不再依赖 cwd 下的 `data/`）；新增"启动始终未就绪 → 计崩溃、退避 ≤3 次后 onCrashed"用例；`extractTarget` 断言改为平台无关（Windows 盘符在 POSIX 下按 `resolve` 口径）；`app-runtime` 的 ready 超时与轮询上限放宽以适配 CI 负载
+
+## 1.4.0 (2026-09-10)
+
+### 工具产物预览：文件/链接/diff 全链路（Sprint 46）
+- **产物模型**：`ToolResult.artifacts`（`ToolArtifact` = file/link/diff，含 mime/kind/size/root/rel）；新增 `src/core/preview.ts`（扩展名 MIME 表、kind 归类、文本判定、头字节二进制嗅探、极简行 diff、大小格式化），纯函数无副作用
+- **工具产出**：`fs_read`（文本整读＋超阈值标 truncated；未知扩展名先读 512 字节嗅探，二进制改回短元信息，不再把二进制毁成乱码）、`fs_write`/`fs_edit`（文件产物；`fs_edit` 另附局部 `-/+` diff）、`web_search`/`web_fetch`（链接产物含站点/标题/摘要）
+- **TUI**：工具块下渲染产物 chips（📄 文件 + 大小、🔗 链接、📝 变更），终端支持 OSC 8 时文件 `file://` / 链接可点击；URL 与标签先剥控制字符防终端注入
+- **Web**：工具卡产物 chips + 预览窗口 `FilePreview`——Markdown 复用 `DocRenderer`，代码/文本走 `/files` 原文，图片/视频/音频/PDF 原生元素（支持 Range seek），Office 前端转换（docx→mammoth、xlsx/csv→SheetJS，DOMPurify 净化），pptx 等下载兜底，diff `+/-` 着色
+- **文件端口** `GET /api/v1/files`：realpath ＋ 根白名单（会话项目目录 + data 下仅 `docs`/`spills`）反遍历、64MB 上限、单区间 Range（206/416）、`download=1` 附件下载（RFC 5987 `filename*` 支持中文名）、`file:preview` 审计（成功/拦截）
+- **预览窗口交互**：右下角拖拽调大小（最小 300×180、视口夹紧、尺寸跨打开记忆）、全屏切换、`Esc` 先退全屏再关闭、切换产物滚动归零
+
+### 模型状态栏即时刷新（修复"Web 设置模型不生效/状态栏不变"）
+- `/status` 与各 `done` 事件统一返回 `getDisplayModel()`（profile 生效时含 `(key)` 后缀）
+- 新增 `refreshStatus()` 单点实现（App 轮询与 SystemPanel 保存后共用）；SystemPanel 模型下拉改读事件目标值，保存后立即刷新状态栏，无需等 30s 轮询
+
+### 协作工作会话隔离（修复"一次协作拆出多个会话"）
+- 多智能体 `/plan`、`/debate` 的每步/每轮运行会话统一带 `wk-` 前缀：保留上下文隔离（`assembleContext` 按会话回放），但不出现在 `/sessions`、TUI 与 Web 侧栏
+- Web `syncServerSessions` 增加幽灵会话清理（后端已删除的本地残留），并以 `?limit=1000` 全量比对避免仅取前 50 误删
+
+### Code review 修复（第 5 轮）
+- `/files` Range 解析健壮化：畸形头不再产生 `NaN` 送进 `createReadStream`（进程崩溃风险），多区间显式 416，206 分片不再重复记审计
+- data 根收窄为 `docs`/`spills` 白名单：`aiworker.db`、运行时配置等不再可经 `/files` 下载
+- 空文本文件预览不再永久停在"加载中…"；根外 Markdown 产物回退原文渲染（避免 DocRenderer 404）
+- `listSessions` 过滤改 SQL 参数绑定；`appendEvent` JSDoc 格式回归还原；移除未使用的 `isWorkerSession`
+- 测试：新增 `/files` Range 边界、CJK 下载名、data 根白名单隔离用例；全量 824 全绿
+
+## 1.3.0 (2026-09-06)
+
+### TUI 块式会话视图：思考/工具/回答可折叠（Sprint 45）
+- **回合块化**（`turn-view.ts` + `MessageList` 条目化）：一次问答回合 = 结构化块（thinking/tool/ask/text/note/meta），块按到达序渲染；历史回合保留结构可回看折叠
+- **思考流式摘要（修复"思考不流式"）**：思考默认折叠但标题实时滚动摘要与字数（`🧠 思考 · 摘要… · 已 N 字 ▸`）；`--show-thinking`/`/config thinking` 语义升级为"默认展开全文"，不再是一刀切隐藏
+- **工具卡原位更新**：`🔧 工具 参数 ⌁耗时 ✓/✗` 由块状态驱动，running→done 不再追加新行；`o` 展开完整参数/结果
+- **折叠键位**：运行期 `t`/`o`/`c`/`e`/`[`/`]`（当前回合）；空闲 `[` 进入浏览模式回看历史回合（`[`/`]` 焦点环跨回合、`t`/`o`/空格 折叠、`Esc`/字母退出）
+- **ask_user 块化**：提问在回合内以块展示（高亮/勾选/超时结算压缩为一行），消除旧静态行错位；无回合路径保留兜底
+- **渲染预算**：thinking 展开正文与 tool 详情按行预算截断（折叠内容完整保留），防巨型展开拖帧；text/回答全量输出
+- **输出收口**：TUI 消息区写入统一经 `appendToViewport`，运行期外部 stdout 重定向进当前回合；fence/table 状态机回合级重置
+- 非 TUI（stdout/管道）与 Web 行为不变
+- 测试 +28（turn-view 11 / MessageList 条目化 7 / output 注入 4 / tui 回合交互 6）；全量 806 全绿
+
+### 交互修正（实测反馈）
+- **回答重复渲染修复**：`turn-view.textLine` 提交成品行时清除 `lastPartial`——流式半行随换行提交后不再残留在半行槽，修复回答内容逐句翻倍（含 `flush`/`textCommit` 二次提交、以及"某句先做半行后换行完成"两种重复路径）
+- **长行 wrap 丢色修复**：`MessageList.wrapSingle` 提取行首样式组并在换行后的每个分段前重放——思考/工具等 dim/彩色长行不再"一行灰一行白"
+- **长行 wrap 丢边界修复**：`wrapSingle` 同时提取行首"悬挂边界"字面量前缀（空格+`│`/左块）并在每个换行分段前重放——思考/工具长行折行后左竖线不再中断、续行文字不再顶到边界（顺带保留列表/引用/代码块的悬挂缩进）
+- **工具详情 gutter 对齐**：tool 详情前缀由 `    │ ` 改为 `  │ `，与 thinking 正文、块标题首列（`🔧` 起始列）统一到列 2，消除工具区竖线与标题错位
+- **区域显式分界**：回答正文块与外部输出（raw）前各插一条 dim 分隔线；思考正文统一 dim 灰 + `│` 缩进纹理、工具标题蓝色系，三者一眼可辨
+- **空闲交互改为"焦点导航"**（取代浏览模式）：输入为空时 `←`/`→` 在历史回合可折叠块间移动焦点、`Enter` 折叠/展开、`Esc` 清除高亮；不再绑定 `t/o/c/e/[/]` 字母键，正常输入零误识别；`Space`/`Enter` 仅在输入为空且存在焦点时才折叠，无按键冲突
+- 运行期仍保留 `t/o/c/e/[/]`（字符此时被系统忽略、无输入冲突）
+
+## 1.2.0 (2026-09-06)
+
+### Token 统计与上下文窗口展示＋费用移除（Sprint 44）
+- **三档 token 口径**：本轮＝会话账本差分（ModelRouter.sessionScopes 按 scope=sessionId 记账，TurnLog 轮次结算，含同轮压缩请求、不含 loop 外摘要）；会话＝session_events 事件求和持久（assistant/message 携带单次请求 usage，`GET /sessions/:id` 返回 usages 平行数组）；全局＝进程级计数器（TUI `/status`、Web 状态栏标注"全局"）
+- **上下文窗口可配置**：`config/models.json` 顶层 `contextWindow` 表按 provider / provider.model 声明；解析链 profile.contextWindow → 顶层表 → 内置表（deepseek 1M、openai 128k、anthropic 200k、google 256k）→ 32768 兜底；profile 级覆盖与键大小写兜底；`ModelRouter.getContextWindow()` 供 TUI/Web 展示与占比计算
+- **占比展示**：TUI `/context`（分层占用＋窗口＋剩余可用）、`/status`、回合 footer「本轮 ↑x ↓y tok（窗口 p%）」保留 1 位小数；Web 上下文 Tab（每会话按 agent 窗口）、气泡脚注「本轮/请求」区分实时与历史口径、设备徽标窗口、StatusBar 全局 tok
+- **压缩预算与物理窗口分离**：COMPRESS_BUDGET=32768 作成本护栏；物理窗口小于预算时（本地 16384 模型）按窗口收紧触发阈值与保留目标，防输入溢出（review 补充）
+- **计费统计移除**：`getCost()`/PRICING/pricing 全仓删除，费用由模型平台账单核对
+- **Web 修复**：Svelte 5 snippet `{@render}` 用法（修复 "Ye is not a function"）、智能体工具勾选保存不生效/回显丢失（内置 agent 构造时热载 YAML）、恢复默认 400（无 body 不解 JSON）、permissions 嵌套读写
+- **Code review（第 4 轮）**：/chat 同会话并发 409 护栏＋done TurnLog 归属校验＋回传真实 sessionId、GET /sessions/:id 单次读事件与 404 语义、usage NaN 护栏与死代码清理、Web 会话切换/上下文/轨迹请求竞态守卫、AnswerBlock 本轮/请求口径、Sidebar token 徽标随回合刷新等
+- 测试 +21：token-usage（估算/账本并发隔离/窗口收紧/键大小写）、agent-hot-reload、server done.turnUsage、agents-api reset/delete 无 body、context 会话化等；全量 778 全绿
+
 ## 1.1.0 (2026-08-30)
 
 ### 语音输入（离线 ASR）+ TTS 补齐（Sprint 43）

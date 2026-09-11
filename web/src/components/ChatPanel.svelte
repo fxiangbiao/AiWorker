@@ -8,11 +8,11 @@
   import InputArea from "./InputArea.svelte";
   import GenCard from "./GenCard.svelte";
   import { spawnGenCard } from "$lib/stores/apps.svelte";
+  import type { ToolArtifact } from "$lib/artifacts";
   import {
     store,
     saveChats,
     saveMessages,
-    loadMessages,
     type ChatItem,
     type UIMessage,
     type PlanStep,
@@ -22,7 +22,7 @@
     API,
   } from "$lib/stores/chat.svelte";
   import { stream, setSending } from "$lib/stores/stream.svelte";
-  import { totalTokens, currentModel } from "$lib/stores/status";
+  import { totalTokens, promptTokens, completionTokens, currentModel } from "$lib/stores/status";
 
   let { agents = [] as { id: string; name: string }[] }: { agents?: { id: string; name: string }[] } = $props();
 
@@ -421,7 +421,10 @@
       }
       case "done": {
         if (data.tokenUsage) {
-          totalTokens.set((data.tokenUsage as { total: number }).total || 0);
+          const tu = data.tokenUsage as { total: number; prompt?: number; completion?: number };
+          totalTokens.set(tu.total || 0);
+          if (typeof tu.prompt === "number") promptTokens.set(tu.prompt);
+          if (typeof tu.completion === "number") completionTokens.set(tu.completion);
           currentModel.set((data.model as string) || "");
         }
         if (kind === "plan") {
@@ -510,6 +513,7 @@
             t.result = true;
             t.resultPreview = data.summary as string;
             t.pending = false;
+            t.artifacts = (data.artifacts as ToolArtifact[] | undefined) ?? [];
             if (!data.success) t.error = data.summary as string;
             break;
           }
@@ -519,8 +523,22 @@
       }
       case "done":
         if (data.tokenUsage) {
-          totalTokens.set((data.tokenUsage as { total: number }).total || 0);
+          const tu = data.tokenUsage as { total: number; prompt?: number; completion?: number };
+          totalTokens.set(tu.total || 0);
+          if (typeof tu.prompt === "number") promptTokens.set(tu.prompt);
+          if (typeof tu.completion === "number") completionTokens.set(tu.completion);
           currentModel.set((data.model as string) || "");
+        }
+        // 本轮用量（Sprint 44：/chat done 下发 turnUsage，写入当前助手消息气泡脚注）
+        if (data.turnUsage) {
+          const u = data.turnUsage as { prompt?: number; completion?: number; total?: number; contextPct?: number };
+          agent._usage = {
+            prompt: u.prompt ?? 0,
+            completion: u.completion ?? 0,
+            total: u.total ?? ((u.prompt ?? 0) + (u.completion ?? 0)),
+            contextPct: u.contextPct ?? 0,
+            perTurn: true,
+          };
         }
         // 复位思考中状态
         for (const m of store.messages) {

@@ -1,6 +1,10 @@
 <script lang="ts">
   import { esc } from "$lib/utils/format";
+  import { store } from "$lib/stores/chat.svelte";
   import type { TimelineItem } from "$lib/stores/chat.svelte";
+  import type { ToolArtifact } from "$lib/artifacts";
+  import { artifactIcon, formatBytes, baseName } from "$lib/artifacts";
+  import FilePreview from "./FilePreview.svelte";
 
   let { tool, onRetry } = $props<{
     tool: TimelineItem;
@@ -15,6 +19,9 @@
   });
   /** 拦截类错误（安全层拒绝）与执行失败（命令/环境错误）区分 */
   let isBlocked = $derived.by(() => /拦截|禁止|不允许|高危|沙箱/.test(tool.error ?? ""));
+  /** 点击预览的产物（file/diff）；link 直接新标签打开不进预览 */
+  let preview = $state<ToolArtifact | null>(null);
+  let sessionId = $derived.by(() => store.activeChatId);
 </script>
 
 <div class="tool-card" class:error={!!tool.error}>
@@ -37,7 +44,31 @@
       {tool.resultPreview ? esc(tool.resultPreview.slice(0, 200)) : ""}
     </div>
   {/if}
+
+  {#if tool.artifacts && tool.artifacts.length > 0}
+    <div class="tc-artifacts">
+      {#each tool.artifacts as a (a.type + (a.type === "link" ? a.url : a.path))}
+        {#if a.type === "link"}
+          <a class="chip chip-link" href={a.url} target="_blank" rel="noopener noreferrer" title={a.title ?? a.url}>
+            🔗 {a.site ?? baseName(a.url)}{a.title ? ` · ${a.title}` : ""}
+          </a>
+        {:else if a.type === "file"}
+          <button class="chip chip-file" onclick={() => (preview = a)} title={a.path}>
+            {artifactIcon(a.kind)} {baseName(a.path)}{a.size ? ` · ${formatBytes(a.size)}` : ""}
+          </button>
+        {:else if a.type === "diff"}
+          <button class="chip chip-diff" onclick={() => (preview = a)} title={a.path}>
+            📝 变更 {baseName(a.path)}
+          </button>
+        {/if}
+      {/each}
+    </div>
+  {/if}
 </div>
+
+{#if preview}
+  <FilePreview {sessionId} artifact={preview} onClose={() => (preview = null)} />
+{/if}
 
 <style>
   .tool-card {
@@ -95,6 +126,29 @@
     cursor: pointer;
   }
   .tb-retry:hover { background: var(--primary-light); border-color: var(--primary); }
+  .tc-artifacts { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    text-decoration: none;
+    color: var(--text);
+    font-family: var(--font-ui);
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .chip:hover { border-color: var(--primary); background: var(--primary-light); }
+  .chip-file { color: var(--primary); }
+  .chip-link { color: #0e7490; }
+  .chip-diff { color: #b45309; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .spin {
     display: inline-block;

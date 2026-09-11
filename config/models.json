@@ -1,14 +1,21 @@
 {
+  "contextWindow": {
+    "deepseek": 1048576,
+    "openai": 131072,
+    "anthropic": 200000,
+    "google": 262144,
+    "deepseek.deepseek-v4-flash": 1048576,
+    "openai.Gemma-4-26B-A4B": 16384,
+    "openai.Qwen3.8-27B": 16384
+  },
   "default": {
     "provider": "deepseek",
     "model": "deepseek-v4-flash",
     "baseURL": "https://api.deepseek.com",
     "apiKey": "${DEEPSEEK_API_KEY}",
     "thinking": true,
-    "adapter": "openai-compatible"
-  },
-  "pricing": {
-    "deepseek": { "prompt": 1, "completion": 2 }
+    "adapter": "openai-compatible",
+    "contextWindow": 1048576
   },
   "profiles": {
     "coding": { "temperature": 0.2 },
@@ -17,11 +24,11 @@
     "creative": { "temperature": 0.9 },
     "lite": {
       "provider": "openai",
-      "model": "Qwen3.8-27B-UD-IQ2_XXS",
+      "model": "Qwen3.8-27B",
       "baseURL": "http://localhost:8000/v1",
       "apiKey": "${OPENAI_API_KEY}",
-      "temperature": 0.5,
-      "maxTokens": 4096
+      "temperature": 0.7,
+      "maxTokens": 16384
     }
   },
   "routing": {

@@ -3,14 +3,15 @@
  * 文件系统读写 + 终端执行 + Web 搜索 + Web 抓取
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute } from "node:path";
 import { exec, type ExecOptions } from "node:child_process";
-import type { ToolDefinition, ToolHandler } from "../types.js";
+import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
+import { buildFileArtifact, isTextPath, sniffIsBinary, simpleDiffLines, formatSize } from "../core/preview.js";
 import { DangerDetector } from "../security/danger-detector.js";
-import { loadSandboxPolicy, checkCommand, checkDeniedCommand, sanitizeEnv } from "../security/sandbox.js";
-import { spillOrTruncate } from "./spill.js";
+import { loadSandboxPolicy, checkCommand, sanitizeEnv } from "../security/sandbox.js";
+import { spillOrTruncate, SPILL_THRESHOLD } from "./spill.js";
 import { requestAsk } from "./ask-channel.js";
 import { terminalSessionPool } from "./terminal-session.js";
 
@@ -71,22 +72,68 @@ const readFileHandler: ToolHandler = async (args, ctx) => {
       error: `文件不存在: ${filePath}`,
     };
   }
-  const content = readFileSync(filePath, "utf-8");
-  const out =
-    args.lineNumbers === true
-      ? (() => {
-          // 与 fs_edit 行号语义一致：尾部换行不产生额外空行行号
-          const lines = content.split("\n");
-          if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-          return lines.map((l, i) => `${String(i + 1).padStart(4)}  ${l}`).join("\n");
-        })()
-      : content;
+  const st = statSync(filePath);
+  // 文本类：整读 utf-8（保持 LLM 可读）；二进制类：不整读 utf-8，只返回元信息 + artifact 供预览
+  if (isTextPath(filePath)) {
+    const content = readFileSync(filePath, "utf-8");
+    const out =
+      args.lineNumbers === true
+        ? (() => {
+            // 与 fs_edit 行号语义一致：尾部换行不产生额外空行行号
+            const lines = content.split("\n");
+            if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+            return lines.map((l, i) => `${String(i + 1).padStart(4)}  ${l}`).join("\n");
+          })()
+        : content;
+    return {
+      tool_call_id: "",
+      success: true,
+      content: spillOrTruncate(ctx.dataDir, ctx.sessionId, out, "txt"),
+      artifacts: [
+        buildFileArtifact(filePath, st.size, ctx.workingDir, ctx.dataDir, {
+          truncated: content.length > SPILL_THRESHOLD,
+        }),
+      ],
+    };
+  }
+  // 二进制/未知扩展名：只读头 512 字节嗅探；仍像文本则按文本读（供 LLM 用），否则返回元信息
+  try {
+    const sn = readHead(filePath, 512);
+    if (!sniffIsBinary(sn)) {
+      const content = readFileSync(filePath, "utf-8");
+      return {
+        tool_call_id: "",
+        success: true,
+        content: spillOrTruncate(ctx.dataDir, ctx.sessionId, content, "txt"),
+        artifacts: [
+          buildFileArtifact(filePath, st.size, ctx.workingDir, ctx.dataDir, {
+            truncated: content.length > SPILL_THRESHOLD,
+          }),
+        ],
+      };
+    }
+  } catch {
+    /* 读取失败按元信息处理 */
+  }
   return {
     tool_call_id: "",
     success: true,
-    content: spillOrTruncate(ctx.dataDir, ctx.sessionId, out, "txt"),
+    content: `[二进制文件: ${filePath} · ${formatSize(st.size)} · 点击预览/下载]`,
+    artifacts: [buildFileArtifact(filePath, st.size, ctx.workingDir, ctx.dataDir)],
   };
 };
+
+/** 只读文件头 N 字节（用于二进制嗅探，避免整读大文件） */
+function readHead(filePath: string, n: number): Buffer {
+  const fd = openSync(filePath, "r");
+  try {
+    const buf = Buffer.alloc(n);
+    const read = readSync(fd, buf, 0, n, 0);
+    return buf.subarray(0, read);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 // ===== 文件写入 =====
 
@@ -136,10 +183,12 @@ const writeFileHandler: ToolHandler = async (args, ctx) => {
   const dir = dirname(filePath);
   mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, args.content as string, "utf-8");
+  const wst = statSync(filePath);
   return {
     tool_call_id: "",
     success: true,
     content: `已写入文件: ${filePath} (${(args.content as string).length} 字符)`,
+    artifacts: [buildFileArtifact(filePath, wst.size, ctx.workingDir, ctx.dataDir)],
   };
 };
 
@@ -249,6 +298,7 @@ const editFileHandler: ToolHandler = async (args, ctx) => {
       tool_call_id: "",
       success: true,
       content: `已修改文件: ${filePath}（第 ${s}-${e} 行 → ${replacementLines.length} 行）`,
+      artifacts: editArtifacts(filePath, ctx, content, updated),
     };
   }
 
@@ -288,8 +338,33 @@ const editFileHandler: ToolHandler = async (args, ctx) => {
     tool_call_id: "",
     success: true,
     content: `已修改文件: ${filePath}（替换 1 处：${oldText.split("\n").length} 行 → ${newText.split("\n").length} 行）`,
+    artifacts: editArtifacts(filePath, ctx, content, updated),
   };
 };
+
+/** fs_edit 产物：文件 + 局部行 diff */
+function editArtifacts(filePath: string, ctx: ToolContext, oldText: string, newText: string): ToolArtifact[] {
+  const st = statSync(filePath);
+  const file = buildFileArtifact(filePath, st.size, ctx.workingDir, ctx.dataDir);
+  const patch = simpleDiffLines(oldText, newText).slice(0, 60).join("\n");
+  return [file, { type: "diff", path: filePath, patch }];
+}
+
+/** 取 URL 主机名（非法返回空串） */
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/** 从 HTML 提取 <title>（不区分大小写；去标签；失败返回空串） */
+function extractPageTitle(html: string): string {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!m) return "";
+  return m[1]!.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+}
 
 // ===== 目录列表 =====
 
@@ -471,7 +546,18 @@ const webSearchHandler: ToolHandler = async (args) => {
 
     const output = results.map((r, i) => `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`).join("\n\n");
 
-    return { tool_call_id: "", success: true, content: output };
+    return {
+      tool_call_id: "",
+      success: true,
+      content: output,
+      artifacts: results.map((r) => ({
+        type: "link",
+        url: r.url,
+        title: r.title,
+        site: hostnameOf(r.url),
+        snippet: r.snippet,
+      })),
+    };
   } catch (err) {
     return {
       tool_call_id: "",
@@ -543,6 +629,7 @@ const webFetchHandler: ToolHandler = async (args) => {
       };
     }
     const text = await response.text();
+    const title = extractPageTitle(text);
     // 简单 HTML 清理
     const cleaned = text
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -554,6 +641,7 @@ const webFetchHandler: ToolHandler = async (args) => {
       tool_call_id: "",
       success: true,
       content: cleaned.slice(0, 10000), // 限制长度
+      artifacts: [{ type: "link", url, title: title || undefined, site: hostnameOf(url), snippet: cleaned.slice(0, 120) }],
     };
   } catch (err) {
     return {
@@ -657,7 +745,9 @@ const terminalSessionHandler: ToolHandler = async (args, ctx) => {
       return { tool_call_id: "", success: true, content: "持久终端会话已关闭" };
     }
     if (action === "exec") {
-      const denyCheck = checkDeniedCommand(command, loadSandboxPolicy());
+      // 与 terminal_exec 同一套沙箱：黑名单 + 写入目标可写根约束（相对路径按会话工作目录解析）
+      const sandboxPolicy = loadSandboxPolicy();
+      const denyCheck = checkCommand(command, ctx.workingDir, ctx.workingDir, sandboxPolicy);
       if (!denyCheck.allowed) {
         return {
           tool_call_id: "",

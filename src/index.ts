@@ -200,6 +200,9 @@ program
       modes?: PermissionConfig["modes"];
       allowed_dirs?: string[];
       denied_patterns?: string[];
+      rules?: PermissionConfig["rules"];
+      never_auto_approve?: string[];
+      protected_paths?: string[];
     } = {};
     try {
       const permPath = resolve(process.cwd(), "config", "permissions.json");
@@ -229,6 +232,9 @@ program
       modes,
       allowedDirs: (permConfig.allowed_dirs && permConfig.allowed_dirs.length > 0) ? permConfig.allowed_dirs : [workingDir],
       deniedPatterns: permConfig.denied_patterns ?? [],
+      rules: permConfig.rules ?? [],
+      neverAutoApprove: permConfig.never_auto_approve ?? [],
+      protectedPaths: permConfig.protected_paths ?? [],
     });
     // 审批服务：权限决策单点（hooks 内三个权限 handler 均委托于此，fail-closed）
     const approval = new ApprovalService({
@@ -402,7 +408,7 @@ program
             if (!modelRouter.addProfile(v.key, { model: m, baseURL: b, provider: v.provider, apiKey: v.apiKey, temperature: v.temperature, maxTokens: v.maxTokens })) {
               return { ok: false, error: `添加失败: key「${v.key}」已存在或非法` };
             }
-            // 写回 config/models.json（保留 default/pricing/routing 等字段）
+            // 写回 config/models.json（保留 default/contextWindow/routing 等字段；pricing 已移除——费用由平台统计）
             const modelsPath = resolve(process.cwd(), "config", "models.json");
             const cfg = JSON.parse(readFileSync(modelsPath, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown> & { profiles?: Record<string, unknown> };
             if (!cfg.profiles || typeof cfg.profiles !== "object") cfg.profiles = {};
@@ -682,8 +688,19 @@ ${text}
           sessionStore,
           dataDir,
           getContextBreakdown: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) =>
-            contextManager.getContextBreakdown(systemPrompt, sessionId, userMessage, agentId),
+            contextManager.getContextBreakdown(
+              systemPrompt,
+              sessionId,
+              userMessage,
+              agentId,
+              // 窗口按会话 agent 的模型偏好解析（server /context?sessionId 会话化用）
+              agentId
+                ? modelRouter.getContextWindow(agents[agentId]?.getConfig().modelPreference)
+                : modelRouter.getContextWindow(),
+            ),
           getSystemPrompt: () => (agents["default"] as { getSystemPrompt?: () => string }).getSystemPrompt?.() ?? "",
+          getAgentSystemPrompt: (agentId: string) =>
+            (agents[agentId] as { getConfig?: () => { systemPrompt?: string } } | undefined)?.getConfig?.().systemPrompt,
           getMcpStatuses: () => mcpManager.getStatuses(),
           getPlugins: () => pluginManager.getPlugins(),
           appManager,
@@ -727,7 +744,7 @@ ${text}
     const lastAnswer = { value: "" };
     let currentSessionId: string | undefined;
 
-    // 计算当前上下文窗口占用百分比（低频调用：仅 printStatus / 命令后）
+    // 计算当前上下文窗口占用百分比（低频调用：仅 printStatus / 命令后；分母为当前 agent 生效模型窗口）
     const statusWindowPct = (): number | undefined => {
       try {
         const agent = agents[routeToExpert("")];
@@ -735,8 +752,11 @@ ${text}
           agent.getConfig().systemPrompt,
           currentSessionId ?? "",
           "",
+          agent.getId(),
+          modelRouter.getContextWindow(agent.getConfig().modelPreference),
         );
-        return bd.windowSize > 0 ? Math.round((bd.total / bd.windowSize) * 100) : undefined;
+        // 1 位小数（review：1M 窗口下真实占比常 <1%，Math.round 归 0 会把"有占用"显示成"0%"）
+        return bd.windowSize > 0 ? Math.max(0, Math.round(((bd.total / bd.windowSize) * 100) * 10) / 10) : undefined;
       } catch {
         return undefined;
       }
@@ -771,7 +791,13 @@ ${text}
       saveAgentConfig: (cfg) => saveAgentConfig(cfg.id, cfg),
       getContextBreakdown: (query: string) => {
         const agent = agents[routeToExpert("")]!;
-        return contextManager.getContextBreakdown(agent.getConfig().systemPrompt, currentSessionId ?? "", query);
+        return contextManager.getContextBreakdown(
+          agent.getConfig().systemPrompt,
+          currentSessionId ?? "",
+          query,
+          agent.getId(),
+          modelRouter.getContextWindow(agent.getConfig().modelPreference),
+        );
       },
       listCommands: () => cliCommands,
       appManager,
@@ -893,11 +919,19 @@ ${text}
         }
       });
 
-      // 思考内容跟踪
-      let thinkingStarted = false;
+      // 思考内容跟踪（非 TUI 降级路径使用；TUI 回合块内自带摘要）
       let thinkingFirstLine = "";
       let thinkingLineCaptured = false;
       let needThinkingBreak = false;
+
+      // Sprint 45：TUI 回合块视图（思考/工具/回答可折叠）；非 TUI 保持旧 stdout 流式
+      const turnActive = tui.isActive();
+      if (turnActive) {
+        const view = tui.startTurn();
+        // showThinking=true → thinking 块默认展开全文；false（默认）→ 折叠摘要实时滚动
+        view.openDefaultThinking = showThinking;
+        outputRenderer.setTurn(view);
+      }
 
       try {
         const streamCallbacks: StreamCallbacks = {
@@ -905,17 +939,25 @@ ${text}
             // 迭代分隔线不再展示（用户要求精简）
           },
           onThinkingStart: () => {
-            if (!showThinking) return;
-            thinkingStarted = false;
-            thinkingFirstLine = "";
-            thinkingLineCaptured = false;
-            needThinkingBreak = true;
             stopLiveStatus();
-            renderer.writeLine(chalk.dim("🧠 思考: "));
+            if (!turnActive) {
+              if (!showThinking) return;
+              thinkingFirstLine = "";
+              thinkingLineCaptured = false;
+              needThinkingBreak = true;
+              renderer.writeLine(chalk.dim("🧠 思考: "));
+              return;
+            }
+            // 首块出现时提示折叠键（每个回合一次）
+            tui.maybeHintFoldKeys();
           },
           onThinkingDelta: (text) => {
+            if (turnActive) {
+              tui.currentTurnView()?.thinkingDelta(text);
+              tui.requestRender();
+              return;
+            }
             if (showThinking) {
-              if (!thinkingStarted) thinkingStarted = true;
               renderer.write(text);
             } else if (!thinkingLineCaptured) {
               const firstBreak = text.indexOf("\n");
@@ -929,14 +971,17 @@ ${text}
           },
           onTextDelta: (text) => {
             stopLiveStatus();
-            if (!showThinking && thinkingFirstLine) {
-              renderer.writeLine(
-                chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`),
-              );
-              thinkingFirstLine = "";
-              thinkingLineCaptured = false;
-            } else if (needThinkingBreak) {
-              needThinkingBreak = false;
+            if (!turnActive) {
+              // 非 TUI：回答开始时补打思考首行摘要（旧语义）
+              if (!showThinking && thinkingFirstLine) {
+                renderer.writeLine(
+                  chalk.dim(`🧠 ${thinkingFirstLine.slice(0, 120)}${thinkingFirstLine.length > 120 ? "..." : ""}`),
+                );
+                thinkingFirstLine = "";
+                thinkingLineCaptured = false;
+              } else if (needThinkingBreak) {
+                needThinkingBreak = false;
+              }
             }
             outputRenderer.writeChunk(text);
           },
@@ -944,11 +989,14 @@ ${text}
             stopLiveStatus();
             outputRenderer.toolStart(name, args, id);
           },
-          onToolResult: (name, success, summary, id) => {
-            outputRenderer.toolResult(name, success, summary, id ?? "");
+          onToolResult: (name, success, summary, id, artifacts) => {
+            outputRenderer.toolResult(name, success, summary, id ?? "", artifacts);
           },
         };
 
+        // 本轮 token 差分：运行前快照会话账本（无当前会话则 0 基线）
+        const sidBefore = currentSessionId;
+        const baseBefore = (sidBefore ? modelRouter.getSessionTokens(sidBefore) : { prompt: 0, completion: 0 });
         const result = await agent.runStream(
           { instruction: trimmed, mode: currentMode, workingDir, sessionId: currentSessionId },
           workingDir,
@@ -961,6 +1009,19 @@ ${text}
         stopLiveStatus();
         outputRenderer.flush();
 
+        // 回合定稿：释放注入 → meta 并入回合尾（正常/中断保留结构）
+        outputRenderer.setTurn(null);
+        const interrupted = (result.truncated ?? false) && !result.text;
+        const tokensNow = currentSessionId ? modelRouter.getSessionTokens(currentSessionId) : { prompt: 0, completion: 0 };
+        const turnPrompt = Math.max(0, tokensNow.prompt - baseBefore.prompt);
+        const turnCompletion = Math.max(0, tokensNow.completion - baseBefore.completion);
+        const pct = statusWindowPct();
+        const pctStr = pct != null ? ` (窗口 ${pct}%)` : "";
+        tui.finishTurn(
+          `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, 本轮: ↑${turnPrompt} ↓${turnCompletion} tok${pctStr}]`,
+          { interrupted },
+        );
+
         if (result.truncated && result.text) {
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           renderer.writeLine(chalk.yellow(short));
@@ -968,16 +1029,10 @@ ${text}
           const short = result.text.length > 500 ? result.text.slice(0, 500) + "..." : result.text;
           renderer.writeLine(chalk.red(short));
         }
-
-        const cost = modelRouter.getCost();
-        const costStr = cost > 0 ? `, ¥${cost.toFixed(4)}` : "";
-        renderer.writeLine(
-          chalk.gray(
-            `[迭代: ${result.iterations}, 工具: ${result.toolCallsExecuted}, token: ${modelRouter.getTokenUsage()}${costStr}]`,
-          ),
-        );
       } catch (err) {
         stopLiveStatus();
+        outputRenderer.setTurn(null);
+        tui.finishTurn("", { interrupted: true });
         renderer.writeLine(chalk.red(`✗ 执行失败: ${(err as Error).message}`));
       }
 

@@ -58,10 +58,19 @@ export class ApprovalService {
 
   /**
    * permissionCheck 语义 — 权限模式是否允许该工具
+   * 显式 deny 规则优先于模式判断（任何模式都拦截）
    */
-  checkPermission(toolName: string, mode: PermissionMode): ApprovalDecision {
+  checkPermission(toolName: string, mode: PermissionMode, args?: unknown): ApprovalDecision {
     const model = this.permissionModel;
     if (!model) return { proceed: true };
+    const target = extractTarget(toolName, args, this.workingDir);
+    const rule = model.evaluateRules(toolName, target);
+    if (rule?.action === "deny") {
+      return {
+        proceed: false,
+        message: `规则拒绝（${rule.rule.tool}${rule.rule.match ? `(${rule.rule.match})` : ""}）：不允许执行 ${toolName}`,
+      };
+    }
     if (!model.allowsToolFor(mode, toolName)) {
       const reason = model.isReadOnly(mode)
         ? `当前权限模式(${mode})为只读，不允许执行工具 ${toolName}`
@@ -72,32 +81,66 @@ export class ApprovalService {
   }
 
   /**
-   * confirmHighRisk 语义 — plan 全确认 / auto 仅高危（terminal_exec / fs_write）确认
+   * confirmHighRisk 语义 — plan 全确认 / auto 高危（terminal_exec / fs_write）确认
+   * Sprint 47 叠加：显式 ask 规则、"永不自动批准"清单、受保护路径强制确认；显式 allow 免确认
    * 确认被拒或无确认通道（fail-closed）时返回 proceed: false
    */
   async checkConfirmation(toolName: string, args: unknown, mode: PermissionMode): Promise<ApprovalDecision> {
     const projectBase = this.workingDir ? resolve(this.workingDir) : process.cwd();
+    const model = this.permissionModel;
+    const target = extractTarget(toolName, args, projectBase);
+    const rule = model?.evaluateRules(toolName, target) ?? null;
 
+    if (rule?.action === "deny") {
+      return {
+        proceed: false,
+        message: `规则拒绝（${rule.rule.tool}${rule.rule.match ? `(${rule.rule.match})` : ""}）：不允许执行 ${toolName}`,
+      };
+    }
+
+    // plan 模式：所有工具调用都确认（保留"先列计划再执行"语义）
     if (mode === "plan") {
-      let detail = "";
-      if (toolName === "fs_write") {
-        const p = extractFilePath(args, projectBase);
-        if (p) detail = `：${p}`;
-      }
+      const detail = toolName === "fs_write" || toolName === "fs_edit" ? (target ? `：${target}` : "") : "";
       const ok = await this.confirm(`${toolName} 调用确认`, `执行工具 ${toolName}${detail}？`);
       return ok ? { proceed: true } : { proceed: false, message: "用户取消操作" };
     }
 
-    if (mode !== "auto") return { proceed: true };
+    const never = model?.isNeverAutoApprove(toolName) ?? false;
+    const protectedHit = WRITE_TOOLS.has(toolName) && (model?.isProtectedTarget(target) ?? false);
+    const forcedAsk = rule?.action === "ask";
+
+    // 显式 allow：仅在 auto 模式免确认（ask/plan 的"先确认"语义由模式本身决定，
+    // 不依赖 permissionCheck 钩子的执行顺序）；never 与受保护路径不可被 allow 覆盖
+    if (mode === "auto" && rule?.action === "allow" && !never && !protectedHit) return { proceed: true };
+
+    const reason = forcedAsk
+      ? `规则要求确认（${rule?.rule.tool}${rule?.rule.match ? `(${rule.rule.match})` : ""}）`
+      : never
+        ? "该工具被配置为永不自动批准"
+        : protectedHit
+          ? "命中受保护路径"
+          : "";
+
+    // ask 模式：写工具已被 checkPermission 拦截；此处仅在强制类规则命中时确认
+    if (mode !== "auto") {
+      if (!reason) return { proceed: true };
+      const ok = await this.confirm(`${toolName} 操作确认`, `${reason}${target ? `：${target}` : ""}。是否继续？`);
+      return ok ? { proceed: true } : { proceed: false, message: "用户取消操作" };
+    }
+
+    // auto 模式：强制类规则（ask / never / 受保护路径）→ 确认
+    if (reason) {
+      const ok = await this.confirm(`${toolName} 操作确认`, `${reason}${target ? `：${target}` : ""}。是否继续？`);
+      return ok ? { proceed: true } : { proceed: false, message: "用户取消操作" };
+    }
+
     if (toolName !== "terminal_exec" && toolName !== "fs_write") return { proceed: true };
 
     // fs_write 只检测目标路径（正则匹配的是命令文本，不能套用在 content 上）
     const input =
       toolName === "fs_write"
         ? extractFilePath(args, projectBase) ?? ""
-        : typeof args === "string"
-          ? args
-          : JSON.stringify(args ?? {});
+        : commandText(args);
     const check = this.dangerDetector.check(input);
     if (check.level === "safe") return { proceed: true };
 
@@ -121,6 +164,28 @@ export class ApprovalService {
     });
     return result === "allow";
   }
+}
+
+/** 受保护路径检查适用的写入类工具（读取类不强制确认） */
+const WRITE_TOOLS = new Set(["fs_write", "fs_edit", "terminal_exec"]);
+
+/** 提取命令文本（terminal_exec / terminal_session 的 args） */
+function commandText(args: unknown): string {
+  const parsed = typeof args === "string" ? tryParseJson(args) : args;
+  if (parsed && typeof parsed === "object" && "command" in parsed) {
+    return String((parsed as Record<string, unknown>).command ?? "");
+  }
+  return typeof args === "string" ? args : JSON.stringify(args ?? {});
+}
+
+/**
+ * 规则匹配用的"目标串"：fs 类 → 解析后的绝对路径；终端类 → 命令文本；其余 → 参数 JSON
+ * 供 approval-service 与测试复用
+ */
+export function extractTarget(toolName: string, args: unknown, baseDir?: string): string {
+  if (toolName === "terminal_exec" || toolName === "terminal_session") return commandText(args);
+  if (toolName.startsWith("fs_")) return extractFilePath(args, baseDir) ?? "";
+  return typeof args === "string" ? args : JSON.stringify(args ?? {});
 }
 
 function extractFilePath(args: unknown, baseDir?: string): string | null {

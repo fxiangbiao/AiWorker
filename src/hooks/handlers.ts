@@ -89,7 +89,8 @@ export function createPermissionCheck(deps: HandlerDependencies): HookHandler {
 
     const mode = (ctx.data.permissions as PermissionMode) || deps.permissionModel?.getMode() || "auto";
     const toolName = ctx.data.toolName as string;
-    const decision = approval.checkPermission(toolName, mode);
+    // 传入 args 以便 Tool(specifier) 级 deny 规则参与求值
+    const decision = approval.checkPermission(toolName, mode, ctx.data.args);
     if (!decision.proceed) {
       return { proceed: false, message: decision.message };
     }
@@ -790,12 +791,17 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     };
 
   return async (ctx) => {
-    // 任务开始：记录开始时间与 token 基线
+    // 会话账本读取（Sprint 44：并发两会话不串算；无 modelRouter 时降级 0）
+    const sessionTokens = (sid: string): { prompt: number; completion: number } => {
+      const s = deps.modelRouter?.getSessionTokens?.(sid);
+      return s ?? { prompt: 0, completion: 0 };
+    };
+    // 任务开始：记录开始时间与 token 基线（会话账本，替代全局计数器差分）
     if (ctx.event === "onMessage") {
       turnStart.set(ctx.sessionId, {
         at: Date.now(),
-        prompt: deps.modelRouter?.getPromptTokens() ?? 0,
-        completion: deps.modelRouter?.getCompletionTokens() ?? 0,
+        prompt: sessionTokens(ctx.sessionId).prompt,
+        completion: sessionTokens(ctx.sessionId).completion,
       });
       turnError.delete(ctx.sessionId);
       const turn = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
@@ -819,12 +825,11 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     turnError.delete(ctx.sessionId);
     const startedAt = start?.at ?? Date.now();
     const finishedAt = Date.now();
-    const tokensPromptNow = deps.modelRouter?.getPromptTokens() ?? 0;
-    const tokensCompletionNow = deps.modelRouter?.getCompletionTokens() ?? 0;
-    // 当轮 token = 本次完成时刻 − 轮开始时刻基线（避免累计值直接入库）；
+    const tokensNow = sessionTokens(ctx.sessionId);
+    // 当轮 token = 会话账本差分（修复：全局计数器在多会话并发下会把其他会话 token 串入本轮）
     // 错误轮次（onError 已删基线）无法差分，置 0 防把全会话 token 记到本轮
-    const tokensPrompt = hadError ? 0 : Math.max(0, tokensPromptNow - (start?.prompt ?? 0));
-    const tokensCompletion = hadError ? 0 : Math.max(0, tokensCompletionNow - (start?.completion ?? 0));
+    const tokensPrompt = hadError ? 0 : Math.max(0, tokensNow.prompt - (start?.prompt ?? 0));
+    const tokensCompletion = hadError ? 0 : Math.max(0, tokensNow.completion - (start?.completion ?? 0));
     turnStart.delete(ctx.sessionId);
 
     const seq = (turnSeq.get(ctx.sessionId) ?? 0) + 1;

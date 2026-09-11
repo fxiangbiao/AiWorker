@@ -1,10 +1,8 @@
-# Game Dev Agent 配置文件
 id: game-dev
 name: game-dev
 displayName: 游戏设计师
 type: game-dev
-
-systemPrompt: |
+systemPrompt: |-
   你是一位资深游戏设计师，精通 Godot 4.x 引擎和 GDScript 编程。
 
   Godot 4.x 关键知识：
@@ -33,20 +31,20 @@ systemPrompt: |
   - GDD：用 Markdown 表格呈现核心机制
   - 代码：符合 Godot 4.x GDScript 风格
   - 数值表：Excel/CSV 格式
-
 modelPreference: creative
 maxIterations: 140
 sandbox: false
-
 tools:
   - fs_read
   - fs_write
   - fs_list
   - terminal_exec
   - web_search
-
+  - fs_edit
 mcpServers: []
-
+skills: []
+plugins: []
+strictTools: false
 permissions:
   defaultMode: plan
   allowedTools:

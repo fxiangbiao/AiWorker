@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import type { Message, ProjectProfile, ContextBreakdown } from "../types.js";
 import type { SessionStore as SessionStoreClass } from "../memory/session-store.js";
 import { ContextCompressor } from "../memory/compressor.js";
+import { estimateText } from "./token-estimate.js";
 import { skillRegistry } from "./skill-registry.js";
 
 const MEMORY_MAX_CHARS = 2200; // 有界：~2200 字符
@@ -19,6 +20,9 @@ const USER_MAX_CHARS = 1375; // 有界：~1375 字符
 const PROJECT_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.4);
 const HISTORY_MAX_CHARS = Math.floor(MEMORY_MAX_CHARS * 0.6);
 const TOOL_MSG_MAX_CHARS = 20000; // 单条 tool 消息上限（超长截断；事件日志保留完整，replay-safe）
+
+/** 上下文分层展示默认窗口（调用方未传 windowSize 时用，与历史兜底一致） */
+const DEFAULT_WINDOW = 32768;
 
 /**
  * 工具结果剪枝（对齐 DSH dsh-compaction-tool-result-pruner）：
@@ -125,17 +129,48 @@ export class ContextManager {
     this.projectProfile = profile;
   }
 
-  /** 估算字符串 token 数 (混合中英文: ~3.5字符/token) */
+  /** 估算字符串 token 数（共享启发式：CJK≈1/字、ASCII≈1/4字符；展示用，真实以 provider usage 为准） */
   private estimateTokens(text: string): number {
-    return Math.ceil(text.length / 3.5);
+    return estimateText(text);
   }
 
-  /** 上下文分层 token 占比统计 */
+  /** 事件回放 → 估算文本（含 tool 消息 content 与 assistant tool_calls 参数），对齐 assembleContext 组装；
+   *  tool content 按 TOOL_MSG_MAX_CHARS 同规则截断后再估算（review：展示贴近真实请求，避免长 tool 输出虚高） */
+  private replayText(sessionId: string): string {
+    const messages = pruneOversizedToolMessages(this.sessionStore.replayEvents(sessionId));
+    const parts: string[] = [];
+    for (const m of messages) {
+      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+      parts.push(content);
+      if (m.tool_calls) parts.push(JSON.stringify(m.tool_calls));
+    }
+    return parts.join("\n");
+  }
+
+  /** 历史 token 估算缓存（R5）：键 = 事件数，会话无新事件则复用，避免 printStatus 高频全量回放 */
+  private historyCache = new Map<string, { eventCount: number; tokens: number }>();
+  /** 缓存上限（防会话删除后无清理导致的无限增长；超限整体重置，代价可接受） */
+  private readonly HISTORY_CACHE_MAX = 500;
+
+  private historyTokens(sessionId: string): number {
+    if (this.historyCache.size >= this.HISTORY_CACHE_MAX) {
+      this.historyCache.clear();
+    }
+    const count = this.sessionStore.getEventCount(sessionId);
+    const hit = this.historyCache.get(sessionId);
+    if (hit && hit.eventCount === count) return hit.tokens;
+    const tokens = this.estimateTokens(this.replayText(sessionId));
+    this.historyCache.set(sessionId, { eventCount: count, tokens });
+    return tokens;
+  }
+
+  /** 上下文分层 token 占比统计（windowSize 由调用方传模型真实窗口；缺省用默认展示窗口） */
   getContextBreakdown(
     systemPrompt: string,
     sessionId: string,
     userMessage: string,
     agentId?: string,
+    windowSize: number = DEFAULT_WINDOW,
   ): ContextBreakdown {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -160,10 +195,8 @@ export class ContextManager {
     }
     const skills = this.estimateTokens(skillsPrompt);
 
-    // Conversation history
-    const history = this.sessionStore.getMessages(sessionId);
-    const histText = history.map((m) => m.content).join("\n");
-    const hist = this.estimateTokens(histText);
+    // Conversation history（事件回放：含 tool 消息与 tool_calls 参数，缓存按事件数失效）
+    const hist = this.historyTokens(sessionId);
 
     const current = this.estimateTokens(userMessage);
     const total = base + projMem + userProf + epi + skills + hist + current;
@@ -188,7 +221,8 @@ export class ContextManager {
       conversationHistory: hist,
       currentTurn: current,
       total,
-      windowSize: 8000, // default; could be model-specific
+      windowSize,
+      remaining: windowSize - total,
       skillsMatched: matchedSkills,
       skillsTotal: skillRegistry.count,
     };
@@ -279,13 +313,21 @@ export class ContextManager {
     return pruneOversizedToolMessages(messages);
   }
 
-  /** 检查并执行压缩 */
-  async maybeCompress(messages: Message[]): Promise<{
+  /**
+   * 检查并执行压缩
+   * @param scope 会话归属（可选）：压缩摘要请求计入该会话账本；缺省不进账本
+   * @param window 模型物理窗口（可选）：小于压缩成本预算时按物理窗口收紧触发阈值与保留目标（review：本地 16384 窗口模型溢出护栏）
+   */
+  async maybeCompress(
+    messages: Message[],
+    scope?: string,
+    window?: number,
+  ): Promise<{
     messages: Message[];
     compressed: boolean;
   }> {
-    if (this.compressor.needsCompression(messages)) {
-      const { messages: compressed, result } = await this.compressor.compress(messages);
+    if (this.compressor.needsCompression(messages, window)) {
+      const { messages: compressed, result } = await this.compressor.compress(messages, scope, window);
       if (result.compressed) {
         return { messages: compressed, compressed: true };
       }
@@ -305,7 +347,7 @@ export class ContextManager {
     writeFileSync(path, bounded, "utf-8");
   }
 
-  /** 总结会话并更新会话历史段 */
+  /** 总结会话并更新会话历史段（Sprint 44 方案 A：摘要请求不带 scope，仅进进程全局，不扰会话/轮次差分） */
   async summarizeSession(messages: Message[], taskDescription: string, sessionId: string): Promise<string> {
     const { result } = await this.compressor.compress(messages);
     if (!result.summary) return "";

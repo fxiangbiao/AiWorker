@@ -1,14 +1,19 @@
 {
+  "contextWindow": {
+    "deepseek": 1048576,
+    "openai": 131072,
+    "anthropic": 200000,
+    "google": 262144,
+    "deepseek.deepseek-v4-flash": 1048576
+  },
   "default": {
     "provider": "deepseek",
     "model": "deepseek-v4-flash",
     "baseURL": "https://api.deepseek.com",
     "apiKey": "${DEEPSEEK_API_KEY}",
     "thinking": true,
-    "adapter": "openai-compatible"
-  },
-  "pricing": {
-    "deepseek": { "prompt": 1, "completion": 2 }
+    "adapter": "openai-compatible",
+    "contextWindow": 1048576
   },
   "profiles": {
     "coding": { "temperature": 0.2 },

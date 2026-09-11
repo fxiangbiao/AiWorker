@@ -110,6 +110,30 @@ describe("14. Team Coordinator", () => {
     sessionStore.close();
   }, 10000);
 
+  it("协作工作会话（wk- 前缀）不出现在 listSessions", async () => {
+    const { sessionStore } = await makeCoordinator(true);
+    const sid = sessionStore.createSession("default").id; // 用户会话
+    sessionStore.ensureSession("wk-abc-1", "research"); // 协作步骤工作会话
+    const list = sessionStore.listSessions(50);
+    expect(list.some((s) => s.id === sid)).toBe(true);
+    expect(list.some((s) => s.id === "wk-abc-1")).toBe(false);
+    sessionStore.close();
+  });
+
+  it("execute 的步骤会话带 wk- 前缀（隔离保留但不进用户列表）", async () => {
+    const { coordinator, sessionStore } = await makeCoordinator();
+    const plan = {
+      steps: [{ id: "s1", description: "协作步骤", expertId: "default", dependsOn: [] as string[], critical: true }],
+      goal: "worker 会话测试",
+      estimatedSteps: 1,
+    };
+    const result = await coordinator.execute(plan, testDir, testDir);
+    expect(result.plan.steps.length).toBe(1);
+    // 步骤确实运行了（会话被创建），但全部带 wk- 前缀 → 用户列表为空
+    expect(sessionStore.listSessions(50).length).toBe(0);
+    sessionStore.close();
+  }, 10000);
+
   it("validateSteps 自动去除环依赖", async () => {
     const { coordinator, sessionStore } = await makeCoordinator(true);
 

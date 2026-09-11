@@ -7,7 +7,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const productOpsConfig: AgentConfig = loadAgentConfig("product-ops") ?? {
+const productOpsDefault: AgentConfig = {
   id: "product-ops",
   name: "product-ops",
   displayName: "产品运营",
@@ -52,6 +52,6 @@ const productOpsConfig: AgentConfig = loadAgentConfig("product-ops") ?? {
 
 export class ProductOpsAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(productOpsConfig, deps);
+    super(loadAgentConfig("product-ops") ?? productOpsDefault, deps);
   }
 }

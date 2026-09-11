@@ -353,4 +353,116 @@ describe("ModelRouter 门面", () => {
     router.setDefaultModel("");
     expect(router.getDisplayModel()).toBe("m1");
   });
+
+  it("getContextWindow 解析链：profile 字段 > provider.model 键 > provider 键 > 内置表 > 兜底（Sprint 44）", async () => {
+    const dir = makeTestDir("llm-router-window");
+    const cfgPath = resolve(dir, "models.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        contextWindow: {
+          deepseek: 1048576,
+          openai: 131072,
+          google: 262144,
+          "openai.custom-model": 65536,
+        },
+        default: { provider: "deepseek", model: "deepseek-v4-flash", baseURL: "https://t.local/v1", apiKey: "sk-1", temperature: 0.5, maxTokens: 4096 },
+        profiles: {
+          // 显式声明 → 最高优先级
+          coding: { provider: "openai", model: "custom-model", contextWindow: 8192 },
+          // 未显式声明 → 查 provider.model 键
+          lite: { provider: "openai", model: "custom-model", baseURL: "http://localhost:8000/v1", apiKey: "sk" },
+          // provider 默认键
+          gemma: { provider: "google", model: "gemma-4-26b-a4b", baseURL: "https://g.local/v1", apiKey: "sk" },
+          // 内置表（deepseek 内置 1048576）
+          reason: { provider: "deepseek", model: "deepseek-v4-pro", baseURL: "https://t.local/v1", apiKey: "sk" },
+          // 未知 provider/model → 兜底 32768
+          mystery: { provider: "unknown", model: "x", baseURL: "https://x.local/v1", apiKey: "sk" },
+        },
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+    );
+    const router = new ModelRouter(cfgPath);
+    // default（deepseek 内置 1M，profile 未声明）
+    expect(router.getContextWindow()).toBe(1048576);
+    // profile 显式字段最优先
+    expect(router.getContextWindow("coding")).toBe(8192);
+    // 无 profile 字段 → provider.model 精确键
+    expect(router.getContextWindow("lite")).toBe(65536);
+    // provider 默认键
+    expect(router.getContextWindow("gemma")).toBe(262144);
+    // 内置表
+    expect(router.getContextWindow("reason")).toBe(1048576);
+    // 兜底
+    expect(router.getContextWindow("mystery")).toBe(32768);
+    // getAvailableModels 输出含解析后窗口
+    const models = router.getAvailableModels();
+    const coding = models.find((m) => m.key === "coding");
+    expect(coding?.contextWindow).toBe(8192);
+  });
+
+  it("会话账本 scope：按 sessionId 累计、差分、deleteScope/reset（Sprint 44）", async () => {
+    const dir = makeTestDir("llm-router-scope");
+    const cfgPath = resolve(dir, "models.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        default: { provider: "deepseek", model: "m1", baseURL: "https://t.local/v1", apiKey: "sk-1", temperature: 0.5, maxTokens: 4096 },
+        profiles: { coding: { temperature: 0.2 } },
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+    );
+    const router = new ModelRouter(cfgPath);
+    // usage: {prompt_tokens:10, completion_tokens:5, total_tokens:15}
+    h.mockCreate = vi.fn().mockResolvedValue(okResponse);
+
+    // 带 scope 的 complete 计入会话账本
+    await router.complete({ messages: [{ role: "user", content: "hi" }], scope: "sess-a" });
+    await router.complete({ messages: [{ role: "user", content: "hi" }], scope: "sess-b" });
+    await router.complete({ messages: [{ role: "user", content: "hi" }], scope: "sess-a" });
+    // 不带 scope 只进全局
+    await router.complete({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(router.getSessionTokens("sess-a")).toEqual({ prompt: 20, completion: 10 });
+    expect(router.getSessionTokens("sess-b")).toEqual({ prompt: 10, completion: 5 });
+    expect(router.getSessionTokens("nonexistent")).toEqual({ prompt: 0, completion: 0 });
+    // 全局含全部 4 次请求（15 × 4 = 60）
+    expect(router.getTokenUsage()).toBe(60);
+
+    // deleteScope 清理单会话
+    router.deleteScope("sess-b");
+    expect(router.getSessionTokens("sess-b")).toEqual({ prompt: 0, completion: 0 });
+
+    // resetTokenUsage 清全局 + 全部账本
+    router.resetTokenUsage();
+    expect(router.getTokenUsage()).toBe(0);
+    expect(router.getSessionTokens("sess-a")).toEqual({ prompt: 0, completion: 0 });
+  });
+
+  it("流式 completeStream scope 计入会话账本（Sprint 44）", async () => {
+    const dir = makeTestDir("llm-router-scope-stream");
+    const cfgPath = resolve(dir, "models.json");
+    writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        default: { provider: "deepseek", model: "m1", baseURL: "https://t.local/v1", apiKey: "sk-1", temperature: 0.5, maxTokens: 4096 },
+        profiles: {},
+        routing: { strategy: "profile-based", fallback: "default" },
+      }),
+    );
+    const router = new ModelRouter(cfgPath);
+    h.mockCreate = vi.fn().mockImplementation(
+      async function* () {
+        yield { choices: [{ delta: { content: "a" }, finish_reason: null }] };
+        yield { choices: [{ delta: {} }], usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } };
+        yield { choices: [{ delta: {}, finish_reason: "stop" }] };
+      },
+    );
+    for await (const c of router.completeStream("default", [{ role: "user", content: "hi" }], undefined, { scope: "sess-x" })) {
+      void c;
+    }
+    expect(router.getSessionTokens("sess-x")).toEqual({ prompt: 7, completion: 3 });
+    // 流式 usage 单次回调，不膨胀
+    expect(router.getTokenUsage()).toBe(10);
+  });
 });

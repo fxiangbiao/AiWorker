@@ -1,3 +1,5 @@
+import type { ToolArtifact } from "$lib/artifacts";
+
 export interface ChatItem {
   id: string;
   title: string;
@@ -37,6 +39,8 @@ export interface UIMessage {
   _activeStep?: string;
   /** 技能模式：/技能名 激活的技能（SSE skill_activated 事件写入，助手消息顶部徽标） */
   _skills?: { name: string; description?: string }[];
+  /** 本轮用量（Sprint 44：/chat done 下发 turnUsage 写入；reload 时按 GET /sessions usages 回填单次请求值） */
+  _usage?: { prompt?: number; completion?: number; total?: number; contextPct?: number; perTurn?: boolean };
 }
 
 export interface PlanStep {
@@ -76,6 +80,7 @@ export interface TimelineItem {
   toolName?: string;
   error?: string;
   pending?: boolean;
+  artifacts?: ToolArtifact[];
 }
 
 /** ask_user 等工具的 args 展示：解析 JSON 显示问题与选项数，避免原始 JSON 刷屏 */
@@ -177,7 +182,7 @@ export function bumpChatTurn(text: string): void {
 /** 从服务器 /sessions 合并会话列表（服务器为轮数/标题事实源；本地无的补进来，按创建时间最新在前） */
 export async function syncServerSessions(): Promise<boolean> {
   try {
-    const resp = await fetch(`${API}/sessions`);
+    const resp = await fetch(`${API}/sessions?limit=1000`); // 全量比对（服务端封顶 1000），避免仅前 50 误删本地仍在的旧会话
     if (!resp.ok) return false;
     const data = await resp.json();
     const remote: ChatItem[] = (data.sessions || [])
@@ -205,6 +210,7 @@ export async function syncServerSessions(): Promise<boolean> {
     });
     const merged = [...store.chats];
     const remoteById = new Map(remote.map((r) => [r.id, r]));
+    const remoteIds = new Set(remote.map((r) => r.id));
     let hadNew = false;
     // 服务器有的会话：更新轮数（服务器为准）；本地没有的补进来
     for (let i = 0; i < merged.length; i++) {
@@ -212,6 +218,14 @@ export async function syncServerSessions(): Promise<boolean> {
       if (remoteItem) {
         merged[i] = { ...merged[i]!, turns: remoteItem.turns, workingDir: remoteItem.workingDir };
         remoteById.delete(merged[i]!.id);
+      }
+    }
+    // 本地残留、后端已不存在的会话（如协作工作会话被清理/后端删除的孤儿）→ 移除幽灵条目；
+    // 跳过当前活动会话与新建空会话（turns=0，可能尚未上报后端）
+    for (let i = merged.length - 1; i >= 0; i--) {
+      const c = merged[i]!;
+      if (!remoteIds.has(c.id) && c.id !== store.activeChatId && (c.turns ?? 0) > 0) {
+        merged.splice(i, 1);
       }
     }
     for (const r of remoteById.values()) {
@@ -240,6 +254,9 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
     const msgs: UIMessage[] = [];
     // 待归属的 tool_call_id → 所在 assistant 消息
     const pendingTools: { id: string; msg: UIMessage }[] = [];
+    // assistant 单次请求 usage（Sprint 44：与 messages 中 assistant 按出现顺序一一对应）
+    const usages = (data.usages as Array<{ promptTokens?: number; completionTokens?: number; totalTokens?: number } | null> | undefined) ?? [];
+    let assistantIdx = 0;
 
     for (const m of data.messages || []) {
       const role = m.role as string;
@@ -260,6 +277,18 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
           }));
           for (const tc of tcs) pendingTools.push({ id: tc.id, msg: um });
         }
+        // 单次请求 usage 回填（历史口径：非整轮；tool 调用中间消息也可能带 usage）
+        const u = usages[assistantIdx];
+        if (u && (u.totalTokens ?? (u.promptTokens ?? 0) + (u.completionTokens ?? 0)) > 0) {
+          um._usage = {
+            prompt: u.promptTokens ?? 0,
+            completion: u.completionTokens ?? 0,
+            total: u.totalTokens ?? ((u.promptTokens ?? 0) + (u.completionTokens ?? 0)),
+            contextPct: 0,
+            perTurn: false,
+          };
+        }
+        assistantIdx++;
         msgs.push(um);
       } else if (role === "tool") {
         const target = pendingTools.find((p) => p.id === m.tool_call_id);

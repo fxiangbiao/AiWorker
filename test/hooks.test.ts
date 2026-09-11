@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { resolve, dirname } from "node:path";
-import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
+import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync } from "node:fs";
 import { hookManager } from "../src/hooks/hook-manager.js";
 import { auditLogger } from "../src/core/audit-logger.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -262,26 +262,27 @@ describe("13. Phase 3 Hook Handlers", () => {
   it("captureDiff fs_write 修改已有文件：中间删除/修改/追加行数精确", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
-    const snapDir = resolve(testDir, "snapshots", "test-session");
 
     const run = async (oldContent: string, newContent: string) => {
+      // 每次运行使用独立会话目录：快照唯一，避免共享目录 + mtime 排序带来的顺序依赖
+      const sid = `modify-${Math.random().toString(36).slice(2, 8)}`;
       const file = resolve(testDir, `modify-${Math.random().toString(36).slice(2, 8)}.txt`);
       writeFileSync(file, oldContent, "utf-8");
       await handler(makeCtx({
         event: "onToolCallPre",
+        sessionId: sid,
         data: { toolName: "fs_write", args: JSON.stringify({ path: file, content: newContent }) },
       }));
       writeFileSync(file, newContent, "utf-8");
       await handler(makeCtx({
         event: "onToolCallPost",
+        sessionId: sid,
         data: { toolName: "fs_write", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
       }));
-      // 按 mtime 取刚写入的快照（目录共享，readdirSync 顺序不定）
-      const snapFiles = readdirSync(snapDir)
-        .filter((f) => f.endsWith(".diff"))
-        .map((f) => resolve(snapDir, f))
-        .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-      const c = readFileSync(snapFiles[0], "utf-8");
+      const snapDir = resolve(testDir, "snapshots", sid);
+      const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+      expect(snapFiles.length).toBe(1);
+      const c = readFileSync(resolve(snapDir, snapFiles[0]!), "utf-8");
       return {
         adds: (c.match(/^\+ /gm) || []).length,
         dels: (c.match(/^- /gm) || []).length,
@@ -301,26 +302,27 @@ describe("13. Phase 3 Hook Handlers", () => {
   it("captureDiff fs_edit 局部修改：精确 diff（含删除行）", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
+    const sid = `edit-${Math.random().toString(36).slice(2, 8)}`;
     const file = resolve(testDir, `edit-${Math.random().toString(36).slice(2, 8)}.txt`);
     writeFileSync(file, "a\nold1\nold2\nb\n", "utf-8");
 
     // fs_edit 删除跨行片段（oldText 匹配 old1\nold2，newText 为空）
     await handler(makeCtx({
       event: "onToolCallPre",
+      sessionId: sid,
       data: { toolName: "fs_edit", args: JSON.stringify({ path: file, oldText: "old1\nold2\n", newText: "" }) },
     }));
     writeFileSync(file, "a\nb\n", "utf-8");
     await handler(makeCtx({
       event: "onToolCallPost",
+      sessionId: sid,
       data: { toolName: "fs_edit", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
     }));
 
-    const snapDir = resolve(testDir, "snapshots", "test-session");
-    const snapFiles = readdirSync(snapDir)
-      .filter((f) => f.endsWith(".diff"))
-      .map((f) => resolve(snapDir, f))
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-    const content = readFileSync(snapFiles[0], "utf-8");
+    const snapDir = resolve(testDir, "snapshots", sid);
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]!), "utf-8");
     const dels = (content.match(/^- /gm) || []).length;
     const adds = (content.match(/^\+ /gm) || []).length;
     expect(dels).toBe(2);
@@ -600,22 +602,27 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(await p1).toBeNull();
   });
 
-  // 13f. TurnLogger token 增量
-  it("turnLogger onMessage 记录基线，onTaskComplete 结算增量", async () => {
+  // 13f. TurnLogger token 增量（Sprint 44：会话账本差分，替代全局计数器）
+  it("turnLogger onMessage 记录基线，onTaskComplete 结算增量（会话账本，并发隔离）", async () => {
     const { createTurnLogger } = await import("../src/hooks/handlers.js");
     const sessionStore = new SessionStore(resolve(testDir, "test-turnlog.db"));
+    // 模拟 ModelRouter 会话账本：按 sessionId 记账（替代原全局 getPromptTokens 差分）
+    const ledger = new Map<string, { prompt: number; completion: number }>();
     let promptTokens = 100;
     let completionTokens = 50;
     const modelRouter = {
       getPromptTokens: () => promptTokens,
       getCompletionTokens: () => completionTokens,
+      getSessionTokens: (sid: string) => ledger.get(sid) ?? { prompt: 0, completion: 0 },
     };
     const handler = createTurnLogger({ sessionStore, modelRouter } as never);
     const sess = sessionStore.createSession("test-agent");
+    ledger.set(sess.id, { prompt: promptTokens, completion: completionTokens });
 
     await handler({ event: "onMessage", agentId: "test-agent", sessionId: sess.id, data: {} } as never);
     promptTokens = 1500;
     completionTokens = 800;
+    ledger.set(sess.id, { prompt: 1500, completion: 800 });
     await handler({
       event: "onTaskComplete",
       agentId: "test-agent",
@@ -628,6 +635,20 @@ describe("13. Phase 3 Hook Handlers", () => {
     expect(turns[0].tokensPrompt).toBe(1400); // 1500 - 100
     expect(turns[0].tokensCompletion).toBe(750); // 800 - 50
     expect(turns[0].userInput).toBe("问题");
+
+    // 并发隔离：另一会话账本增长不影响本会话差分
+    const other = sessionStore.createSession("other-agent");
+    ledger.set(other.id, { prompt: 9999, completion: 9999 });
+    await handler({ event: "onMessage", agentId: "test-agent", sessionId: sess.id, data: {} } as never);
+    await handler({
+      event: "onTaskComplete",
+      agentId: "test-agent",
+      sessionId: sess.id,
+      data: { iterations: 1, toolCallsExecuted: 0, truncated: false, messages: [{ role: "user", content: "q2" }] },
+    } as never);
+    const turns2 = sessionStore.getTurnLogs(sess.id);
+    expect(turns2).toHaveLength(2);
+    expect(turns2[1].tokensPrompt).toBe(0); // 本会话账本无新增，其他会话增长不计入
     sessionStore.close();
   });
 });

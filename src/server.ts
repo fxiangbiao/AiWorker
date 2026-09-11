@@ -4,7 +4,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stdout } from "node:process";
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync, createReadStream, realpathSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
@@ -22,6 +22,7 @@ import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
 import { eventBus } from "./server/event-bus.js";
+import { mimeFromPath } from "./core/preview.js";
 import { auditLogger } from "./core/audit-logger.js";
 import { jobRunner } from "./core/job-runner.js";
 import { scheduler } from "./core/scheduler.js";
@@ -94,6 +95,8 @@ interface ServerDeps {
   }[];
   getContextBreakdown?: (systemPrompt: string, sessionId: string, userMessage: string, agentId?: string) => unknown;
   getSystemPrompt?: () => string;
+  /** 指定智能体的 systemPrompt（Sprint 44 /context?sessionId 会话化：按会话 agent 计算，非恒 default） */
+  getAgentSystemPrompt?: (agentId: string) => string | undefined;
   getMcpStatuses?: () => Record<
     string,
     { name: string; transport: string; connected: boolean; toolCount: number; state?: string; error?: string; tools?: { name: string; description: string }[] }
@@ -117,6 +120,14 @@ interface ServerDeps {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(__dirname, "..", "web", "dist");
 const oldWebDir = resolve(__dirname, "..", "web");
+
+/** 取智能体的模型偏好（Sprint 44：done.turnUsage.contextPct 按会话 agent 窗口计算） */
+function agentPref(deps: ServerDeps, agentId: string): string | undefined {
+  return deps.getAgentList().find((a) => a.id === agentId)?.modelPreference;
+}
+
+/** /chat 同会话并发护栏（Sprint 44 review：同一 sessionId 并行 run 会使账本差分与 done 末条 TurnLog 归属错乱） */
+const chatInFlight = new Set<string>();
 
 /** API 统一前缀（与静态资源托管区分，静态托管只需排除该前缀） */
 const API_PREFIX = "/api/v1";
@@ -153,6 +164,32 @@ function parseBody(req: IncomingMessage): Promise<string> {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+
+/** 工具产物文件预览上限（bytes），超大文件走下载而非内嵌预览 */
+const FILE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** /files 文件预览的审计记录（result: success|blocked） */
+function auditFilePreview(sessionId: string, path: string, mime: string, result: "success" | "blocked"): void {
+  try {
+    auditLogger.log({
+      timestamp: Date.now(),
+      agentId: "",
+      sessionId,
+      action: "file:preview",
+      target: path,
+      result,
+      detail: mime,
+    });
+  } catch {
+    /* 审计失败不阻断响应 */
+  }
+}
+
+/** Content-Disposition：ASCII 兜底 filename + RFC 5987 filename*（CJK 文件名可正确显示） */
+function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, "").replace(/["\\;/]/g, "_").trim() || "download";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown) {
@@ -212,7 +249,8 @@ function validateAgentPayload(
     return { ok: false, error: "maxIterations 需在 1-200 之间" };
   }
   const strArr = (v: unknown): string[] => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : []);
-  const mode = String((body.permissions as Record<string, unknown> | undefined)?.defaultMode ?? "ask");
+  const perm = (body.permissions ?? {}) as Record<string, unknown>;
+  const mode = String(perm.defaultMode ?? body.defaultMode ?? "ask");
   if (mode !== "ask" && mode !== "plan" && mode !== "auto") {
     return { ok: false, error: "defaultMode 非法（ask / plan / auto）" };
   }
@@ -234,8 +272,8 @@ function validateAgentPayload(
       strictTools: body.strictTools === true,
       permissions: {
         defaultMode: mode as PermissionMode,
-        allowedTools: strArr(body.allowedTools),
-        deniedTools: strArr(body.deniedTools),
+        allowedTools: strArr(perm.allowedTools ?? body.allowedTools),
+        deniedTools: strArr(perm.deniedTools ?? body.deniedTools),
       },
     },
   };
@@ -635,20 +673,6 @@ export function startServer(deps: ServerDeps, port: number) {
         return;
       }
       const rest = decodeURIComponent(url.slice(apiUrl("/agents/").length));
-      let body: string;
-      try {
-        body = await parseBody(req);
-      } catch {
-        sendJSON(res, 413, { error: "Body too large" });
-        return;
-      }
-      let payload: Record<string, unknown>;
-      try {
-        payload = JSON.parse(body) as Record<string, unknown>;
-      } catch {
-        sendJSON(res, 400, { error: "Invalid JSON" });
-        return;
-      }
       if (rest.endsWith("/reset")) {
         const id = rest.slice(0, -"/reset".length);
         if (!deps.isBuiltinAgent(id)) {
@@ -671,6 +695,20 @@ export function startServer(deps: ServerDeps, port: number) {
       }
       if (rest.endsWith("/config")) {
         const id = rest.slice(0, -"/config".length);
+        let body: string;
+        try {
+          body = await parseBody(req);
+        } catch {
+          sendJSON(res, 413, { error: "Body too large" });
+          return;
+        }
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(body) as Record<string, unknown>;
+        } catch {
+          sendJSON(res, 400, { error: "Invalid JSON" });
+          return;
+        }
         const v = validateAgentPayload(id, payload, deps.isBuiltinAgent(id));
         if (!v.ok) {
           sendJSON(res, 400, { error: v.error });
@@ -693,7 +731,8 @@ export function startServer(deps: ServerDeps, port: number) {
         status: "ok",
         uptime: Date.now() - startTime,
         version: getAppVersion(),
-        model: deps.modelRouter.getCurrentModel(),
+        model: deps.modelRouter.getDisplayModel(),
+        contextWindow: deps.modelRouter.getContextWindow(),
         tokenUsage: {
           total: deps.modelRouter.getTokenUsage(),
           prompt: deps.modelRouter.getPromptTokens(),
@@ -721,7 +760,11 @@ export function startServer(deps: ServerDeps, port: number) {
 
     if (url === apiUrl("/sessions") && req.method === "GET") {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
-      const sessions = deps.sessionStore.listSessions(50);
+      // ?limit= 可放宽（幽灵清理按远端全集比对，避免仅取前 50 造成误删），上限 1000
+      const u = new URL(req.url ?? "", "http://localhost");
+      const limitRaw = Number(u.searchParams.get("limit") ?? "50");
+      const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 50;
+      const sessions = deps.sessionStore.listSessions(limit);
       sendJSON(res, 200, { sessions });
       return;
     }
@@ -737,7 +780,7 @@ export function startServer(deps: ServerDeps, port: number) {
       const md = renderSessionMarkdown(title, sessionId, messages);
       res.writeHead(200, {
         "Content-Type": "text/markdown; charset=utf-8",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(title)}.md"`,
+        "Content-Disposition": attachmentDisposition(`${title}.md`),
         "Access-Control-Allow-Origin": "*",
       });
       res.end(md);
@@ -747,11 +790,26 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export") && !url.endsWith("/working-dir")) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
-      // 事件回放（含 tool_calls + tool 结果，TUI/Web 会话完整消息序列）；
+      // 会话不存在（已删除/从未建立）→ 404，与 /context、/trace 语义一致（Web loadRemoteMessages 已容错 404）
+      if (!deps.sessionStore.getSession(sessionId)) {
+        sendJSON(res, 404, { error: "Session not found" });
+        return;
+      }
+      // 事件回放（含 tool_calls + tool 结果，TUI/Web 会话完整消息序列）；单次读取事件，避免 replayEvents 内部二次全量查询；
       // 事件日志为空（Sprint 24 之前创建的旧会话）时回退投影表
-      let messages = deps.sessionStore.replayEvents(sessionId);
+      const events = deps.sessionStore.getEvents(sessionId);
+      let messages = events.length > 0 ? deps.sessionStore.replayEvents(sessionId, events) : [];
       if (messages.length === 0) messages = deps.sessionStore.getMessages(sessionId);
-      sendJSON(res, 200, { sessionId, messages });
+      // assistant 单次请求 usage 平行数组（Sprint 44：与 messages 中 assistant 按出现顺序一一对应；
+      // 旧会话/投影回退无 usage → 空数组）
+      const usages: Array<{ promptTokens: number; completionTokens: number; totalTokens: number } | null> = [];
+      for (const ev of events) {
+        if (ev.type === "assistant/message") {
+          const u = (ev.data as { usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }).usage;
+          usages.push(u ?? null);
+        }
+      }
+      sendJSON(res, 200, { sessionId, messages, usages });
       return;
     }
 
@@ -760,7 +818,10 @@ export function startServer(deps: ServerDeps, port: number) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       const ok = deps.sessionStore.deleteSession(sessionId);
-      if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
+      if (ok) {
+        deps.modelRouter.deleteScope(sessionId);
+        eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
+      }
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
       return;
     }
@@ -919,9 +980,20 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    if (url === apiUrl("/context") && req.method === "GET") {
+    if (url.startsWith(apiUrl("/context")) && req.method === "GET") {
       if (!deps.getContextBreakdown) { sendJSON(res, 500, { error: "Context breakdown not available" }); return; }
-      const breakdown = deps.getContextBreakdown(deps.getSystemPrompt?.() ?? "", "", "", "default");
+      const u = new URL(req.url ?? "", "http://localhost");
+      const sid = u.searchParams.get("sessionId") ?? "";
+      let agentId = "default";
+      let systemPrompt = deps.getSystemPrompt?.() ?? "";
+      if (sid) {
+        // 会话化：按会话 record.agentId 取对应 agent（含技能匹配与窗口）；会话不存在返回 404（直查，避免 listSessions 全表扫描与截断误判）
+        const rec = deps.sessionStore?.getSession(sid);
+        if (!rec) { sendJSON(res, 404, { error: "Session not found" }); return; }
+        agentId = rec.agentId ?? "default";
+        systemPrompt = deps.getAgentSystemPrompt?.(agentId) ?? systemPrompt;
+      }
+      const breakdown = deps.getContextBreakdown(systemPrompt, sid, "", agentId);
       sendJSON(res, 200, { breakdown });
       return;
     }
@@ -1256,7 +1328,7 @@ export function startServer(deps: ServerDeps, port: number) {
         }
         res.writeHead(200, {
           "Content-Type": type === "skill" ? "text/markdown; charset=utf-8" : "application/json",
-          "Content-Disposition": `attachment; filename="${encodeURIComponent(out.filename)}"`,
+          "Content-Disposition": attachmentDisposition(out.filename),
           "Access-Control-Allow-Origin": "*",
         });
         res.end(out.data);
@@ -1269,7 +1341,7 @@ export function startServer(deps: ServerDeps, port: number) {
       }
       res.writeHead(200, {
         "Content-Type": "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(`${out.manifest.name}-${out.manifest.version}.aw`)}"`,
+        "Content-Disposition": attachmentDisposition(`${out.manifest.name}-${out.manifest.version}.aw`),
         "Access-Control-Allow-Origin": "*",
       });
       res.end(out.data);
@@ -1506,8 +1578,8 @@ export function startServer(deps: ServerDeps, port: number) {
           onStepStart: (stepId, expertId, desc) => write({ type: "step_start", stepId, expertId, desc }),
           onStepEnd: (stepId, success) => write({ type: "step_end", stepId, success }),
           onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
-          onToolResult: (name, success, summary) =>
-            write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
+          onToolResult: (name, success, summary, _id, artifacts) =>
+            write({ type: "tool_result", name, success, summary: summary.slice(0, 500), artifacts }),
         };
 
         const result = await runWithChannels(write, () =>
@@ -1523,7 +1595,7 @@ export function startServer(deps: ServerDeps, port: number) {
           type: "done",
           content: result.text,
           failedSteps: result.failedSteps,
-          model: deps.modelRouter.getCurrentModel(),
+          model: deps.modelRouter.getDisplayModel(),
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),
@@ -1584,8 +1656,8 @@ export function startServer(deps: ServerDeps, port: number) {
         const callbacks: StreamCallbacks = {
           onToolCall: (expertId, desc) =>
             write({ type: "tool_call", name: expertId, args: desc, expertId, phase: desc }),
-          onToolResult: (name, success, summary) =>
-            write({ type: "tool_result", name, success, summary: summary.slice(0, 500) }),
+          onToolResult: (name, success, summary, _id, artifacts) =>
+            write({ type: "tool_result", name, success, summary: summary.slice(0, 500), artifacts }),
         };
 
         const result = await runWithChannels(write, () =>
@@ -1604,7 +1676,7 @@ export function startServer(deps: ServerDeps, port: number) {
           content: result.text,
           agentA,
           agentB,
-          model: deps.modelRouter.getCurrentModel(),
+          model: deps.modelRouter.getDisplayModel(),
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),
@@ -1784,6 +1856,102 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
+    // ─── 工具产物文件预览（Sprint 45+：GET /api/v1/files，二值字节 + Range 流式 + 下载） ───
+    if (req.method === "GET" && url.startsWith(apiUrl("/files"))) {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const rel = u.searchParams.get("path") ?? "";
+      const sessionIdParam = u.searchParams.get("session") ?? u.searchParams.get("sessionId") ?? "";
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const projectDir =
+        sessionIdParam && deps.sessionStore
+          ? deps.sessionStore.getWorkingDir(sessionIdParam) ?? deps.workingDir
+          : deps.workingDir;
+
+      // root=session|project（文档内图片等资源按文档根解析）；缺省为宽根：项目目录 + data 白名单子目录
+      const rootParam = u.searchParams.get("root") ?? "";
+      const roots =
+        rootParam === "session"
+          ? [resolve(dataDir, "docs")]
+          : rootParam === "project"
+            ? [resolve(projectDir)]
+            : [resolve(projectDir), resolve(dataDir, "docs"), resolve(dataDir, "spills")];
+      const abs = isAbsolute(rel) ? resolve(rel) : resolve(roots[0]!, rel);
+      let real = abs;
+      try {
+        if (existsSync(abs)) real = realpathSync(abs);
+      } catch {
+        /* 路径不存在或无法解析则维持 abs */
+      }
+      const inRoot = (target: string) =>
+        roots.some((r) => {
+          const rr = relative(r, target);
+          return !rr.startsWith("..") && !isAbsolute(rr);
+        });
+
+      if (!existsSync(real) || !statSync(real).isFile() || !inRoot(real)) {
+        auditFilePreview(sessionIdParam, rel || real, "", "blocked");
+        sendJSON(res, 404, { error: "File not found" });
+        return;
+      }
+
+      const stt = statSync(real);
+      if (stt.size > FILE_MAX_BYTES) {
+        auditFilePreview(sessionIdParam, rel || real, "toolarge", "blocked");
+        sendJSON(res, 413, { error: `文件过大（${Math.round(stt.size / 1024 / 1024)} MB），请下载查看` });
+        return;
+      }
+
+      const mime = mimeFromPath(real);
+      const range = req.headers.range;
+
+      // Range 单区间支持（视频/音频 seek）；多区间不支持 → 416；分片不重复记审计
+      if (range && /^bytes=/.test(range)) {
+        if (range.includes(",")) {
+          res.writeHead(416, { "Content-Range": `bytes */${stt.size}` });
+          res.end();
+          return;
+        }
+        const m = range.match(/bytes=(\d*)-(\d*)/);
+        let start = 0;
+        let end = stt.size - 1;
+        if (m && m[1] !== "") start = parseInt(m[1], 10);
+        if (m && m[2] !== "") end = parseInt(m[2], 10);
+        if (m && m[1] === "" && m[2] !== "") {
+          // 后缀区间：最后 N 字节
+          start = Math.max(0, stt.size - parseInt(m[2], 10));
+          end = stt.size - 1;
+        }
+        // 畸形/越界（含两端皆空的 bytes=-）一律 416，防 NaN 传入 createReadStream 崩溃
+        if (!m || !Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= stt.size) {
+          res.writeHead(416, { "Content-Range": `bytes */${stt.size}` });
+          res.end();
+          return;
+        }
+        end = Math.min(end, stt.size - 1);
+        res.writeHead(206, {
+          "Content-Type": mime,
+          "Content-Length": String(end - start + 1),
+          "Content-Range": `bytes ${start}-${end}/${stt.size}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "no-store",
+        });
+        createReadStream(real, { start, end }).pipe(res);
+        return;
+      }
+
+      const asDownload = u.searchParams.get("download") === "1";
+      auditFilePreview(sessionIdParam, real, mime, "success");
+      res.writeHead(200, {
+        "Content-Type": mime,
+        "Content-Length": String(stt.size),
+        ...(asDownload ? { "Content-Disposition": attachmentDisposition(basename(real)) } : {}),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+      });
+      createReadStream(real).pipe(res);
+      return;
+    }
+
     // ─── 进化引擎（Sprint 39/40：观察/提议/两段式确认/回滚/台账） ───
     if (deps.evolutionEngine && url.startsWith(apiUrl("/evolution"))) {
       const evo = deps.evolutionEngine;
@@ -1936,6 +2104,16 @@ export function startServer(deps: ServerDeps, port: number) {
         eventBus.broadcast({ type: "session/update", sessionId, kind: "create" });
       }
 
+      // 同会话已在生成（双 Tab/脚本并发）→ 409，避免账本差分/TurnLog 末条归属错乱
+      if (sessionId && deps.sessionStore) {
+        if (chatInFlight.has(sessionId)) {
+          sendJSON(res, 409, { error: "该会话正在生成回复，请等待完成后再发送" });
+          return;
+        }
+        chatInFlight.add(sessionId);
+      }
+      const runStartedAt = Date.now();
+
       const abort = new AbortController();
       req.on("close", () => abort.abort());
       req.on("error", () => abort.abort());
@@ -1966,13 +2144,12 @@ export function startServer(deps: ServerDeps, port: number) {
           write({ type: "skill_activated", name: skillAction.skill.name, description: skillAction.skill.description ?? "" });
         }
 
-        // 确认+提问通道：hook 内 requestConfirm / ask_user 时发 SSE 事件并挂起等待前端响应
-        await runWithChannels(write, async () => {
+        const runResult = await runWithChannels(write, async () => {
           const callbacks: StreamCallbacks = {
             onTextDelta: (text) => write({ type: "text", content: text }),
             onToolCall: (name, args, id) => write({ type: "tool_call", name, args, id }),
-            onToolResult: (name, success, summary) => {
-              write({ type: "tool_result", name, success, summary: summary.slice(0, 500) });
+            onToolResult: (name, success, summary, _id, artifacts) => {
+              write({ type: "tool_result", name, success, summary: summary.slice(0, 500), artifacts });
               if (!success && /拦截|禁止|不允许/.test(summary)) {
                 write({ type: "tool_blocked", name, message: summary.slice(0, 200) });
               }
@@ -1992,13 +2169,35 @@ export function startServer(deps: ServerDeps, port: number) {
             ...(skillAction ? { explicitSkill: { name: skillAction.skill.name, body: skillAction.skill.body ?? "" } } : {}),
           };
 
-          await agent.runStream(task, deps.workingDir, callbacks, abort.signal);
+          return agent.runStream(task, deps.workingDir, callbacks, abort.signal);
         });
+
+        // 本轮 usage：TurnLog（hooks onTaskComplete 已结算，持久权威值）；
+        // done 回传真实会话 id（匿名 http-* 会话也可被客户端定位/DELETE，账本随删清理）
+        const doneSid = sessionId ?? (runResult as { sessionId?: string } | null)?.sessionId ?? "";
+        let turnUsage: { prompt: number; completion: number; total: number; contextPct: number } | null = null;
+        if (deps.sessionStore && doneSid) {
+          const turns = deps.sessionStore.getTurnLogs(doneSid);
+          const last = turns.length > 0 ? turns[turns.length - 1] : null;
+          // 归属校验：仅采纳本轮（runStartedAt 之后）结算的 TurnLog，防并发/落库失败把上轮数字标成本轮
+          if (last && last.finishedAt >= runStartedAt) {
+            const promptOfLast = runResult?.usage?.promptTokens ?? last.tokensPrompt;
+            const win = deps.modelRouter.getContextWindow(agentPref(deps, agentId));
+            turnUsage = {
+              prompt: last.tokensPrompt,
+              completion: last.tokensCompletion,
+              total: last.tokensPrompt + last.tokensCompletion,
+              // 保留 1 位小数：1M 窗口下真实占比常 <1%，Math.round 归 0 会误导"占比缺失"
+              contextPct: win > 0 ? Math.max(0, Math.min(100, Math.round((promptOfLast / win) * 1000) / 10)) : 0,
+            };
+          }
+        }
 
         write({
           type: "done",
-          sessionId,
-          model: deps.modelRouter.getCurrentModel(),
+          sessionId: doneSid || undefined,
+          model: deps.modelRouter.getDisplayModel(),
+          turnUsage,
           tokenUsage: {
             total: deps.modelRouter.getTokenUsage(),
             prompt: deps.modelRouter.getPromptTokens(),
@@ -2008,6 +2207,9 @@ export function startServer(deps: ServerDeps, port: number) {
       } catch (err) {
         write({ type: "error", message: (err as Error).message });
       } finally {
+        if (sessionId && deps.sessionStore) {
+          chatInFlight.delete(sessionId);
+        }
         if (!res.writableEnded) {
           res.end();
         }

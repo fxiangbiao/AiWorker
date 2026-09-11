@@ -131,3 +131,142 @@ describe("18. 沙箱接入 terminal_exec", () => {
     expect(result.content).toContain("AWN-SANDBOX-OK");
   });
 });
+
+describe("19. 沙箱写入目标约束（Sprint 47）", () => {
+  const wdPath = resolve(testDir, "wr-root");
+  const outsidePath = resolve(testDir, "wr-outside.txt");
+
+  it("重定向到工作目录内放行、目录外拒绝", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    mkdirSync(wdPath, { recursive: true });
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    expect(checkCommand("echo hi > out.txt", wdPath, wdPath, policy).allowed).toBe(true);
+    const r = checkCommand(`echo hi > "${outsidePath}"`, wdPath, wdPath, policy);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("写入越界");
+  });
+
+  it("2>&1、>nul 等伪目标不算写入", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    expect(checkCommand("node x.js 2>&1", wdPath, wdPath, policy).allowed).toBe(true);
+    expect(checkCommand("chcp 65001 >nul & echo hi", wdPath, wdPath, policy).allowed).toBe(true);
+  });
+
+  it("写入类命令的目录外绝对路径被拒绝（含 PowerShell 包裹）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    const ps = `powershell -Command "Set-Content -Path ${outsidePath} -Value 1"`;
+    const r = checkCommand(ps, wdPath, wdPath, policy);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("写入越界");
+  });
+
+  it("目录内相对路径写入放行（del *.log / mkdir sub / copy a b）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    expect(checkCommand("del *.log", wdPath, wdPath, policy).allowed).toBe(true);
+    expect(checkCommand("mkdir sub", wdPath, wdPath, policy).allowed).toBe(true);
+    expect(checkCommand("copy a.txt b.txt", wdPath, wdPath, policy).allowed).toBe(true);
+  });
+
+  it("含变量/通配的不可解析写入目标 fail-closed", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    const r = checkCommand("echo x > $env:TEMP\\a.txt", wdPath, wdPath, policy);
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain("无法静态解析");
+  });
+
+  it("allowWriteDirs 配置后覆盖默认工作目录", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const extra = resolve(testDir, "wr-extra");
+    mkdirSync(extra, { recursive: true });
+    const path = writeConfig(JSON.stringify({ enabled: true, allowWriteDirs: [wdPath, extra] }));
+    const policy = loadSandboxPolicy(path);
+    expect(checkCommand(`echo hi > "${resolve(extra, "a.txt")}"`, wdPath, wdPath, policy).allowed).toBe(true);
+    expect(checkCommand(`echo hi > "${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(false);
+  });
+
+  it("沙箱关闭时不施加写入约束", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const path = writeConfig(JSON.stringify({ enabled: false }));
+    const policy = loadSandboxPolicy(path);
+    expect(checkCommand(`echo hi > "${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(true);
+  });
+
+  it("注释文本里的写入词不误判（git commit -m \"copy fix\"）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    expect(checkCommand('git commit -m "copy fix"', wdPath, wdPath, policy).allowed).toBe(true);
+  });
+
+  it("带值开关不遮蔽真实写入目标（-Encoding / -ItemType / -Value）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    const evilDir = resolve(testDir, "wr-evil");
+    for (const cmd of [
+      `Set-Content -Encoding utf8 "${outsidePath}" -Value hi`,
+      `Add-Content -Value hi -Path "${outsidePath}"`,
+      `Out-File -Encoding utf8 "${outsidePath}"`,
+      `New-Item -ItemType Directory -Path "${evilDir}"`,
+    ]) {
+      const r = checkCommand(cmd, wdPath, wdPath, policy);
+      expect(r.allowed, cmd).toBe(false);
+      expect(r.reason).toContain("写入越界");
+    }
+  });
+
+  it("写入类命令的源与目标都校验（只查首个 token 会被 copy/move 绕过）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    expect(checkCommand(`Copy-Item a.txt "${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(false);
+    expect(checkCommand(`Move-Item "${outsidePath}" a.txt`, wdPath, wdPath, policy).allowed).toBe(false);
+    expect(checkCommand("Copy-Item a.txt b.txt", wdPath, wdPath, policy).allowed).toBe(true);
+    expect(checkCommand("Set-Content -Path out.txt -Value \"see docs/notes\"", wdPath, wdPath, policy).allowed).toBe(true);
+  });
+
+  it("PowerShell 别名与常见写入程序纳入校验（目录外拒绝、目录内放行）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    const evilDir = resolve(testDir, "wr-evil");
+    const denied = [
+      `rm -rf "${outsidePath}"`,
+      `rm -rf ${evilDir}`,
+      `ri "${outsidePath}"`,
+      `ni -ItemType Directory "${evilDir}"`,
+      `sc "${outsidePath}" hi`,
+      `cp a.txt "${outsidePath}"`,
+      `mv a.txt "${outsidePath}"`,
+      `curl -o "${outsidePath}" https://example.com/a.zip`,
+      `Invoke-WebRequest -OutFile "${outsidePath}" https://example.com/a.zip`,
+      `robocopy . "${evilDir}" /E`,
+      `xcopy /E . "${evilDir}"`,
+      `tar -xf a.zip -C "${evilDir}"`,
+      `git clone https://example.com/a.git "${evilDir}"`,
+      `npm install --prefix "${evilDir}"`,
+    ];
+    for (const cmd of denied) expect(checkCommand(cmd, wdPath, wdPath, policy).allowed, cmd).toBe(false);
+
+    const allowed = [
+      "rm -rf dist",
+      "ni -ItemType Directory sub",
+      "cp a.txt b.txt",
+      "curl -o out.zip https://example.com/a.zip",
+      "robocopy . build /E",
+      "tar -xf a.zip -C sub",
+      "git clone https://example.com/a.git local-clone",
+      "npm install --prefix .",
+      "git status",
+    ];
+    for (const cmd of allowed) expect(checkCommand(cmd, wdPath, wdPath, policy).allowed, cmd).toBe(true);
+  });
+
+  it("重定向引号感知：引号内的 > 不算重定向，解释器包裹内仍拦截", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    expect(checkCommand('echo "compare > C:\\Windows\\a.txt"', wdPath, wdPath, policy).allowed).toBe(true);
+    expect(checkCommand(`cmd /c "echo x > ${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(false);
+    expect(checkCommand(`powershell -Command "Out-File -FilePath ${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(false);
+  });
+});

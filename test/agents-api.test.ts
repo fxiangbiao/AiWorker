@@ -59,7 +59,7 @@ const deps = {
 async function post(url: string, body?: unknown): Promise<{ status: number; data: { ok?: boolean; error?: string } }> {
   const r = await fetch(base + url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: r.status, data: (await r.json()) as { ok?: boolean; error?: string } };
@@ -137,19 +137,45 @@ describe("Agents API", () => {
     expect(bad3.status).toBe(400);
   });
 
-  it("内置智能体 reset 恢复默认；自定义不可 reset", async () => {
-    const ok = await post("/api/v1/agents/default/reset", {});
+  it("内置智能体 reset 恢复默认；自定义不可 reset（无 body 也应 200/400，不报 Invalid JSON）", async () => {
+    const ok = await post("/api/v1/agents/default/reset");
     expect(ok.status).toBe(200);
+    expect(ok.data.ok).toBe(true);
     expect(deleted).toContain("default");
-    const bad = await post("/api/v1/agents/my-agent/reset", {});
+    const bad = await post("/api/v1/agents/my-agent/reset");
     expect(bad.status).toBe(400);
+    expect(bad.data.error).not.toContain("Invalid JSON");
   });
 
-  it("自定义智能体可删除；内置不可删除", async () => {
-    const bad = await post("/api/v1/agents/default/delete", {});
+  it("自定义智能体可删除；内置不可删除（无 body 形态）", async () => {
+    const bad = await post("/api/v1/agents/default/delete");
     expect(bad.status).toBe(400);
-    const ok = await post("/api/v1/agents/my-agent/delete", {});
+    const ok = await post("/api/v1/agents/my-agent/delete");
     expect(ok.status).toBe(200);
+    expect(ok.data.ok).toBe(true);
     expect(deleted).toContain("my-agent");
+  });
+
+  it("POST /agents/<id>/config 保存 permissions.allowedTools/deniedTools（嵌套内层，Bug 修复）", async () => {
+    saved["perm-agent"] = undefined;
+    const { status } = await post("/api/v1/agents/perm-agent/config", {
+      displayName: "权限智能体",
+      systemPrompt: "你按白名单执行。",
+      modelPreference: "default",
+      maxIterations: 30,
+      tools: ["fs_read", "fs_write"],
+      skills: [],
+      mcpServers: [],
+      plugins: [],
+      strictTools: false,
+      permissions: { defaultMode: "ask", allowedTools: ["fs_read", "fs_write"], deniedTools: ["terminal_exec"] },
+    });
+    expect(status).toBe(200);
+    const cfg = saved["perm-agent"] as {
+      permissions?: { defaultMode?: string; allowedTools?: string[]; deniedTools?: string[] };
+    };
+    expect(cfg.permissions?.allowedTools).toEqual(["fs_read", "fs_write"]);
+    expect(cfg.permissions?.deniedTools).toEqual(["terminal_exec"]);
+    expect(cfg.permissions?.defaultMode).toBe("ask");
   });
 });

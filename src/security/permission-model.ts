@@ -3,15 +3,42 @@
  * 设计依据：调研报告——WorkBuddy 的三模式权限设计
  */
 
-import type { PermissionMode, PermissionConfig } from "../types.js";
+import type { PermissionMode, PermissionConfig, PermissionRule, PermissionRuleAction } from "../types.js";
+
+const RULE_ACTIONS: readonly string[] = ["deny", "ask", "allow"];
+
+/** 规则形状校验：action 拼写错误若被静默忽略，等于 deny 规则失效（fail-open） */
+function isUsableRule(r: unknown): r is PermissionRule {
+  if (!r || typeof r !== "object") return false;
+  const rule = r as Partial<PermissionRule>;
+  if (typeof rule.tool !== "string" || rule.tool.length === 0) return false;
+  if (typeof rule.action !== "string" || !RULE_ACTIONS.includes(rule.action)) return false;
+  return rule.match === undefined || typeof rule.match === "string";
+}
+
+function toStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+}
 
 export class PermissionModel {
   private config: PermissionConfig;
   private currentMode: PermissionMode;
+  private rules: PermissionRule[];
+  private neverAuto: string[];
+  private protectedPaths: string[];
 
   constructor(config: PermissionConfig) {
     this.config = config;
     this.currentMode = config.defaultMode;
+    const rawRules: unknown[] = Array.isArray(config.rules) ? config.rules : [];
+    this.rules = rawRules.filter(isUsableRule);
+    if (this.rules.length !== rawRules.length) {
+      console.warn(
+        `[permissions] 忽略 ${rawRules.length - this.rules.length} 条无效规则：需 tool 为非空字符串、action ∈ deny|ask|allow、match 为字符串或缺省`,
+      );
+    }
+    this.neverAuto = toStringList(config.neverAutoApprove);
+    this.protectedPaths = toStringList(config.protectedPaths).map((p) => p.replace(/\\/g, "/").toLowerCase());
   }
 
   getMode(): PermissionMode {
@@ -67,6 +94,70 @@ export class PermissionModel {
   isDirAllowed(dir: string): boolean {
     if (this.config.allowedDirs.length === 0) return true; // 未配置则全允许
     return this.config.allowedDirs.some((allowed) => dir.startsWith(allowed));
+  }
+
+  // ===== 规则引擎（Sprint 47：Tool(specifier) 级 deny → ask → allow） =====
+
+  /** glob 匹配（`*` 匹配任意长度，大小写不敏感；工具名与目标串共用） */
+  static globMatch(pattern: string, value: string): boolean {
+    if (pattern === "*") return true;
+    if (!pattern) return false;
+    const esc = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+    return new RegExp(`^${esc}$`, "i").test(value);
+  }
+
+  /** 规则求值：命中多条时按 deny > ask > allow 取最高优先级；无命中返回 null */
+  evaluateRules(toolName: string, target: string): { action: PermissionRuleAction; rule: PermissionRule } | null {
+    const hits = this.rules.filter(
+      (r) => PermissionModel.globMatch(r.tool, toolName) && (r.match === undefined || PermissionModel.globMatch(r.match, target)),
+    );
+    for (const action of ["deny", "ask", "allow"] as PermissionRuleAction[]) {
+      const rule = hits.find((r) => r.action === action);
+      if (rule) return { action, rule };
+    }
+    return null;
+  }
+
+  /** 是否属于"永不自动批准"工具（任何模式都需确认） */
+  isNeverAutoApprove(toolName: string): boolean {
+    return this.neverAuto.some((p) => PermissionModel.globMatch(p, toolName));
+  }
+
+  /**
+   * 目标串是否命中受保护路径。按**路径段**匹配（`p` 或 `p.` 前缀），避免 `.git` 误伤
+   * `.gitignore` / `.github/**`；目标串为命令文本时，先按空白/标点拆出候选片段再切段匹配。
+   * 含分隔符的规则（如 `.git/config`）退化为子串匹配，保持兼容。
+   */
+  isProtectedTarget(target: string): boolean {
+    if (!target) return false;
+    const norm = target.replace(/\\/g, "/").toLowerCase();
+    const segments = new Set<string>();
+    for (const token of [norm, ...norm.split(/[\s"',;|&()<>]+/)]) {
+      for (const seg of token.split(/[/=:]+/)) {
+        if (seg) segments.add(seg);
+      }
+    }
+    return this.protectedPaths.some((p) => {
+      if (!p) return false;
+      if (p.includes("/")) return norm.includes(p);
+      for (const seg of segments) {
+        if (seg === p || seg.startsWith(`${p}.`)) return true;
+      }
+      return false;
+    });
+  }
+
+  /** 供展示/调试：规则摘要 */
+  describeRules(): string[] {
+    return this.rules.map((r) => `${r.action.toUpperCase()} ${r.tool}${r.match ? `(${r.match})` : ""}`);
+  }
+
+  getProtectedPaths(): string[] {
+    return [...this.protectedPaths];
+  }
+
+  getNeverAutoApprove(): string[] {
+    return [...this.neverAuto];
   }
 
   getDescription(mode?: PermissionMode): string {

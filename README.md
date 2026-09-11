@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.1.0-blue)
+![version](https://img.shields.io/badge/version-1.5.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -31,9 +31,9 @@
 ## 特性
 
 - **Agent 核心**：流式输出 + 中断 + 断路器 + 防循环提醒 + token 压缩；**迭代预算管理**（每专家上限可调、剩余 ≤5 轮收敛提示、空转/失败自动终止）；7 专家路由（正则 → LLM 语义）；`/plan` DAG 协作 + `/debate` 双专家互审
-- **模型**：多 profile 路由（`config/models.json`，支持 `${ENV}`）+ DeepSeek 思考模式；`/config` 或 Web「配置」可切换模型、调整温度/max-tokens/迭代上限，并**添加新模型/Provider**
+- **模型**：多 profile 路由（`config/models.json`，支持 `${ENV}`）+ DeepSeek 思考模式；**上下文窗口可配置**（顶层 `contextWindow` 表按 provider/model 声明，TUI/Web 展示窗口与上下文占比、压缩预算独立成本护栏）；`/config` 或 Web「配置」可切换模型、调整温度/max-tokens/迭代上限，并**添加新模型/Provider**；token 用量可查（TUI `/status`、Web 状态栏/轨迹），费用请在模型平台账单核对
 - **工具与扩展**：8 内置工具（fs / terminal_exec / terminal_session / web / ask_user 等）+ MCP（stdio/HTTP、内置服务器、自动重连）+ 38 技能（SKILL.md、正则触发、自沉淀）+ **插件系统**（`setup(ctx)` 即插即用、scope 注册、fail-soft）+ scoped 工具注册
-- **安全**：Ask/Plan/Auto 三权限模式 + 审批服务（fail-closed）+ 危险操作拦截 + 路径防护 + 策略化命令沙箱（cwd 越界/黑名单/敏感环境变量剥离）+ 60s 工具超时 + Hooks 6 事件 14 handlers
+- **安全**：Ask/Plan/Auto 三权限模式 + `Tool(specifier)` 级规则（deny/ask/allow、通配、永不自动批准、受保护路径）+ 审批服务（fail-closed）+ 危险操作拦截 + 路径防护 + 策略化命令沙箱（cwd 越界/写入根约束/黑名单/敏感环境变量剥离）+ 60s 工具超时 + Hooks 6 事件 14 handlers；CI 门禁含 svelte-check
 - **记忆与上下文**：三层记忆（工作 / 情景 FTS5 / 语义 MEMORY.md）+ 会话事件溯源（replay + `/trace`）+ 超长结果 spill 落盘 + 自动标题 + 上下文压缩
 - **后台与调度**：`/bg` 后台任务（不阻塞交互，完成 WS 推送）；`/schedule` 定时任务（**支持自然语言添加**，如"每天早上8点生成早报"）
 - **资产分发**：技能/MCP/插件统一 `.aw` 包（zip+manifest，`scripts/pack-aw.mjs` 打包）及**裸格式**（SKILL.md / MCP .json / 插件目录）导入导出；`/install`、`/pkg export`、Web 三 Tab 支持
@@ -115,6 +115,46 @@ npm run dev -- [选项]
 | plan | 先列计划，确认后执行 | 是（每步需确认） |
 | auto | 自动执行，高危仍需确认 | 是 |
 
+#### 权限规则（`config/permissions.json`，1.5.0）
+
+模式之上可叠加 `Tool(specifier)` 级规则，求值顺序 **deny > ask > allow**：
+
+```json
+{
+  "rules": [
+    { "tool": "terminal_exec", "match": "*git push --force*", "action": "deny" },
+    { "tool": "fs_write", "match": "*secret*", "action": "ask" },
+    { "tool": "terminal_exec", "match": "*npm test*", "action": "allow" }
+  ],
+  "never_auto_approve": ["fs_write"],
+  "protected_paths": [".git", ".ssh", ".env", "id_rsa"]
+}
+```
+
+- `tool`：工具名 glob（`fs_*`、`mcp_*`、`*`）；`match`：对"目标串"的 glob，缺省=该工具全命中。
+  目标串语义：fs 类为解析后的绝对路径，`terminal_exec`/`terminal_session` 为命令文本，其余为参数 JSON
+  （即 `JSON.stringify(args)`，键顺序敏感，建议只对 fs/终端类写 `match`）。
+- `deny`：任何模式直接拒绝；`ask`：强制确认（auto 也确认，无确认通道则拒绝）；`allow`：仅 auto 模式免确认，
+  但**不绕过只读模式**，也**不能覆盖** `never_auto_approve` 与 `protected_paths`。
+- `never_auto_approve`：这些工具永远需要用户确认；`protected_paths`：命中即对写入类工具强制确认。
+  匹配按**路径段**（`.git` 命中 `.git/config`，不命中 `.gitignore`/`.github/**`；`.env` 命中 `.env.local`）。
+  写错 `action` 的规则会在启动时告警并被忽略，不会静默变成"没规则"。
+- plan 模式保持"全确认"语义，规则不改变它。
+
+#### 命令沙箱边界（诚实说明）
+
+`config/sandbox.json` 提供**策略级**防线（非 OS 级沙箱）：工作目录越界拒绝（fail-closed）、命令黑名单、
+敏感环境变量剥离，以及 **`allowWriteDirs` 写入根约束**——`terminal_exec` 与 `terminal_session` 的重定向
+（`>`/`>>`，非包裹命令做引号感知，引号内的 `>` 不算重定向）与写入类命令/程序（`Set-Content`/`Out-File`/
+`del`/`copy`/`mkdir`、PowerShell 别名 `rm`/`ri`/`ni`/`sc`/`cp`/`mv`、`curl -o`/`Invoke-WebRequest -OutFile`/
+`robocopy`/`xcopy`/`tar -C`/`Expand-Archive`/`git clone`/`npm install --prefix` 等）**片段内所有像路径的参数**
+（源与目标都查）必须落在可写根内；含变量/通配而无法静态解析的目标直接拒绝。
+
+**不覆盖**（如实说明，非内核级隔离）：解释器脚本体内部的写入（`python -c`、`node -e`、脚本文件）、
+未列举的第三方程序、管道下游程序的写入、`cd` 之后相对路径的真实归属（`terminal_session` 按会话工作目录判定）、
+以及命令位置之外的写入（如 `cmd /c del x` 的子命令参数）。它与 danger-detector、路径校验、工具超时、
+输出截断共同构成多层防御。
+
 ## 交互界面
 
 ### TUI 终端
@@ -147,6 +187,11 @@ npm run dev -- [选项]
 | `/help [命令]` / `/exit` | 帮助 / 退出 |
 
 快捷键：`Ctrl+C` 中断，`Tab` 补全，方向键历史/滚动；输入框支持多行（`Shift+Enter` 换行、`Enter` 提交）。
+回合块视图（1.3.0）：思考/工具/回答以区块展示——思考实时流式摘要、工具调用原位显示 ✓/✗ 与耗时，均可折叠回看。
+运行期间按 `t`/`o` 折叠最近思考/工具、`[`/`]` 切换焦点、`c`/`e` 全收/全展（字符此时无法输入、无冲突）；
+空闲（输入为空）时用 `←`/`→` 在历史回合的可折叠块间移动焦点、`Enter` 折叠/展开、`Esc` 清除高亮——不占用字母键，正常输入不受影响。
+工具产物预览（1.4.0）：工具结果以 chips 展示产物（📄 文件 / 🔗 链接 / 📝 变更），终端支持 OSC 8 时文件与链接可直接点击打开；
+Web 端点击 chip 打开预览窗口（Markdown / 代码文本 / 图片 / 视频 / 音频 / PDF / Office 文档 / diff），窗口可拖拽右下角调整大小、可全屏。
 
 ### Web UI
 
@@ -232,11 +277,11 @@ aiworker/
 | 模型路由 | `config/models.json` | profiles / baseURL / 定价 / 思考模式，支持 `${ENV}` |
 | 专家智能体 | `config/agents/*.yaml` | 覆盖 TS 默认 |
 | MCP 服务器 | `config/mcp.json` | stdio/HTTP 传输 |
-| 权限规则 | `config/permissions.json` | 工具级权限 |
+| 权限规则 | `config/permissions.json` | 权限模式 + 规则（deny/ask/allow）/永不自动批准/受保护路径 |
 | Hook 注册 | `config/hooks.json` | 14 handlers |
 | 插件 | `config/plugins/` | 每目录一个插件，默认导出 `setup(ctx)`（见下） |
 | 定时任务 | `config/schedule.json` | cron 任务（`/schedule` 管理） |
-| 命令沙箱 | `config/sandbox.json` | 终端命令策略（cwd 越界/黑名单/env 清理） |
+| 命令沙箱 | `config/sandbox.json` | 命令策略（cwd 越界/写入根 `allowWriteDirs`/黑名单/env 清理） |
 | 运行时覆盖 | `data/runtime-config.json` | `/config` 持久化，启动自动恢复 |
 
 ## 插件开发
@@ -270,7 +315,11 @@ npm test            # vitest run（test/ 目录按模块拆分）
 npm run build       # tsc 编译 + 类型检查
 npm run lint        # ESLint 检查
 npm run web:build   # Web UI 构建
+npm run check:web   # Web 静态检查（svelte-check）
+npm run verify      # 一条命令跑全部门禁（build + lint + test + web:build + check:web）
 ```
+
+CI（`.github/workflows/ci.yml`）在 push / PR 上跑同样的门禁：后端 job（build/lint/test）与 Web job（svelte-check/build）。
 
 测试共享 setup 在 `test/helpers.ts`：每个测试文件独立 `data-test/<name>/` 目录，避免并行 worker 冲突。
 

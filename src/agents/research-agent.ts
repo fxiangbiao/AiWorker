@@ -7,7 +7,7 @@ import { BaseAgent } from "./base-agent.js";
 import type { AgentConfig } from "../types.js";
 import { loadAgentConfig } from "../core/agent-config-loader.js";
 
-const researchConfig: AgentConfig = loadAgentConfig("research") ?? {
+const researchDefault: AgentConfig = {
   id: "research",
   name: "research",
   displayName: "研究分析师",
@@ -58,6 +58,6 @@ const researchConfig: AgentConfig = loadAgentConfig("research") ?? {
 
 export class ResearchAgent extends BaseAgent {
   constructor(deps: ConstructorParameters<typeof BaseAgent>[1]) {
-    super(researchConfig, deps);
+    super(loadAgentConfig("research") ?? researchDefault, deps);
   }
 }

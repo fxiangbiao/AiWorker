@@ -7,6 +7,7 @@
 
 import { displayWidth, truncateToWidth, charWidth } from "./markdown.js";
 import chalk from "chalk";
+import type { TurnView } from "./turn-view.js";
 
 export interface Component {
   render(width: number): string[];
@@ -42,56 +43,117 @@ function fit(line: string, width: number): string {
   return truncateToWidth(line, width);
 }
 
+/** 可作"悬挂边界"重放的行首字符（空格 + 纵向制表线 + 左块），折行后保持 gutter 对齐 */
+const GUTTER_CHARS = new Set([
+  " ",
+  "|",
+  "│",
+  "┃",
+  "┆",
+  "┇",
+  "┊",
+  "┋",
+  "║",
+  "╎",
+  "╏",
+  "▏",
+  "▎",
+  "▍",
+  "▌",
+  "▋",
+  "▊",
+  "▉",
+]);
+
+function isGutterChar(ch: string): boolean {
+  return GUTTER_CHARS.has(ch);
+}
+
 // ──────────────────────────────────────────────
-// MessageList — 消息区（滚动回看）
+// MessageList — 消息区（滚动回看；Sprint 45 条目化：静态行 + 回合块视图）
 // ──────────────────────────────────────────────
+
+/** 条目类型：静态行（命令/提问/旧消息等）或回合视图（结构化块，可折叠回看） */
+type MsgItem = { kind: "line"; text: string } | { kind: "turn"; view: TurnView };
 
 export class MessageList implements Component {
-  private lines: string[] = [];
+  private items: MsgItem[] = [];
   private scrollOffset = 0; // 0 = 底部跟随
-  private partial = false; // 最后一行是否为流式半行
+  private lastWasPartial = false; // 最后静态行是否为流式半行（turn 展开行不参与该语义）
+  /** 条目上限：超出从头部整条目裁剪（turn 条目整体保留删除，内部行预算由其自身负责） */
+  private static readonly ITEM_MAX = 3000;
 
-  /** 追加完整行。若上一行为流式半行且新行非空，替换之（流式提交语义）；空行总是追加 */
-  append(line: string): void {
-    if (line === "") {
-      // 空行：保留当前 partial（若存在），总是追加
-      this.lines.push(line);
-      this.partial = false;
-    } else if (this.partial && this.lines.length > 0) {
-      this.lines[this.lines.length - 1] = line;
-      this.partial = false;
-    } else {
-      this.lines.push(line);
-      this.partial = false;
+  /** 全部逻辑行（turn 按其当前展开态产出成品行） */
+  private logicalLines(): string[] {
+    const out: string[] = [];
+    for (const it of this.items) {
+      if (it.kind === "line") {
+        out.push(it.text);
+      } else {
+        out.push(...it.view.renderRows());
+      }
     }
-    if (this.lines.length > 5000) this.lines.splice(0, this.lines.length - 5000);
+    return out;
+  }
+
+  private trim(): void {
+    if (this.items.length > MessageList.ITEM_MAX) {
+      this.items.splice(0, this.items.length - MessageList.ITEM_MAX);
+    }
+  }
+
+  /** 追加完整行。若上一静态行为流式半行且新行非空，替换之（流式提交语义）；空行总是追加 */
+  append(line: string): void {
+    const last = this.items[this.items.length - 1];
+    if (line === "") {
+      this.items.push({ kind: "line", text: line });
+      this.lastWasPartial = false;
+    } else if (this.lastWasPartial && last && last.kind === "line") {
+      this.items[this.items.length - 1] = { kind: "line", text: line };
+      this.lastWasPartial = false;
+    } else {
+      this.items.push({ kind: "line", text: line });
+      this.lastWasPartial = false;
+    }
+    this.trim();
     this.scrollOffset = 0; // 新内容自动跟随底部
   }
 
-  /** TUI 流式：设置/追加半行（无换行增量），替换上一半行或新建 */
-  setPartial(text: string): void {
-    if (this.partial && this.lines.length > 0) {
-      this.lines[this.lines.length - 1] = text;
-    } else {
-      this.lines.push(text);
-    }
-    this.partial = true;
+  /** 回合视图条目（Sprint 45：tui.startTurn 调用；条目内块更新由 TurnView 驱动） */
+  appendTurn(view: TurnView): void {
+    this.items.push({ kind: "turn", view });
+    this.trim();
     this.scrollOffset = 0;
   }
 
-  /** 追加内联文本到当前最后一行（增量）。文本含换行时拆分：首片段拼接，后续各成新行 */
+  /** 流式：设置/追加半行（无换行增量），替换上一静态半行或新建 */
+  setPartial(text: string): void {
+    const last = this.items[this.items.length - 1];
+    if (this.lastWasPartial && last && last.kind === "line") {
+      this.items[this.items.length - 1] = { kind: "line", text };
+    } else {
+      this.items.push({ kind: "line", text });
+    }
+    this.lastWasPartial = true;
+    this.trim();
+    this.scrollOffset = 0;
+  }
+
+  /** 追加内联文本到当前最后静态行（增量）。文本含换行时拆分：首片段拼接，后续各成新行 */
   appendInline(text: string): void {
     if (!text) return;
     const parts = text.split("\n");
-    if (this.lines.length === 0) {
-      this.lines.push(parts[0]!);
+    const last = this.items[this.items.length - 1];
+    if (parts.length > 0 && last && last.kind === "line") {
+      this.items[this.items.length - 1] = { kind: "line", text: `${last.text}${parts[0]}` };
     } else {
-      this.lines[this.lines.length - 1] = `${this.lines[this.lines.length - 1]!}${parts[0]!}`;
+      this.items.push({ kind: "line", text: parts[0] });
     }
     for (let i = 1; i < parts.length; i++) {
-      this.lines.push(parts[i]!);
+      this.items.push({ kind: "line", text: parts[i] });
     }
-    this.partial = true;
+    this.lastWasPartial = true;
+    this.trim();
     this.scrollOffset = 0;
   }
 
@@ -99,16 +161,54 @@ export class MessageList implements Component {
     for (const l of lines) this.append(l);
   }
 
-  /** 替换指定逻辑行（ask 选项勾选标记等动态更新用）；越界忽略 */
+  /**
+   * 替换第 index 个静态行条目（legacy：ask 兜底路径用；turn 存在时不使用——
+   * 运行期静态行由 tui 收口重定向进 turn，见 tui.appendToViewport）。越界忽略。
+   */
   setLine(index: number, text: string): void {
-    if (index < 0 || index >= this.lines.length) return;
-    this.lines[index] = text;
+    let lineIdx = 0;
+    for (let i = 0; i < this.items.length; i++) {
+      const it = this.items[i]!;
+      if (it.kind !== "line") continue;
+      if (lineIdx === index) {
+        this.items[i] = { kind: "line", text };
+        return;
+      }
+      lineIdx++;
+    }
   }
 
-  /**
-   * 滚动：delta > 0 向上看历史，< 0 向下；到底部后 offset=0 跟随。
-   * offset 语义：从视觉行末尾回退 N 行。viewport 用于滚动步长估算。
-   */
+  /** legacy 静态行条目总数（ask 兜底 startIdx 用；turn 展开行不计） */
+  getTotalLines(): number {
+    let n = 0;
+    for (const it of this.items) {
+      if (it.kind === "line") n++;
+    }
+    return n;
+  }
+
+  /** 全局可折叠块清单（正序=时间序；含全部回合的 thinking/tool，供浏览模式焦点环） */
+  foldableBlocks(): Array<{ view: TurnView; kind: "thinking" | "tool"; id: number }> {
+    const out: Array<{ view: TurnView; kind: "thinking" | "tool"; id: number }> = [];
+    for (const it of this.items) {
+      if (it.kind !== "turn") continue;
+      for (const t of it.view.foldTargets()) {
+        out.push({ view: it.view, kind: t.kind, id: t.id });
+      }
+    }
+    return out;
+  }
+
+  /** 最近一个回合视图（浏览/快捷键目标；无则 null） */
+  lastTurnView(): TurnView | null {
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      const it = this.items[i]!;
+      if (it.kind === "turn") return it.view;
+    }
+    return null;
+  }
+
+  /** 滚动：delta > 0 向上看历史，< 0 向下；到底部后 offset=0 跟随 */
   scroll(delta: number, _viewport?: number): void {
     const base = this.scrollOffset === 0 ? delta : this.scrollOffset + delta;
     this.scrollOffset = Math.max(0, base);
@@ -118,17 +218,13 @@ export class MessageList implements Component {
     this.scrollOffset = 0;
   }
 
-  getTotalLines(): number {
-    return this.lines.length;
-  }
-
   getScrollOffset(): number {
     return this.scrollOffset;
   }
 
   /** 全部逻辑行 wrap 成视觉行（宽度相关，缓存按 cols） */
   private visualLines(width: number): string[] {
-    return this.wrapLines(width, this.lines);
+    return this.wrapLines(width, this.logicalLines());
   }
 
   /** Tui 传入消息区高度，返回应显示的行（不足补空行，不溢出） */
@@ -158,36 +254,63 @@ export class MessageList implements Component {
   }
 
   private wrapSingle(line: string, width: number, out: string[]): void {
-    if (displayWidth(line) <= width) {
+    // 提取行首样式组（SGR/OSC），wrap 切分后每段重放，防长行换行后丢色（如 dim 思考行变灰白交替）
+    let styles = "";
+    let i = 0;
+    while (i < line.length && line[i] === "\x1b") {
+      const end = escapeEnd(line, i);
+      if (end === -1) break;
+      styles += line.slice(i, end);
+      i = end;
+    }
+    // 提取行首"悬挂边界"字面量前缀（空格 + 纵向制表线/左块），折行后每段重放，
+    // 防长行丢 gutter（thinking/tool 的 │ 竖线中断、回答正文空格缩进丢失）
+    let gutter = "";
+    let k = i;
+    while (k < line.length) {
+      const ch = line[k]!;
+      if (ch === " " || isGutterChar(ch)) {
+        gutter += ch;
+        k++;
+      } else break;
+    }
+    const body = line.slice(i);
+    if (displayWidth(body) <= width) {
       out.push(line);
       return;
     }
-    // 逐字符拆分，维护原始索引（含 ANSI）
-    let i = 0;
+    let content = body.slice(k - i);
+    let budget = width - displayWidth(gutter);
+    if (budget <= 0) {
+      // 极窄终端：gutter 已超宽，退化为整体换行（gutter 不再重放）
+      gutter = "";
+      content = body;
+      budget = width;
+    }
     let w = 0;
     let chunk = "";
-    while (i < line.length) {
-      if (line[i] === "\x1b") {
-        // 完整转义序列（SGR / OSC 8 超链接）零宽整段跳过，防拆断产生未闭合序列
-        const end = escapeEnd(line, i);
+    let j = 0;
+    while (j < content.length) {
+      if (content[j] === "\x1b") {
+        const end = escapeEnd(content, j);
         if (end !== -1) {
-          chunk += line.slice(i, end);
-          i = end;
+          chunk += content.slice(j, end);
+          j = end;
           continue;
         }
       }
-      const ch = line[i]!;
+      const ch = content[j]!;
       const cw = charWidth(ch);
-      if (w + cw > width && chunk) {
-        out.push(chunk);
+      if (w + cw > budget && chunk) {
+        out.push(`${styles}${gutter}${chunk}`);
         chunk = "";
         w = 0;
       }
       chunk += ch;
       w += cw;
-      i += 1;
+      j += 1;
     }
-    if (chunk) out.push(chunk);
+    if (chunk) out.push(`${styles}${gutter}${chunk}`);
   }
 
   render(width: number): string[] {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { renderMarkdown } from "$lib/utils/markdown";
 
-  let { content = "" } = $props();
+  let { content = "", usage = null }: { content?: string; usage?: { prompt?: number; completion?: number; total?: number; contextPct?: number; perTurn?: boolean } | null } = $props();
   let copyLabel = $state("⧉ 复制");
 
   function handleCopy() {
@@ -44,6 +44,12 @@
   <div class="content" onclick={handleCodeCopy}>
     {@html renderMarkdown(content)}
   </div>
+  {#if usage && (usage.total ?? 0) > 0}
+    <div class="ab-usage" title="token 用量（估算上下文占比；实时为整轮差分，历史为单次请求）">
+      {usage.perTurn === false ? "请求" : "本轮"} ↑{usage.prompt ?? 0} ↓{usage.completion ?? 0} · {usage.total ?? 0} tok
+      {#if (usage.contextPct ?? 0) > 0}· 窗口 {usage.contextPct}%（估算）{/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -104,4 +110,12 @@
   :global(.content table) { border-collapse: collapse; width: 100%; margin: 8px 0; }
   :global(.content td), :global(.content th) { border: 1px solid var(--border); padding: 6px 10px; font-size: 12px; }
   :global(.content th) { background: var(--hover-bg); font-weight: 600; }
+  .ab-usage {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+    font-size: 11px;
+    color: var(--dim);
+    cursor: help;
+  }
 </style>

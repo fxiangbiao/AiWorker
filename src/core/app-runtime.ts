@@ -27,6 +27,8 @@ export interface AppRuntimeDeps {
   heartbeatMs?: number;
   /** 子进程可用性等待 ms；默认 5000 */
   readyTimeoutMs?: number;
+  /** 崩溃退避间隔 ms（默认 [1000, 2000, 4000]；测试可缩短） */
+  crashDelaysMs?: number[];
   /** 崩溃重启耗尽（>3 次）回调，供 appManager 置 failed */
   onCrashed?: (appId: string, crashCount: number) => void;
 }
@@ -56,6 +58,8 @@ interface AppProc {
   nextId: number;
   crashCount: number;
   stopped: boolean;
+  /** 该次退出按"崩溃"处理（心跳无响应 / 启动未就绪），区别于用户主动 stop */
+  crashPending?: boolean;
   restartTimer?: NodeJS.Timeout;
   buffer: string;
 }
@@ -163,6 +167,8 @@ export class AppRuntime {
   private runtimeDir = "";
   private procs = new Map<string, AppProc>();
   private snapshots = new Map<string, AppSnapshot>();
+  /** 崩溃计数跨重启保留（proc 每次重启都是新对象，计数放在运行时上） */
+  private crashCounts = new Map<string, number>();
   private heartbeatTimer?: NodeJS.Timeout;
 
   constructor(deps?: AppRuntimeDeps) {
@@ -183,10 +189,11 @@ export class AppRuntime {
     }
   }
 
-  /** 启动应用子进程并等待 app.ready */
-  start(app: AppInfo & { dir: string }): Promise<void> {
+  /** 启动应用子进程并等待 app.ready（opts.retry 为崩溃退避重启，不计入"用户显式启动"） */
+  start(app: AppInfo & { dir: string }, opts?: { retry?: boolean }): Promise<void> {
     const existing = this.procs.get(app.id);
     if (existing) return Promise.resolve();
+    if (!opts?.retry) this.crashCounts.delete(app.id);
 
     const entryAbs = resolve(app.dir, app.entry);
     if (!existsSync(entryAbs)) {
@@ -259,7 +266,7 @@ export class AppRuntime {
         if (!p) return reject(new AppError("ERR_INTERNAL", "应用进程已退出"));
         if (p.ready) return resolvePromise();
         if (Date.now() - started > timeoutMs) {
-          this.kill(appId);
+          this.killAsCrash(appId);
           return reject(new AppError("ERR_TIMEOUT", "应用启动超时（未收到 app.ready）"));
         }
         setTimeout(check, 50);
@@ -397,6 +404,14 @@ export class AppRuntime {
     this.kill(appId);
     this.procs.delete(appId);
     this.snapshots.delete(appId);
+    this.crashCounts.delete(appId);
+  }
+
+  /** 终止进程但按"崩溃"处理：计入退避计数并触发重启（心跳无响应 / 启动未就绪） */
+  private killAsCrash(appId: string): void {
+    const proc = this.procs.get(appId);
+    if (proc) proc.crashPending = true;
+    this.kill(appId);
   }
 
   /** 强制终止（destroy/超时/崩溃处理用） */
@@ -423,6 +438,7 @@ export class AppRuntime {
       this.kill(id);
       this.procs.delete(id);
       this.snapshots.delete(id);
+      this.crashCounts.delete(id);
     }
   }
 
@@ -431,13 +447,15 @@ export class AppRuntime {
     return !!proc && proc.ready && !proc.stopped;
   }
 
-  /** 崩溃处理：指数退避重启 ≤3 次 */
+  /** 崩溃处理：指数退避重启 ≤3 次（计数跨重启保留，用户显式 start 时重置） */
   private onExit(appId: string, _code: number | null): void {
     const proc = this.procs.get(appId);
     if (!proc) return;
     this.procs.delete(appId);
-    if (proc.stopped) return;
-    proc.crashCount++;
+    if (proc.stopped && !proc.crashPending) return;
+    const crashCount = (this.crashCounts.get(appId) ?? 0) + 1;
+    this.crashCounts.set(appId, crashCount);
+    proc.crashCount = crashCount;
     auditLogger.log({
       timestamp: Date.now(),
       agentId: appId,
@@ -445,22 +463,24 @@ export class AppRuntime {
       action: "app:crash",
       target: appId,
       result: "error",
-      detail: `crashCount=${proc.crashCount}`,
+      detail: `crashCount=${crashCount}`,
     });
-    eventBus.broadcast({ type: "app/crashed", appId, crashCount: proc.crashCount });
+    eventBus.broadcast({ type: "app/crashed", appId, crashCount });
     const snap = this.snapshots.get(appId);
     if (!snap) return;
-    if (proc.crashCount > 3) {
-      this.deps?.onCrashed?.(appId, proc.crashCount);
+    if (crashCount > CRASH_DELAYS.length) {
+      this.deps?.onCrashed?.(appId, crashCount);
+      this.crashCounts.delete(appId);
       this.snapshots.delete(appId);
       return;
     }
-    const delay = CRASH_DELAYS[Math.min(proc.crashCount, CRASH_DELAYS.length) - 1] ?? CRASH_DELAYS[CRASH_DELAYS.length - 1];
+    const delays = this.deps.crashDelaysMs?.length ? this.deps.crashDelaysMs : CRASH_DELAYS;
+    const delay = delays[Math.min(crashCount, delays.length) - 1] ?? delays[delays.length - 1];
     proc.restartTimer = setTimeout(() => {
       if (this.procs.has(appId)) return;
       const snapNow = this.snapshots.get(appId);
       if (!snapNow) return;
-      this.start(snapNow).catch(() => {
+      this.start(snapNow, { retry: true }).catch(() => {
         /* 重启失败：appManager 置 failed 或下次心跳兜底 */
       });
     }, delay);
@@ -473,7 +493,7 @@ export class AppRuntime {
       const id = proc.nextId++;
       const timer = setTimeout(() => {
         proc.pending.delete(id);
-        this.kill(appId);
+        this.killAsCrash(appId);
       }, 5000);
       proc.pending.set(id, {
         resolve: () => clearTimeout(timer),

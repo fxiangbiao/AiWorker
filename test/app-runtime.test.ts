@@ -6,7 +6,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { AppRuntime, AppError } from "../src/core/app-runtime.js";
-import { makeTestDir } from "./helpers.js";
+import { makeTestDir, teardownEnv } from "./helpers.js";
+import { initAuditLog } from "../src/core/audit-logger.js";
 import type { AppInfo } from "../src/types.js";
 
 const testDir = makeTestDir("app-runtime");
@@ -46,11 +47,15 @@ export default {
 };
 `,
   );
-  runtime = new AppRuntime({ dataDir: testDir, heartbeatMs: 0, readyTimeoutMs: 5000 });
+  // readyTimeoutMs 放宽到 15s：CI（2 vCPU、多 worker 并发起子进程）下重启的子进程可能远慢于本地
+  runtime = new AppRuntime({ dataDir: testDir, heartbeatMs: 0, readyTimeoutMs: 15000 });
+  // 审计日志落到本测试目录：崩溃路径会写 app:crash，不能依赖 cwd 下存在 data/
+  initAuditLog(testDir);
 });
 
 afterAll(() => {
   runtime.stopAll();
+  teardownEnv();
 });
 
 describe("app-runtime 子进程能力桥", () => {
@@ -106,8 +111,8 @@ describe("app-runtime 子进程能力桥", () => {
     while (runtime["procs"].get("hello-tool") && Date.now() < exitDeadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    // 等待退避重启（首次 1s + 启动耗时）
-    const deadline = Date.now() + 12000;
+    // 等待退避重启（首次 1s + 启动耗时；CI 负载高，留足余量）
+    const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
       if (runtime.isRunning("hello-tool")) break;
       await new Promise((r) => setTimeout(r, 100));
@@ -117,5 +122,30 @@ describe("app-runtime 子进程能力桥", () => {
     const r = await runtime.callTool("hello-tool", "hello_tool", { name: "again" });
     expect(r.success).toBe(true);
     await runtime.stop("hello-tool");
+  }, 40000);
+
+  it("启动始终未就绪：按崩溃计入退避，≤3 次重启后 onCrashed（不再静默丢弃/无限重启）", async () => {
+    const badDir = resolve(testDir, "never-ready");
+    mkdirSync(badDir, { recursive: true });
+    // 顶层 await 永不 resolve：bootstrap 不会发出 app.ready
+    writeFileSync(resolve(badDir, "index.mjs"), "await new Promise(() => {});\n", "utf-8");
+    const crashed: number[] = [];
+    const rt = new AppRuntime({
+      dataDir: testDir,
+      heartbeatMs: 0,
+      readyTimeoutMs: 300,
+      crashDelaysMs: [30, 30, 30],
+      onCrashed: (_id, n) => crashed.push(n),
+    });
+    try {
+      await expect(rt.start({ ...app, id: "never-ready", dir: badDir })).rejects.toMatchObject({ code: "ERR_TIMEOUT" });
+      const deadline = Date.now() + 8000;
+      while (crashed.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      // 首次 + 3 次退避重启 = 4 次崩溃后放弃
+      expect(crashed).toEqual([4]);
+      expect(rt.isRunning("never-ready")).toBe(false);
+    } finally {
+      rt.stopAll();
+    }
   }, 20000);
 });

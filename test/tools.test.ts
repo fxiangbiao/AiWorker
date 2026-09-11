@@ -148,12 +148,20 @@ describe("7. 工具执行", () => {
     expect(result.content).toContain("AiWorker-Test");
   });
 
-  it("rm -rf / 在 ask 模式被拦截", async () => {
+  it("rm -rf dist 在 ask 模式被危险检测拦截", async () => {
+    const handler = toolRegistry.getHandler("terminal_exec")!;
+    const askCtx: ToolContext = { ...ctx, permissions: "ask" };
+    const result = await handler({ command: "rm -rf dist" }, askCtx);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("高危");
+  });
+
+  it("越界写入在沙箱层被提前拦截（早于危险检测，任何模式都拒绝）", async () => {
     const handler = toolRegistry.getHandler("terminal_exec")!;
     const askCtx: ToolContext = { ...ctx, permissions: "ask" };
     const result = await handler({ command: "rm -rf /" }, askCtx);
     expect(result.success).toBe(false);
-    expect(result.error).toContain("高危");
+    expect(result.error).toContain("写入越界");
   });
 
   it("rm -rf / 在 auto 模式不拦截（交由 hook 确认）", async () => {

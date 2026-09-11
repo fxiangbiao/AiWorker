@@ -5,7 +5,8 @@
 
 import Database from "better-sqlite3";
 import type { Database as DBType } from "better-sqlite3";
-import { resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent } from "../types.js";
 import { messageText } from "../types.js";
@@ -23,6 +24,14 @@ function segmentChinese(text: string): string {
 }
 
 const TITLE_MAX_CHARS = 24;
+
+/**
+ * 协作工作会话前缀（多智能体 /plan、/debate 的步骤/轮次运行会话）：
+ * 每步独立会话保证上下文隔离（assembleContext 按会话回放历史），
+ * 但这类内部工作会话不是用户发起的对话，列表（/sessions、TUI /sessions）应隐藏。
+ * 隐藏由 listSessions 的 `NOT LIKE 'wk-%'` 过滤实现。
+ */
+export const WORKER_SESSION_PREFIX = "wk-";
 
 /** 会话自动标题：首条非空行，压缩空白，超长截断 */
 export function generateSessionTitle(content: string): string {
@@ -60,7 +69,10 @@ export class SessionStore {
   private db: DBType;
 
   constructor(dbPath: string) {
-    this.db = new Database(resolve(dbPath));
+    // better-sqlite3 不创建父目录：数据目录缺失时（首次运行 / 全新检出）会直接抛错
+    const abs = resolve(dbPath);
+    mkdirSync(dirname(abs), { recursive: true });
+    this.db = new Database(abs);
     this.db.pragma("journal_mode = WAL");
     this.init();
   }
@@ -201,6 +213,14 @@ export class SessionStore {
     return next_seq;
   }
 
+  /** 会话事件数（Sprint 44：breakdown 缓存失效键，避免高频全量回放） */
+  getEventCount(sessionId: string): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM session_events WHERE session_id = ?`)
+      .get(sessionId) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
   /** 追加消息（单点入口：同时写事件日志 + messages 投影，同事务；assistant 可携带 usage 供轨迹/遥测） */
   appendMessage(
     sessionId: string,
@@ -307,11 +327,14 @@ export class SessionStore {
     }));
   }
 
-  /** 事件回放 → 消息序列（保持消息语义顺序：助手消息的 tool_calls 后紧跟对应 tool 结果） */
-  replayEvents(sessionId: string): Message[] {
-    const events = this.getEvents(sessionId);
+  /**
+   * 事件回放 → 消息序列（保持消息语义顺序：助手消息的 tool_calls 后紧跟对应 tool 结果）
+   * @param events 可选预取事件（Sprint 44 review：避免 GET /sessions/:id 对同一会话读取两遍全量事件）
+   */
+  replayEvents(sessionId: string, events?: SessionEvent[]): Message[] {
+    const evs = events ?? this.getEvents(sessionId);
     const toolResults = new Map<string, Message>();
-    for (const ev of events) {
+    for (const ev of evs) {
       if (ev.type === "tool/result") {
         const d = ev.data as { callId: string; success: boolean; content: string; error?: string };
         toolResults.set(d.callId, {
@@ -322,7 +345,7 @@ export class SessionStore {
       }
     }
     const messages: Message[] = [];
-    for (const ev of events) {
+    for (const ev of evs) {
       if (ev.type === "user/message") {
         messages.push(ev.data as unknown as Message);
       } else if (ev.type === "assistant/message") {
@@ -379,10 +402,11 @@ export class SessionStore {
                 (SELECT COUNT(*) FROM messages m3 WHERE m3.session_id = s.id AND m3.role = 'user') AS turn_count,
                 (SELECT content FROM messages m2 WHERE m2.session_id = s.id AND m2.role = 'user' ORDER BY m2.seq ASC LIMIT 1) AS first_user
          FROM sessions s
+         WHERE s.id NOT LIKE ?
          ORDER BY s.updated_at DESC
          LIMIT ?`,
       )
-      .all(limit) as Array<{
+      .all(`${WORKER_SESSION_PREFIX}%`, limit) as Array<{
       id: string;
       agent_id: string;
       created_at: number;
@@ -405,6 +429,15 @@ export class SessionStore {
       firstUserMsg: r.first_user ? r.first_user.replace(/\s+/g, " ").slice(0, 60) : null,
       workingDir: r.working_dir,
     }));
+  }
+
+  /** 单会话直查（Sprint 44 review：/context、GET /sessions/:id 避免 listSessions(1000) 全表 O(n) 扫描与截断误判 404） */
+  getSession(sessionId: string): { id: string; agentId: string; createdAt: number; updatedAt: number; summary: string | null } | null {
+    const row = this.db
+      .prepare(`SELECT id, agent_id, created_at, updated_at, summary FROM sessions WHERE id = ?`)
+      .get(sessionId) as { id: string; agent_id: string; created_at: number; updated_at: number; summary: string | null } | undefined;
+    if (!row) return null;
+    return { id: row.id, agentId: row.agent_id, createdAt: row.created_at, updatedAt: row.updated_at, summary: row.summary };
   }
 
   /** 会话项目目录（未设置返回 null → 调用方回退全局默认） */

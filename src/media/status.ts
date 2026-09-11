@@ -14,7 +14,7 @@ export interface DeviceStatus {
   asr: { enabled: boolean; engine: string; detail: string };
   tts: { engine: string; localModelReady: boolean; detail: string };
   mediaServer: { active: boolean; path?: string; clients?: number };
-  model: { current: string; vision: boolean; detail: string };
+  model: { current: string; vision: boolean; contextWindow: number; detail: string };
 }
 
 export function getDeviceStatus(dataDir: string, modelRouter?: ModelRouter): DeviceStatus {
@@ -41,6 +41,7 @@ export function getDeviceStatus(dataDir: string, modelRouter?: ModelRouter): Dev
     model: {
       current: modelRouter?.getDisplayModel?.() ?? "",
       vision,
+      contextWindow: modelRouter?.getContextWindow?.() ?? 0,
       detail: vision ? "当前模型支持图片输入（多模态）" : "当前模型不支持视觉（图片提问需 vision:true 的模型）",
     },
   };

@@ -5,11 +5,13 @@
   "scripts": {
     "dev": "vite --port 5173",
     "build": "vite build",
+    "check": "svelte-check --threshold error",
     "preview": "vite preview"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5",
     "svelte": "^5",
+    "svelte-check": "^4.7.6",
     "typescript": "^5.7",
     "vite": "^6"
   },
@@ -17,6 +19,8 @@
     "dompurify": "^3.4.13",
     "highlight.js": "^11",
     "lucide-svelte": "^1.0.0",
-    "marked": "^15"
+    "mammoth": "^1.12.2",
+    "marked": "^15",
+    "xlsx": "^0.18.5"
   }
 }

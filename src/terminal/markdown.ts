@@ -83,7 +83,7 @@ export function truncateToWidth(s: string, maxWidth: number): string {
 
 /** 终端是否支持 OSC 8 超链接 */
 let hyperlinkSupported: boolean | null = null;
-function supportsHyperlinks(): boolean {
+export function supportsHyperlinks(): boolean {
   if (hyperlinkSupported !== null) return hyperlinkSupported;
   const env = process.env.TERM_PROGRAM ?? "";
   const term = process.env.TERM ?? "";

@@ -12,6 +12,7 @@ import { Screen } from "./screen.js";
 import { Terminal, type KeyEvent } from "./term.js";
 import { MessageList, InputLine, StatusBar, type StatusData } from "./components.js";
 import { parseOptionInput } from "../tools/ask-channel.js";
+import { TurnView, type AskBlock } from "./turn-view.js";
 import chalk from "chalk";
 
 export class Tui {
@@ -44,6 +45,62 @@ export class Tui {
   private askHighlight = 0;
   private askSelected: boolean[] = [];
   private askOptionStart = -1;
+  /** 回合 ask 块引用（块模式；无回合时走旧静态行兜底） */
+  private askBlock: AskBlock | null = null;
+  /** 当前回合（Sprint 45：一次用户输入 → agent 输出的结构化视图） */
+  private currentTurn: TurnView | null = null;
+  /** 折叠键提示已展示（当前回合首个可折叠块出现时） */
+  private foldHintShown = false;
+  /** 空闲导航焦点（全局可折叠块下标；-1=无）。输入为空时 ←→ 移动、Enter 折叠、Esc 清除 */
+  private navFocus = -1;
+
+  /** Sprint 45：回合开始。用户提问行已由 enter 路径入静态历史，回合从 assistant 侧开始 */
+  startTurn(): TurnView {
+    // 防御：上次回合未定稿（异常路径遗漏）→ 先定稿
+    if (this.currentTurn) this.finishTurn("", { interrupted: true });
+    const view = new TurnView();
+    view.start();
+    this.messages.appendTurn(view);
+    this.currentTurn = view;
+    this.foldHintShown = false;
+    this.navFocus = -1;
+    this.requestRender();
+    return view;
+  }
+
+  /** Sprint 45：回合定稿（正常/中断）。结构保留供历史回看；meta 并入回合尾 */
+  finishTurn(metaText = "", opts?: { interrupted?: boolean }): void {
+    const view = this.currentTurn;
+    if (!view) return;
+    const interrupted = opts?.interrupted ?? false;
+    view.textCommit();
+    view.finish(metaText === "" && interrupted ? "（已中断）" : metaText, interrupted);
+    this.currentTurn = null;
+    this.foldHintShown = false;
+    this.navFocus = -1;
+    this.requestRender();
+  }
+
+  currentTurnView(): TurnView | null {
+    return this.currentTurn;
+  }
+
+  /** 回合首块折叠键提示（index 在首个 thinking/tool 事件时调用一次） */
+  maybeHintFoldKeys(): void {
+    const view = this.currentTurn;
+    if (!view || this.foldHintShown) return;
+    this.foldHintShown = true;
+    view.addNote(chalk.dim("  t/o 折叠思考与工具详情 · [ ] 切换焦点 · c/e 全收/全展"));
+  }
+
+  /** 写消息区统一收口（Sprint 45）：running 回合期间外部输出重定向进回合 raw 区，保屏幕底部顺序=到达序 */
+  private appendToViewport(text: string): void {
+    if (this.currentTurn?.isRunning()) {
+      this.currentTurn.addRaw(text);
+      return;
+    }
+    this.messages.append(text);
+  }
 
   init(): void {
     if (this.active) return;
@@ -105,16 +162,16 @@ export class Tui {
     return this.active;
   }
 
-  /** 外部 stdout 内容 → 消息区 */
+  /** 外部 stdout 内容 → 消息区（running 回合期间经收口进回合 raw 区） */
   private bufferStdout(text: string): void {
     if (!this.active) return;
     const lines = text.replace(/\r\n/g, "\n").split("\n");
     for (let i = 0; i < lines.length; i++) {
       const isLast = i === lines.length - 1;
       if (isLast) {
-        if (lines[i]) this.messages.append(lines[i]);
+        if (lines[i]) this.appendToViewport(lines[i]);
       } else {
-        this.messages.append(lines[i]);
+        this.appendToViewport(lines[i]);
       }
     }
     this.requestRender();
@@ -192,24 +249,31 @@ export class Tui {
   // ── 消息 ──
 
   appendMessage(line: string): void {
-    this.messages.append(line);
+    this.appendToViewport(line);
     this.requestRender();
   }
 
   appendMessages(lines: string[]): void {
-    this.messages.appendLines(lines);
-    this.requestRender();
+    for (const l of lines) this.appendMessage(l);
   }
 
-  /** 流式增量：设置半行（TUI 模式由 output.ts 调用，替换上一半行） */
+  /** 流式增量：设置半行（回合注入场景由 output 直接写 turn，此路径为未注入回退/防御） */
   setPartial(text: string): void {
-    this.messages.setPartial(text);
+    if (this.currentTurn?.isRunning()) {
+      this.currentTurn.textPartial(text);
+    } else {
+      this.messages.setPartial(text);
+    }
     this.requestRender();
   }
 
-  /** 内联追加到当前最后一行（思考流式等增量文本） */
+  /** 内联追加到当前最后一行（未注入回退；running 回合期间进回合 raw 区，防思考/文本混行） */
   appendInline(text: string): void {
-    this.messages.appendInline(text);
+    if (this.currentTurn?.isRunning()) {
+      this.currentTurn.addRaw(text);
+    } else {
+      this.messages.appendInline(text);
+    }
     this.requestRender();
   }
 
@@ -271,29 +335,36 @@ export class Tui {
    */
   ask(question: string, options: string[], timeoutMs = 30000, multiple = false): Promise<string | null> {
     // 上次提问未决：先取消
-    if (this.askPending) this.resolveAsk(null);
+    if (this.askPending) this.resolveAsk(null, "canceled");
 
-    const startIdx = this.messages.getTotalLines();
     this.askOptions = options;
     this.askMultiple = multiple;
     this.askSelected = options.map(() => false);
     this.askHighlight = 0;
-    this.askOptionStart = startIdx + 2; // 空行(0) + 问题行(1) 之后是选项行
 
-    this.messages.append("");
-    this.messages.append(`${chalk.cyan("❓")} ${question}`);
-    options.forEach((_, i) => {
-      this.messages.append(this.askOptionLine(i));
-    });
-    let hint: string;
-    if (multiple && options.length > 0) {
-      hint = "（可多选：↑/↓ 移动，Tab/空格 勾选/取消，Enter 提交；也可输入序号如 1,3）";
-    } else if (options.length > 0) {
-      hint = "（↑/↓ 选择，Enter 提交；也可输入序号或自由文本）";
+    // 回合块模式：渲染交给 turn ask 块（高亮/勾选经 askUpdate 同步）；无回合（防御）走旧静态行兜底
+    if (this.currentTurn?.isRunning()) {
+      this.askBlock = this.currentTurn.addAsk(question, options, multiple);
+      this.askOptionStart = -1;
     } else {
-      hint = "（输入回答后回车）";
+      this.askBlock = null;
+      const startIdx = this.messages.getTotalLines();
+      this.askOptionStart = startIdx + 2; // 空行(0) + 问题行(1) 之后是选项行
+      this.messages.append("");
+      this.messages.append(`${chalk.cyan("❓")} ${question}`);
+      options.forEach((_, i) => {
+        this.messages.append(this.askOptionLine(i));
+      });
+      let hint: string;
+      if (multiple && options.length > 0) {
+        hint = "（可多选：↑/↓ 移动，Tab/空格 勾选/取消，Enter 提交；也可输入序号如 1,3）";
+      } else if (options.length > 0) {
+        hint = "（↑/↓ 选择，Enter 提交；也可输入序号或自由文本）";
+      } else {
+        hint = "（输入回答后回车）";
+      }
+      this.messages.append(chalk.dim(hint));
     }
-    this.messages.append(chalk.dim(hint));
 
     this.input.setPrefix("答> ");
     this.input.setDisabled(false);
@@ -306,7 +377,7 @@ export class Tui {
 
     return new Promise<string | null>((resolve) => {
       this.askResolve = resolve;
-      this.askTimer = setTimeout(() => this.resolveAsk(null), timeoutMs);
+      this.askTimer = setTimeout(() => this.resolveAsk(null, "timeout"), timeoutMs);
     });
   }
 
@@ -324,7 +395,7 @@ export class Tui {
     return this.askMultiple && this.askSelected[i] ? chalk.green(line) : chalk.dim(line);
   }
 
-  /** 重绘选项行（勾选/高亮变化后） */
+  /** 行模式：按行号重绘选项（无回合兜底路径） */
   private renderAskOptions(): void {
     if (this.askOptionStart < 0) return;
     this.askOptions.forEach((_, i) => {
@@ -333,14 +404,28 @@ export class Tui {
     this.requestRender();
   }
 
-  /** 结算提问：复位输入态并 resolve */
-  private resolveAsk(value: string | null): void {
+  /** 重绘选项（块模式同步 turn ask 块；行模式按行号 setLine） */
+  private syncAskRender(): void {
+    if (this.askBlock && this.currentTurn) {
+      this.currentTurn.askUpdate({ highlight: this.askHighlight, selected: this.askSelected });
+    } else {
+      this.renderAskOptions();
+    }
+    this.requestRender();
+  }
+
+  /** 结算提问：复位输入态、回合 ask 块置终态并 resolve */
+  private resolveAsk(value: string | null, by: "answered" | "timeout" | "canceled" = "answered"): void {
     if (!this.askPending) return;
     this.askPending = false;
     if (this.askTimer) {
       clearTimeout(this.askTimer);
       this.askTimer = null;
     }
+    if (this.askBlock && this.currentTurn) {
+      this.currentTurn.finishAsk(value, by);
+    }
+    this.askBlock = null;
     this.input.clear();
     this.input.setDisabled(true);
     this.input.setPrefix("你> ");
@@ -365,7 +450,7 @@ export class Tui {
         // 一旦开始输入（序号列表/自由文本），空格照常插入
         if (ev.char === " " && this.askMultiple && this.askOptions.length > 0 && this.input.getValue() === "") {
           this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
-          this.renderAskOptions();
+          this.syncAskRender();
           return;
         }
         this.input.type(ev.char);
@@ -415,29 +500,142 @@ export class Tui {
       case "up":
         if (this.askOptions.length > 0) {
           this.askHighlight = Math.max(0, this.askHighlight - 1);
-          this.renderAskOptions();
+          this.syncAskRender();
         }
         return;
       case "down":
         if (this.askOptions.length > 0) {
           this.askHighlight = Math.min(this.askOptions.length - 1, this.askHighlight + 1);
-          this.renderAskOptions();
+          this.syncAskRender();
         }
         return;
       case "tab":
         if (this.askMultiple && this.askOptions.length > 0) {
           this.askSelected[this.askHighlight] = !this.askSelected[this.askHighlight];
-          this.renderAskOptions();
+          this.syncAskRender();
         }
         return;
       case "ctrlC":
       case "ctrlD":
-        this.resolveAsk(null); // 取消提问
+        this.resolveAsk(null, "canceled"); // 取消提问
         return;
       default:
         return; // altEnter 等忽略（答案保持单行）
     }
     this.requestRender();
+  }
+
+  // ── Sprint 45：回合折叠键 ──
+
+  /** 运行期折叠键（t/o/c/e/[/]）；返回是否已消费 */
+  private handleAgentFoldKey(ch: string): boolean {
+    const v = this.currentTurn;
+    if (!v) return false;
+    switch (ch) {
+      case "t":
+        v.toggleThinking();
+        break;
+      case "o":
+        v.toggleToolDetail();
+        break;
+      case "[":
+        v.moveFocus(-1);
+        break;
+      case "]":
+        v.moveFocus(1);
+        break;
+      case "c":
+        v.collapseAll();
+        break;
+      case "e":
+        v.expandAll();
+        break;
+      default:
+        return false;
+    }
+    this.requestRender();
+    return true;
+  }
+
+  /** 全局可折叠块（时间正序）焦点辅助 */
+  private foldBlocks(): Array<{ view: TurnView; kind: "thinking" | "tool"; id: number }> {
+    return this.messages.foldableBlocks();
+  }
+
+  /** 定位初始焦点：最近的 thinking（无则最近块） */
+  private navResolve(): boolean {
+    const blocks = this.foldBlocks();
+    if (blocks.length === 0) return false;
+    let idx = blocks.length - 1;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      if (blocks[i]!.kind === "thinking") {
+        idx = i;
+        break;
+      }
+    }
+    this.navApply(idx);
+    return true;
+  }
+
+  /** 应用焦点：清全部高亮 → 目标块高亮 */
+  private navApply(idx: number): void {
+    const blocks = this.foldBlocks();
+    if (blocks.length === 0) return;
+    const n = blocks.length;
+    const i = ((idx % n) + n) % n;
+    this.navFocus = i;
+    for (const b of blocks) b.view.focusId = null;
+    blocks[i]!.view.focusId = blocks[i]!.id;
+    this.requestRender();
+  }
+
+  private navClear(): void {
+    if (this.navFocus < 0) return;
+    this.navFocus = -1;
+    for (const b of this.foldBlocks()) b.view.focusId = null;
+    this.requestRender();
+  }
+
+  private navMove(dir: -1 | 1): void {
+    if (this.foldBlocks().length === 0) return;
+    if (this.navFocus < 0) {
+      this.navResolve();
+      return;
+    }
+    this.navApply(this.navFocus + dir);
+  }
+
+  /** Enter：折叠/展开焦点块（无焦点 → 最近 thinking） */
+  private navToggle(): void {
+    const blocks = this.foldBlocks();
+    if (blocks.length === 0) return;
+    if (this.navFocus < 0) {
+      this.navResolve();
+    }
+    const idx = this.navFocus < 0 ? blocks.length - 1 : this.navFocus;
+    const b = blocks[Math.min(idx, blocks.length - 1)]!;
+    b.view.toggleById(b.id);
+    this.requestRender();
+  }
+
+  /** 空闲导航键（输入为空、存在可折叠块）：←→ 焦点环、Enter 折叠/展开、Esc 清除高亮 */
+  private handleNavKey(ev: KeyEvent): void {
+    switch (ev.type) {
+      case "left":
+        this.navMove(-1);
+        return;
+      case "right":
+        this.navMove(1);
+        return;
+      case "enter":
+        this.navToggle();
+        return;
+      case "escape":
+        this.navClear();
+        return;
+      default:
+        return;
+    }
   }
 
   /** 测试/工具用：模拟注入键事件 */
@@ -464,7 +662,8 @@ export class Tui {
     }
 
     if (this.agentRunning) {
-      // 运行期间：滚轮/方向键滚动历史消息；Ctrl+C 中断
+      // 运行期间：折叠键（t/o/[/]/c/e）优先；滚轮/方向键滚动历史消息；Ctrl+C 中断
+      if (ev.type === "char" && this.handleAgentFoldKey(ev.char)) return;
       if (ev.type === "up" || ev.type === "wheelup" || ev.type === "pageup") {
         this.messages.scroll(ev.type === "pageup" ? 10 : 3, this.messageViewport());
         this.requestRender();
@@ -482,6 +681,18 @@ export class Tui {
     }
 
     if (!this.promptActive) return;
+
+    // 空闲导航（回看历史折叠）：输入为空且存在可折叠块时，←→ 焦点环、Enter 折叠/展开、Esc 清除高亮
+    // 不占用任何字母键（t/o/c/e 等照常输入，避免误识别）；方向键滚动仍走下方 switch
+    const emptyInput = this.input.getValue() === "";
+    if (emptyInput && this.foldBlocks().length > 0 && (ev.type === "left" || ev.type === "right" || ev.type === "enter" || ev.type === "escape")) {
+      this.handleNavKey(ev);
+      return;
+    }
+    // 普通输入若曾处于导航焦点态：任意字符输入前清除高亮
+    if (this.navFocus >= 0 && ev.type === "char") {
+      this.navClear();
+    }
 
     switch (ev.type) {
       case "char":

@@ -21,25 +21,44 @@ import {
 } from "./markdown.js";
 import { highlightLine } from "./highlight.js";
 import { tui } from "./tui.js";
+import type { TurnView } from "./turn-view.js";
+import type { ToolArtifact } from "../types.js";
 
-interface ToolRow {
-  id: string;
-  name: string;
-  startTime: number;
-  argsPreview: string;
-}
+/** 工具调用计时（回合注入后仍由本渲染器记录耗时，供 turn 块展示） */
+const toolStarts = new Map<string, number>();
 
 export class StreamOutputRenderer {
   private buf = "";
   private inFence = false;
   private fenceLang = "";
-  private tools = new Map<string, ToolRow>();
   private tableState: TableState = defaultTableState();
   /** 表格块缓冲：流式表格按块对齐（跨行列宽一致）后整块输出 */
   private tableBuf: string[] = [];
+  /** 当前回合句柄（Sprint 45：注入后文本/工具落回合块；null=静态/旧路径） */
+  private turn: TurnView | null = null;
 
-  /** 输出一行到消息区（TUI）或 stdout（普通） */
+  /** 注入/释放回合句柄（index 回合开始调用；注入时重置 fence/table/buf，防跨回合残留） */
+  setTurn(view: TurnView | null): void {
+    this.turn = view;
+    this.buf = "";
+    this.inFence = false;
+    this.fenceLang = "";
+    this.tableState = defaultTableState();
+    this.tableBuf = [];
+  }
+
+  /** 回合块变化后请求渲染（注入路径无 tui.appendMessage 隐式触发） */
+  private turnChanged(): void {
+    if (tui.isActive()) tui.requestRender();
+  }
+
+  /** 输出一行：注入回合 → text 块；否则消息区（TUI）或 stdout（普通） */
   private emitLineRaw(line: string): void {
+    if (this.turn) {
+      this.turn.textLine(line);
+      this.turnChanged();
+      return;
+    }
     if (tui.isActive()) {
       tui.appendMessage(line);
     } else {
@@ -60,8 +79,8 @@ export class StreamOutputRenderer {
       this.buf = this.buf.slice(nl + 1);
       this.emitLine(line);
     }
-    // TUI 流式：将残余半行实时追加，保证实时显示
-    if (tui.isActive() && this.buf) {
+    // 流式：将残余半行实时追加，保证实时显示（回合注入 → 块半行；TUI → setPartial）
+    if (this.buf) {
       this.emitPartial(this.buf);
     }
   }
@@ -128,63 +147,78 @@ export class StreamOutputRenderer {
     this.tableBuf = [];
   }
 
-  /** TUI 模式下实时追加半行（无换行） */
+  /** TUI 模式下实时追加半行（无换行）；回合注入 → text 块半行（lastPartial） */
   private emitPartial(text: string): void {
+    if (this.turn) {
+      this.turn.textPartial(text);
+      this.turnChanged();
+      return;
+    }
     if (!tui.isActive()) return;
     tui.setPartial(text);
   }
 
   /** 工具调用开始（onToolCall） */
   toolStart(name: string, args: string, id: string): void {
-    let preview = this.sanitizePreview(args, 40);
-    let marker = chalk.blue(`🔧 ${name}`);
-    let resultPreview = preview; // 结果行的预览（ask_user 不重复展示问题）
-    if (name === "ask_user") {
-      // ask_user 的 args 是 {question, options?, multiple?}：卡片展示问题本身（截断），而非原始 JSON
-      const parsed = tryParseJson(args) as { question?: unknown; options?: unknown; multiple?: unknown } | null;
-      const q = typeof parsed?.question === "string" ? parsed.question.trim() : "";
-      const optCount = Array.isArray(parsed?.options) ? parsed.options.length : 0;
-      const multi = parsed?.multiple === true;
-      preview = q ? this.sanitizePreview(q, 56) : "";
-      marker = chalk.blue(
-        `🔧 ${name}${optCount > 0 ? chalk.dim(`（${optCount} 个选项${multi ? "，可多选" : ""}）`) : ""}`,
-      );
-      resultPreview = "";
+    toolStarts.set(id, Date.now());
+    const preview = this.sanitizePreview(args, 40);
+    if (this.turn) {
+      if (name === "ask_user") {
+        // 回合注入：ask_user 走 TUI ask 块（含选项交互），不重复打印问题行
+        const q = parseAsk(args);
+        if (q.question) this.turn.addAsk(q.question, q.options, q.multiple);
+      } else {
+        this.turn.addTool(id, name, preview, args);
+      }
+      // 首个可折叠块出现时提示折叠键（每回合一次）
+      tui.maybeHintFoldKeys();
+      this.turnChanged();
+      return;
     }
-    this.tools.set(id, { id, name, startTime: Date.now(), argsPreview: resultPreview });
-    this.emitLineRaw(`  ${marker}${preview ? chalk.dim(` ${preview}`) : ""}`);
+    if (name === "ask_user") {
+      const q = parseAsk(args);
+      const qPreview = q.question ? this.sanitizePreview(q.question, 56) : "";
+      const suffix = q.options.length > 0 ? chalk.dim(`（${q.options.length} 个选项${q.multiple ? "，可多选" : ""}）`) : "";
+      this.emitLineRaw(`  ${chalk.blue(`🔧 ${name}${suffix}`)}${qPreview ? chalk.dim(` ${qPreview}`) : ""}`);
+      return;
+    }
+    this.emitLineRaw(`  ${chalk.blue(`🔧 ${name}`)}${preview ? chalk.dim(` ${preview}`) : ""}`);
   }
 
   /** 工具调用结束（onToolResult） */
-  toolResult(name: string, success: boolean, summary: string, id: string): void {
-    const row = this.tools.get(id);
-    if (!row) {
-      // 无关联 onToolCall（如外部调用）— 单行输出
-      const icon = success ? chalk.green("✓") : chalk.red("✗");
-      this.emitLineRaw(`  ${icon} ${summary.slice(0, 80)}`);
+  toolResult(name: string, success: boolean, summary: string, id: string, artifacts?: ToolArtifact[]): void {
+    const durMs = toolStarts.has(id) ? Date.now() - toolStarts.get(id)! : 0;
+    toolStarts.delete(id);
+    const summaryPreview = this.sanitizePreview(summary, 80);
+    if (this.turn) {
+      // ask_user 不在回合工具块中（已由 addAsk 块展示），无需置终态
+      if (name !== "ask_user") {
+        this.turn.toolResult(id, success, summaryPreview, summary, durMs, artifacts);
+      }
+      this.turnChanged();
       return;
     }
-
-    const durMs = Date.now() - row.startTime;
-    const durStr = durMs >= 1000 ? `${(durMs / 1000).toFixed(1)}s` : `${durMs}ms`;
     const icon = success ? chalk.green("✓") : chalk.red("✗");
-    const summaryStr = summary ? ` ${summary.slice(0, 80)}` : "";
-    const line = `${chalk.blue(`🔧 ${row.name}`)}${row.argsPreview ? chalk.dim(` ${row.argsPreview}`) : ""} ${chalk.gray(`⌁ ${durStr}`)} ${icon}${summaryStr}`;
-
+    const line = `  ${chalk.blue(`🔧 ${name}`)} ${chalk.gray(`⌁ ${fmtDurMs(durMs)}`)} ${icon}${summaryPreview ? ` ${summaryPreview}` : ""}`;
     if (tui.isActive()) {
       // TUI 全帧渲染模式下不支持回退行，直接写新行
-      this.emitLineRaw(`  ${line}`);
+      this.emitLineRaw(line);
     } else {
       // 原地更新：回退一行，清行，重写
-      stdout.write(`\r\x1b[1A\x1b[2K  ${line}\n`);
+      stdout.write(`\r\x1b[1A\x1b[2K${line}\n`);
     }
-    this.tools.delete(id);
   }
 
   /** 文件 diff 计数行（onFileDiff）——仅 TUI 激活时输出；server 模式控制台静默（Web /diffs 查看） */
   fileDiff(filePath: string, added: number, removed: number): void {
-    if (!tui.isActive()) return;
-    this.emitLineRaw(`  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`);
+    if (!tui.isActive() && !this.turn) return;
+    const line = `  ${chalk.gray("📄")} ${chalk.dim(filePath)} ${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`;
+    if (this.turn) {
+      this.turn.addNote(line);
+      this.turnChanged();
+    } else {
+      this.emitLineRaw(line);
+    }
   }
 
   /** 打印单行普通文本（保留换行语义） */
@@ -218,4 +252,18 @@ function tryParseJson(s: string): unknown {
   } catch {
     return null;
   }
+}
+
+/** 解析 ask_user args（{question, options?, multiple?}） */
+function parseAsk(args: string): { question: string; options: string[]; multiple: boolean } {
+  const p = tryParseJson(args) as { question?: unknown; options?: unknown; multiple?: unknown } | null;
+  return {
+    question: typeof p?.question === "string" ? p.question.trim() : "",
+    options: Array.isArray(p?.options) ? p.options.map(String) : [],
+    multiple: p?.multiple === true,
+  };
+}
+
+function fmtDurMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }

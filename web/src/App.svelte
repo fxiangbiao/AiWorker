@@ -22,12 +22,11 @@
     loadRemoteMessages,
     API,
   } from "./lib/stores/chat.svelte";
-  import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, workingDir } from "./lib/stores/status";
+  import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, contextWindow, workingDir, refreshStatus } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
   import { PanelRightClose, FileText, Box } from "lucide-svelte";
   import { get } from "svelte/store";
   import { theme, applyTheme } from "./lib/stores/theme.svelte";
-  import { fmtN } from "./lib/utils/format";
 
   let agents: { id: string; name: string }[] = $state([]);
   let leftHidden = $state(false);
@@ -52,18 +51,7 @@
   }
 
   function pollStatus() {
-    fetch(`${API}/status`)
-      .then((r) => r.json())
-      .then((d) => {
-        totalTokens.set(d.tokenUsage?.total || 0);
-        promptTokens.set(d.tokenUsage?.prompt || 0);
-        completionTokens.set(d.tokenUsage?.completion || 0);
-        currentModel.set(d.model || "--");
-        workingDir.set(d.workingDir || "");
-        skills.set(d.skills || []);
-        serverOnline.set(true);
-      })
-      .catch(() => serverOnline.set(false));
+    void refreshStatus();
   }
 
   function loadAgents() {
@@ -90,6 +78,8 @@
     const loaded = loadMessages(id);
     if (loaded.length === 0) {
       const remote = await loadRemoteMessages(id);
+      // 快速切换会话时丢弃过期响应，避免 A 会话消息覆盖当前 B 会话
+      if (store.activeChatId !== id) return;
       store.messages.length = 0;
       store.messages.push(...remote);
     } else {

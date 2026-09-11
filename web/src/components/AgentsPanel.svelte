@@ -81,7 +81,8 @@
         list = d.agents || [];
         // 编辑中对象跟随刷新（避免保存后显示旧数据）
         if (editing && !isNew) {
-          const cur = list.find((a) => a.id === editing.id);
+          const editingId = editing.id;
+          const cur = list.find((a) => a.id === editingId);
           if (cur) editing = cloneAgent(cur);
         }
       }
@@ -259,6 +260,7 @@
     <!-- 右：详情/编辑 -->
     <div class="ap-detail">
       {#if editing}
+        {@const ed = editing}
         <div class="ap-form">
           <div class="ap-row">
             <label class="ap-label">id</label>
@@ -311,7 +313,7 @@
             <div class="ap-chips">
               {#each meta.tools as t (t.name)}
                 <label class="ap-chip">
-                  <input type="checkbox" checked={editing.tools.includes(t.name)} onchange={() => (editing.tools = toggle(editing.tools, t.name))} />
+                  <input type="checkbox" checked={editing.tools.includes(t.name)} onchange={() => (ed.tools = toggle(ed.tools, t.name))} />
                   {t.name}
                 </label>
               {/each}
@@ -329,7 +331,7 @@
               {/if}
               {#each meta.skills as s (s.name)}
                 <label class="ap-chip" title={s.description}>
-                  <input type="checkbox" checked={editing.skills.includes(s.name)} onchange={() => (editing.skills = toggle(editing.skills, s.name))} />
+                  <input type="checkbox" checked={editing.skills.includes(s.name)} onchange={() => (ed.skills = toggle(ed.skills, s.name))} />
                   {s.name}{#if s.expert}<span class="ap-chip-expert">({s.expert})</span>{/if}
                 </label>
               {/each}
@@ -344,7 +346,7 @@
               {/if}
               {#each meta.mcp as m (m.name)}
                 <label class="ap-chip">
-                  <input type="checkbox" checked={editing.mcpServers.includes(m.name)} onchange={() => (editing.mcpServers = toggle(editing.mcpServers, m.name))} />
+                  <input type="checkbox" checked={editing.mcpServers.includes(m.name)} onchange={() => (ed.mcpServers = toggle(ed.mcpServers, m.name))} />
                   {m.name}{#if !m.connected}<span class="ap-chip-expert">(未连接)</span>{/if}
                 </label>
               {/each}
@@ -359,7 +361,7 @@
               {/if}
               {#each meta.plugins as p (p.name)}
                 <label class="ap-chip">
-                  <input type="checkbox" checked={editing.plugins.includes(p.name)} onchange={() => (editing.plugins = toggle(editing.plugins, p.name))} />
+                  <input type="checkbox" checked={editing.plugins.includes(p.name)} onchange={() => (ed.plugins = toggle(ed.plugins, p.name))} />
                   {p.name}{#if p.tools.length > 0}<span class="ap-chip-expert">({p.tools.length} 工具)</span>{/if}
                 </label>
               {/each}

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { RefreshCw } from "lucide-svelte";
-  import { API } from "$lib/stores/chat.svelte";
+  import { API, store } from "$lib/stores/chat.svelte";
+  import { refreshStatus } from "$lib/stores/status";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
   import AppsPanel from "./AppsPanel.svelte";
@@ -20,9 +21,15 @@
     conversationHistory?: number;
     currentTurn?: number;
     total?: number;
+    windowSize?: number;
+    remaining?: number;
     skillsMatched?: string[];
     skillsTotal?: number;
   } = $state({});
+  /** 上下文 Tab 状态：按当前选中会话（Sprint 44）；本地未建服务器会话时提示 */
+  let ctxError = $state("");
+  /** loadContext 请求代际：快速切换会话/离开 Tab 时丢弃过期响应，防旧 breakdown 覆盖新会话 */
+  let ctxReqSeq = 0;
 
   interface SkillCard {
     name: string;
@@ -81,7 +88,7 @@
     asr: { enabled: boolean; engine: string; detail: string };
     tts: { engine: string; localModelReady: boolean; detail: string };
     mediaServer: { active: boolean; path?: string; clients?: number };
-    model: { current: string; vision: boolean; detail: string };
+    model: { current: string; vision: boolean; contextWindow?: number; detail: string };
   }
   let deviceStatus = $state<DeviceStatus | null>(null);
   let mediaBusy = $state<"" | "asr" | "tts">("");
@@ -209,13 +216,33 @@
     return String(t);
   }
 
+  function fmtWin(n?: number): string {
+    if (!n) return "-";
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
+    return String(n);
+  }
+
+  /** 上下文按当前选中会话统计（Sprint 44）；本地新对话未建服务器会话 → 404 空态提示；代际守卫防快速切换会话时旧响应覆盖 */
   function loadContext() {
+    const seq = ++ctxReqSeq;
     loading = true;
-    fetch(`${API}/context`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => { breakdown = d.breakdown || {}; })
-      .catch(() => { breakdown = {}; })
-      .finally(() => { loading = false; });
+    ctxError = "";
+    const sid = store.activeChatId ? `?sessionId=${encodeURIComponent(store.activeChatId)}` : "";
+    fetch(`${API}/context${sid}`)
+      .then(async (r) => {
+        if (seq !== ctxReqSeq) return null;
+        if (r.status === 404) {
+          breakdown = {};
+          ctxError = "该会话尚未在服务器建立（发送首条消息后可见）";
+          return null;
+        }
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
+      .then((d) => { if (seq === ctxReqSeq && d) breakdown = d.breakdown || {}; })
+      .catch(() => { if (seq === ctxReqSeq) breakdown = {}; })
+      .finally(() => { if (seq === ctxReqSeq) loading = false; });
   }
 
   function loadSkills() {
@@ -366,12 +393,14 @@
       return false;
     }
     if (data.state) configState = data.state;
+    // 立即刷新底部状态栏（模型/窗口等），避免等 30s 轮询或下一轮 done
+    void refreshStatus();
     loadConfig();
     return true;
   }
 
-  function onModelChange() {
-    void applyConfig("model", cfgModel);
+  function onModelChange(e: Event) {
+    void applyConfig("model", (e.target as HTMLSelectElement).value);
   }
   function onTemperature() {
     void applyConfig("temperature", parseFloat(cfgTemperature));
@@ -519,30 +548,47 @@
     }
   }
 
-  function switchTab(t: "context" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace" | "audit" | "devices") {
+  function switchTab(t: SystemTab) {
     tab = t;
     detail = null;
-    if (t === "context") loadContext();
-    else if (t === "skills") loadSkills();
+    if (t === "skills") loadSkills();
     else if (t === "mcp") loadMcp();
     else if (t === "plugins") loadPlugins();
     else if (t === "schedule") loadSchedule();
     else if (t === "config") loadConfig();
     else if (t === "audit") loadAudit();
     else if (t === "devices") loadDevices();
+    // context Tab 由下方 $effect 驱动（切到 context 时 loadContext）
   }
   // WS job/done 事件 → 调度 Tab 数据实时刷新
   let unsubWs: (() => void) | null = null;
 
   onMount(() => {
-    loadContext();
     unsubWs = onWsEvent((d) => {
       if ((d as { type?: string }).type === "job/done") loadSchedule();
     });
   });
+
+  // 上下文 Tab：挂载/切到该 Tab/切换会话/消息更新时自动重算（读取不写，避免自触发）
+  $effect(() => {
+    void store.activeChatId;
+    void store.diffVersion;
+    if (tab === "context") loadContext();
+  });
 </script>
 
 <div class="sys-panel">
+  {#snippet ContextRow(label: string, tok: number | undefined, win: number | undefined)}
+    {@const pct = win && win > 0 ? Math.min(100, ((tok ?? 0) / win) * 100) : 0}
+    <div class="sp-row-ctx" title={`${fmtTok(tok)} tok（估算）`}>
+      <div class="sp-row-ctx-top">
+        <span>{label}</span>
+        <b>{fmtTok(tok)}</b>
+        <span class="sp-ctx-pct">{(tok ?? 0) > 0 ? pct.toFixed(2) + "%" : ""}</span>
+      </div>
+      <div class="sp-ctx-bar"><i class="sp-ctx-fill" style="width:{pct}%"></i></div>
+    </div>
+  {/snippet}
   <div class="sp-side">
     <button class="sp-nav" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
     <button class="sp-nav" class:active={tab === "agents"} onclick={() => switchTab("agents")}>智能体</button>
@@ -563,17 +609,23 @@
     {#if loading}
       <div class="sp-empty">加载中...</div>
     {:else if tab === "context"}
-      <div class="sp-section">
-        <div class="sp-row"><span>系统提示</span><b>{fmtTok(breakdown.systemPromptBase)}</b></div>
-        <div class="sp-row"><span>项目记忆</span><b>{fmtTok(breakdown.projectMemory)}</b></div>
-        <div class="sp-row"><span>用户画像</span><b>{fmtTok(breakdown.userProfile)}</b></div>
-        <div class="sp-row"><span>情景记忆</span><b>{fmtTok(breakdown.episodicMemory)}</b></div>
-        <div class="sp-row"><span>注入技能</span><b>{fmtTok(breakdown.injectedSkills)}</b></div>
-        <div class="sp-row"><span>会话历史</span><b>{fmtTok(breakdown.conversationHistory)}</b></div>
-        <div class="sp-row"><span>当前消息</span><b>{fmtTok(breakdown.currentTurn)}</b></div>
-        <div class="sp-row sp-total"><span>总计</span><b>{fmtTok(breakdown.total)}</b></div>
-        <div class="sp-note">技能 {breakdown.skillsMatched?.length ?? 0}/{breakdown.skillsTotal ?? 0} 匹配</div>
-      </div>
+      {#if ctxError}
+        <div class="sp-empty">{ctxError}</div>
+      {:else}
+        <div class="sp-section">
+          <div class="sp-row sp-head"><span>上下文占用（估算）</span><b>窗口 {fmtWin(breakdown.windowSize)}</b></div>
+          {@render ContextRow("系统提示", breakdown.systemPromptBase, breakdown.windowSize)}
+          {@render ContextRow("项目记忆", breakdown.projectMemory, breakdown.windowSize)}
+          {@render ContextRow("用户画像", breakdown.userProfile, breakdown.windowSize)}
+          {@render ContextRow("情景记忆", breakdown.episodicMemory, breakdown.windowSize)}
+          {@render ContextRow("注入技能", breakdown.injectedSkills, breakdown.windowSize)}
+          {@render ContextRow("会话历史", breakdown.conversationHistory, breakdown.windowSize)}
+          {@render ContextRow("当前消息", breakdown.currentTurn, breakdown.windowSize)}
+          <div class="sp-row sp-total"><span>总计</span><b>{fmtTok(breakdown.total)}</b></div>
+          <div class="sp-row"><span>剩余可用</span><b>{fmtTok(breakdown.remaining)}</b></div>
+          <div class="sp-note">技能 {breakdown.skillsMatched?.length ?? 0}/{breakdown.skillsTotal ?? 0} 匹配 · 估算基于 CJK≈1字/token、ASCII≈1/4字符，实际以 provider usage 为准</div>
+        </div>
+      {/if}
     {:else if tab === "agents"}
       <AgentsPanel />
     {:else if tab === "evolution"}
@@ -623,6 +675,9 @@
               <div class="sp-dev-head"><span class="sp-dev-dot {deviceStatus.model.vision ? "ok" : "off"}"></span>模型能力</div>
               <div class="sp-dev-detail">
                 <b>{deviceStatus.model.current}</b> · {deviceStatus.model.vision ? "🖼 支持图片输入" : "不支持视觉"}
+                {#if deviceStatus.model.contextWindow}
+                  <span class="sp-dev-badge">窗口 {deviceStatus.model.contextWindow >= 1000000 ? `${(deviceStatus.model.contextWindow / 1000000).toFixed(0)}M` : `${Math.round(deviceStatus.model.contextWindow / 1000)}k`}</span>
+                {/if}
                 <div class="sp-dev-note">{deviceStatus.model.detail}</div>
               </div>
             </div>
@@ -868,12 +923,13 @@
       {#if skillList.length === 0}
         <div class="sp-empty">暂无技能</div>
       {:else if detail}
+        {@const d = detail}
         <div class="sp-detail">
           <div class="sp-detail-back" onclick={() => (detail = null)}>&#8592; 返回技能列表</div>
           <div class="sp-detail-name">
             {detail.name} <span class="sp-detail-ver">v{detail.version}</span>
-            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportRawAsset("skill", detail.name)}>导出 .md</button>
-            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", detail.name)}>导出 .aw</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportRawAsset("skill", d.name)}>导出 .md</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", d.name)}>导出 .aw</button>
           </div>
           <div class="sp-detail-expert">{detail.expert}</div>
           {#if detail.description}
@@ -974,6 +1030,13 @@
   }
   .sp-row b { color: var(--text); font-weight: 600; }
   .sp-total b { color: var(--primary); }
+  .sp-row-ctx { padding: 3px 0; border-bottom: 1px dashed var(--border); }
+  .sp-row-ctx-top { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
+  .sp-row-ctx-top span:first-child { flex: 1; }
+  .sp-row-ctx-top b { color: var(--text); font-weight: 600; }
+  .sp-ctx-pct { color: var(--dim); font-size: 11px; width: 52px; text-align: right; }
+  .sp-ctx-bar { height: 4px; border-radius: 2px; background: var(--hover-bg); margin-top: 3px; overflow: hidden; }
+  .sp-ctx-fill { display: block; height: 100%; background: var(--primary); border-radius: 2px; }
   .sp-note { font-size: 11px; color: var(--dim); margin-top: 6px; }
   .sp-empty { font-size: 12px; color: var(--dim); padding: 12px 0; text-align: center; }
   .sp-search-bar { padding: 2px 0 8px; }

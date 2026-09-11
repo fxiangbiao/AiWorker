@@ -33,6 +33,12 @@ export type OsProcess = {
   status: string;
   startedAt?: number;
   endedAt?: number;
+  /** kind === "agent"：智能体 id */
+  agentId?: string;
+  /** kind === "app"：应用 id（gen-xxx） */
+  appId?: string;
+  /** kind === "job"：后台任务 id */
+  jobId?: string;
 } & Record<string, unknown>;
 
 export interface AppWinState {

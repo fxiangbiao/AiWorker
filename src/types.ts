@@ -42,7 +42,26 @@ export interface ToolResult {
   content: string;
   success: boolean;
   error?: string;
+  /** 结构化产物（文件/链接/diff），供 TUI 与 Web 高亮、点击预览；由工具 handler 填充，LLM 不可见 */
+  artifacts?: ToolArtifact[];
 }
+
+// ===== 工具产物（文件/链接/diff 预览元数据） =====
+
+export type ArtifactKind =
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "pdf"
+  | "office"
+  | "binary"
+  | "other";
+
+export type ToolArtifact =
+  | { type: "file"; path: string; mime: string; size: number; kind: ArtifactKind; root?: "session" | "project"; rel?: string; truncated?: boolean }
+  | { type: "link"; url: string; title?: string; site?: string; snippet?: string }
+  | { type: "diff"; path: string; patch?: string };
 
 // ===== 工具定义 =====
 
@@ -97,6 +116,8 @@ export interface ModelCompleteOptions {
   /** 思考模式覆盖（缺省用 profile；生成器传 false 省 token 防空输出） */
   thinking?: boolean;
   signal?: AbortSignal;
+  /** 会话归属（Sprint 44）：供 ModelRouter 会话账本记账；仅供路由内使用，不进 adapter 请求体 */
+  scope?: string;
 }
 
 export interface ModelResponse {
@@ -133,7 +154,7 @@ export interface StreamCallbacks {
   onThinkingStart?: () => void;
   onIterationStart?: (iteration: number) => void;
   onToolCall?: (name: string, args: string, id: string) => void;
-  onToolResult?: (name: string, success: boolean, summary: string, id?: string) => void;
+  onToolResult?: (name: string, success: boolean, summary: string, id?: string, artifacts?: ToolArtifact[]) => void;
   onStepStart?: (stepId: string, expertId: string, desc: string) => void;
   onStepEnd?: (stepId: string, success: boolean) => void;
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
@@ -142,6 +163,21 @@ export interface StreamCallbacks {
 // ===== 智能体 =====
 
 export type PermissionMode = "ask" | "plan" | "auto";
+
+/** 权限规则动作：deny 直接拒绝 > ask 强制确认 > allow 免确认（allow 不绕过只读模式） */
+export type PermissionRuleAction = "deny" | "ask" | "allow";
+
+/**
+ * 权限规则（Tool(specifier) 级）
+ * - `tool`：工具名，支持通配（`fs_*`、`mcp_*`、`*`）
+ * - `match`：对"目标串"的 glob；fs 类工具为目标绝对路径，terminal_exec 为命令文本，其余为参数 JSON
+ * - `action`：命中后的动作（同类多条时 deny 优先于 ask 优先于 allow）
+ */
+export interface PermissionRule {
+  tool: string;
+  match?: string;
+  action: PermissionRuleAction;
+}
 
 export interface PermissionConfig {
   defaultMode: PermissionMode;
@@ -157,6 +193,12 @@ export interface PermissionConfig {
   >;
   allowedDirs: string[];
   deniedPatterns: string[];
+  /** 显式规则（deny → ask → allow 求值；留空即不启用） */
+  rules?: PermissionRule[];
+  /** 永不自动批准的工具（通配）：任何模式都必须经确认，无确认通道则拒绝 */
+  neverAutoApprove?: string[];
+  /** 受保护路径片段：命中即对写入类工具强制确认（如 .git/.ssh/.env） */
+  protectedPaths?: string[];
 }
 
 export interface AgentConfig {
@@ -263,6 +305,8 @@ export interface ContextBreakdown {
   currentTurn: number;
   total: number;
   windowSize: number;
+  /** 剩余可用 = windowSize − total（Sprint 44，展示用；可能为负表示估算超窗） */
+  remaining: number;
   skillsMatched: string[];
   skillsTotal: number;
 }
@@ -418,7 +462,7 @@ export interface SessionEventMap {
     usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
   };
   "tool/call": { callId: string; name: string; arguments: string };
-  "tool/result": { callId: string; success: boolean; content: string; error?: string; durationMs?: number };
+  "tool/result": { callId: string; success: boolean; content: string; error?: string; durationMs?: number; artifacts?: ToolArtifact[] };
   "memory/update": { kind: "episodic" | "semantic"; summary?: string };
   "title/set": { title: string };
 }
