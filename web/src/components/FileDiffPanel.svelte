@@ -165,11 +165,11 @@
   }
 
   /** 会话显示名：摘要（标题）优先，回退 sessionId 短形式 */
-  function sessionTitle(s: { id: string; summary?: string | null }): string {
+  function sessionTitle(s: DiffSession): string {
     if (s.summary && s.summary.trim()) return s.summary.trim();
-    const local = store.chats.find((c) => c.id === s.id);
+    const local = store.chats.find((c) => c.id === s.sessionId);
     if (local?.title && local.title !== "新对话") return local.title;
-    return `${s.id.slice(0, 8)}...`;
+    return `${s.sessionId.slice(0, 8)}...`;
   }
 
   function flattenTree(node: DirNode, depth: number, out: TreeRow[], collapsed: ReadonlySet<string>): void {
@@ -273,13 +273,14 @@
             <span class="dl-dirname">{row.name}</span>
           </div>
         {:else if row.file}
+          {@const file = row.file}
           <div
             class="dl-file"
             style:padding-left={`${22 + row.depth * 12}px`}
             class:active={selected?.path === row.file.path}
             title={row.path}
-            onclick={() => (selected = row.file)}
-            onkeydown={(e) => e.key === "Enter" && (selected = row.file)}
+            onclick={() => (selected = file)}
+            onkeydown={(e) => e.key === "Enter" && (selected = file)}
             role="button"
             tabindex="0"
           >

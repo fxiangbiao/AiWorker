@@ -5,11 +5,13 @@
   "scripts": {
     "dev": "vite --port 5173",
     "build": "vite build",
+    "check": "svelte-check --threshold error",
     "preview": "vite preview"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5",
     "svelte": "^5",
+    "svelte-check": "^4.7.6",
     "typescript": "^5.7",
     "vite": "^6"
   },

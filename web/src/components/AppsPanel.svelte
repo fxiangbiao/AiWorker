@@ -162,13 +162,14 @@
 {/if}
 
 {#if updateTarget}
+  {@const target = updateTarget}
   <ConfirmModal
     title={`更新应用「${updateTarget.name}」`}
     message="描述本次变更（模型将重写逻辑文件，应用数据保留）。提交后实时进度与结果将显示在对话流中。"
     mode="input"
     inputLabel="变更描述（例：加暂停按钮 / 让宠物自适应窗口）"
     confirmText="更新"
-    onConfirm={(v) => void confirmUpdate(updateTarget, v)}
+    onConfirm={(v) => void confirmUpdate(target, v)}
     onCancel={() => (updateTarget = null)}
   />
 {/if}

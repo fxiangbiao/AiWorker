@@ -63,7 +63,8 @@
     name: string;
     path: string;
     depth: number;
-    collapsed: boolean;
+    /** 仅目录行使用（文件行恒为展开态） */
+    collapsed?: boolean;
     d?: DocItem;
   }
   function buildDocTree(items: DocItem[]): DocTreeNode {

@@ -105,19 +105,22 @@
     dirEditorOpen = false;
     void loadProjectDir();
   });
-  let { onSend, inputMode, onSelectMode, onRetryLast, canRetry, onPickImage, imageCount = 0, agents = [] as { id: string; name: string }[] } = $props<{
+  /** 任务类型（对话/智能体协作/辩论/应用工坊） */
+  type InputMode = "chat" | "plan" | "debate" | "forge";
+  interface InputAreaProps {
     onSend: (msg: string) => void;
-    inputMode: "chat" | "plan" | "debate" | "forge";
-    onSelectMode: (m: "chat" | "plan" | "debate" | "forge") => void;
+    inputMode: InputMode;
+    onSelectMode: (m: InputMode) => void;
     onRetryLast?: () => void;
     canRetry?: boolean;
     /** 多模态图片：点击选择/粘贴（Sprint 36） */
     onPickImage?: () => void;
     imageCount?: number;
     agents?: { id: string; name: string }[];
-  }>();
+  }
+  let { onSend, inputMode, onSelectMode, onRetryLast, canRetry, onPickImage, imageCount = 0, agents = [] }: InputAreaProps = $props();
 
-  const placeholders = {
+  const placeholders: Record<InputMode, string> = {
     chat: "输入消息，Enter 发送...",
     plan: "描述任务，多专家协作执行（如：开发一款放置类手游）...",
     debate: "输入辩论话题，双专家分析（如：React vs Vue 技术选型）...",

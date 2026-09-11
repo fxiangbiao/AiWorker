@@ -548,7 +548,7 @@
     }
   }
 
-  function switchTab(t: "context" | "skills" | "mcp" | "plugins" | "schedule" | "config" | "trace" | "audit" | "devices") {
+  function switchTab(t: SystemTab) {
     tab = t;
     detail = null;
     if (t === "skills") loadSkills();
@@ -923,12 +923,13 @@
       {#if skillList.length === 0}
         <div class="sp-empty">暂无技能</div>
       {:else if detail}
+        {@const d = detail}
         <div class="sp-detail">
           <div class="sp-detail-back" onclick={() => (detail = null)}>&#8592; 返回技能列表</div>
           <div class="sp-detail-name">
             {detail.name} <span class="sp-detail-ver">v{detail.version}</span>
-            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportRawAsset("skill", detail.name)}>导出 .md</button>
-            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", detail.name)}>导出 .aw</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportRawAsset("skill", d.name)}>导出 .md</button>
+            <button class="sp-io-mini sp-io-mini-inline" onclick={() => exportAsset("skill", d.name)}>导出 .aw</button>
           </div>
           <div class="sp-detail-expert">{detail.expert}</div>
           {#if detail.description}

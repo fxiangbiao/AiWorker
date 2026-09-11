@@ -200,6 +200,9 @@ program
       modes?: PermissionConfig["modes"];
       allowed_dirs?: string[];
       denied_patterns?: string[];
+      rules?: PermissionConfig["rules"];
+      never_auto_approve?: string[];
+      protected_paths?: string[];
     } = {};
     try {
       const permPath = resolve(process.cwd(), "config", "permissions.json");
@@ -229,6 +232,9 @@ program
       modes,
       allowedDirs: (permConfig.allowed_dirs && permConfig.allowed_dirs.length > 0) ? permConfig.allowed_dirs : [workingDir],
       deniedPatterns: permConfig.denied_patterns ?? [],
+      rules: permConfig.rules ?? [],
+      neverAutoApprove: permConfig.never_auto_approve ?? [],
+      protectedPaths: permConfig.protected_paths ?? [],
     });
     // 审批服务：权限决策单点（hooks 内三个权限 handler 均委托于此，fail-closed）
     const approval = new ApprovalService({

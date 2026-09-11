@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.5.0 (2026-09-11)
+
+### 修复：文档预览不显示 Markdown 中的图片
+- **原因**：`marked` 渲染出的 `<img src="assets/x.svg">` 是相对路径，浏览器按 Web 页面 URL（而非文档所在目录）解析 → 404；文档面板与工具产物预览共用 `DocRenderer`，两条路径都受影响
+- **修复**：新增纯函数模块 `web/src/lib/asset-url.ts`，渲染后把**明确的本地引用**改写为 `/api/v1/files`——相对路径按文档所在目录归一化（`./`、`../`、反斜杠、中文/空格编码、丢弃 query 但**保留 `#fragment`**）；本地绝对路径（Windows 盘符 / UNC / `file://`）交给服务端做根白名单校验；越界 `..` **不静默夹回根内**，交由服务端 fail-closed 拒绝
+- **兼容性（既支持本地文件也支持外部链接）**：外部链接（`http(s):`、协议相对 `//cdn`）、内联（`data:`、`blob:`）、锚点、**站点根相对（`/logo.png`，如 `web/public` 下的静态资源）** 与已改写引用一律**原样保留**；改写后的本地引用若加载失败（404 / 被根白名单拒绝），前端会自动回退为原引用，保证不因改写而丢图
+- **服务端**：`GET /api/v1/files` 新增 `root=session|project` 参数（session=`data/docs`、project=会话工作目录），与 `/docs/content` 的根语义对称，用于解析文档内图片
+- **渲染**：`DocRenderer` 图片样式自适应（`max-width:100%`，独占段落居中）
+- **测试**：`test/doc-assets.test.ts` 11 例（相对/盘符/UNC/`file://`/外部链接/站点资源/内联/片段/越界/中文编码 + `rewriteDocAssetUrls` 混合文档契约）+ server `/files` 的 `root` 语义与越界用例；另用仓库真实文档与其 `assets/*.svg` 做了端到端验证（本地图片 200/`image/svg+xml`，外链与站点资源逐字未改写）
+
+### 可信基线：CI 门禁 + 权限规则化 + Windows 最小沙箱（Sprint 47）
+- **CI 门禁**（`.github/workflows/ci.yml`）：push/PR 双 job——后端（`npm ci` → build → lint → test）与 Web（`npm ci` → svelte-check → build）；新增 `npm run verify`（一条命令跑全部门禁）与 `npm run check:web`
+- **Web 静态检查**：引入 `svelte-check` 依赖与 `web/svelte.config.js`，修复既有 62 个错误（其中 31 个为"读不到 Svelte 配置"的系统性问题、约 28 个为类型滞后于功能的真实错误：Tab 联合类型缺项、`possibly null`、接口缺字段等），门禁阈值 `--threshold error`；不引入 `any`/`ts-ignore`
+- **权限规则化**（`config/permissions.json`）：模式之上叠加 `Tool(specifier)` 级规则——`rules`（`tool` glob + `match` 目标 glob + `action`）按 **deny > ask > allow** 求值；`never_auto_approve`（永不自动批准）与 `protected_paths`（受保护路径，写入类工具强制确认）；`allow` 仅 auto 模式免确认、不绕过只读模式、不可覆盖前两者；plan 模式保持全确认
+- **目标串（specifier）语义**：fs 类 = 解析后的绝对路径；`terminal_exec`/`terminal_session` = 命令文本；其余 = 参数 JSON（`extractTarget()` 导出供测试复用）
+- **Windows 最小沙箱**（`config/sandbox.json` 新增 `allowWriteDirs`）：`terminal_exec` 与 `terminal_session` 统一走沙箱——重定向（`>`/`>>`）与写入类命令/程序片段内**所有**像路径的参数（源与目标）必须落在可写根内；含变量/通配无法静态解析的目标 fail-closed 拒绝；伪目标（`2>&1`/`>nul`/`/dev/null`）与注释文本不误判。**如实标注为策略级启发式防线，非 OS 级隔离**
+- **测试确定性**：修复两处 captureDiff 用例依赖共享快照目录 + mtime 排序的潜在竞态（改为每次运行独立 sessionId，断言快照唯一）；新增 `permissions-rules` 14 例、沙箱写入约束 12 例；全量 **862 / 59 文件** 全绿
+- **文档**：新增 `plans/roadmap-next.md`（P0/P1/P2 路线图）、`plans/sprint-47-credibility-baseline.md`（设计与验收）；README 补充权限规则 schema、沙箱边界与 `verify` 命令
+
+### 代码审查跟进：沙箱写入约束与受保护路径加固
+- **沙箱**：原"取命令位置后第一个非开关 token"被三类常见写法绕过——带值开关顶位（`Set-Content -Encoding utf8 <越界>`、`New-Item -ItemType Directory -Path <越界>`、`Add-Content -Value hi -Path <越界>`）、目标不在首位（`Copy-Item a.txt <越界>`）、别名与未列举程序（`rm -rf`、`ni`/`sc`/`cp`/`mv`/`ri`、`curl -o`、`Invoke-WebRequest -OutFile`、`robocopy`、`xcopy`、`tar -C`、`Expand-Archive`、`git clone`、`npm install --prefix`）。现改为校验片段内**所有**像路径参数并纳入上述别名/程序；引号内文本用等长掩码定位、回取原文取参数
+- **重定向引号感知**：非包裹命令中引号内的 `>` 不再视为重定向（`echo "compare > C:\x"` 不再误拒）；解释器包裹（`cmd /c "echo x > …"`）仍按引号不敏感扫描，越界照样拦截
+- **受保护路径按路径段匹配**：`.git` 不再误伤 `.gitignore` / `.gitattributes` / `.github/**`（原实现在 auto 模式下会强制确认、无确认通道时直接拒绝）；命令文本先拆候选片段再切段，`git config --file .git/config` 仍命中；默认补 `.envrc`
+- **规则加载校验**：`tool` 非空串、`action ∈ deny|ask|allow`、`match` 为字符串或缺省，否则丢弃并告警——避免 `"action": "denyy"` 使 deny 规则**静默失效**
+- **`allow` 免确认显式限定 auto 模式**，不再依赖 `permissionCheck` 先于 `confirmHighRisk` 的隐式钩子顺序
+- **行为变更**：写入根约束现**先于**危险检测生效，`rm -rf /` 由"确认后可执行"变为"任何模式直接拒绝（写入越界）"；需终端写入项目根之外时请在 `allowWriteDirs` 中声明
+- **顺带修复**：`FileDiffPanel.sessionTitle` 读 `DiffSession` 上不存在的 `id`（无 summary 时会 `undefined.slice` 抛错）→ 改 `sessionId`；`asset-url` 的 `/files` 前缀补边界判断；`DocPreviewPanel` 行类型 `collapsed` 改为仅目录行必填；`check:web` 统一走 `web` 的 `check` 脚本
+
 ## 1.4.0 (2026-09-10)
 
 ### 工具产物预览：文件/链接/diff 全链路（Sprint 46）

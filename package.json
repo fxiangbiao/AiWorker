@@ -1,7 +1,7 @@
 {
   "name": "aiworker",
-  "version": "1.4.0",
-  "description": "AiWorker - 娑擃亙姹?AI Agent 閸斺晜澧滈敍灞筋樋閺呴缚鍏樻担鎾冲礂娴?+ MCP + Skills + Hooks",
+  "version": "1.5.0",
+  "description": "AiWorker - 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -17,6 +17,8 @@
     "test:watch": "cross-env NODE_OPTIONS=--no-deprecation vitest",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
+    "check:web": "cd web && npm run check",
+    "verify": "npm run build && npm run lint && npm test && npm run web:build && npm run check:web",
     "format": "prettier --write \"src/**/*.ts\""
   },
   "engines": {

@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { resolve, dirname } from "node:path";
-import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
+import { writeFileSync, existsSync, readdirSync, rmSync, readFileSync, mkdirSync } from "node:fs";
 import { hookManager } from "../src/hooks/hook-manager.js";
 import { auditLogger } from "../src/core/audit-logger.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -262,26 +262,27 @@ describe("13. Phase 3 Hook Handlers", () => {
   it("captureDiff fs_write 修改已有文件：中间删除/修改/追加行数精确", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
-    const snapDir = resolve(testDir, "snapshots", "test-session");
 
     const run = async (oldContent: string, newContent: string) => {
+      // 每次运行使用独立会话目录：快照唯一，避免共享目录 + mtime 排序带来的顺序依赖
+      const sid = `modify-${Math.random().toString(36).slice(2, 8)}`;
       const file = resolve(testDir, `modify-${Math.random().toString(36).slice(2, 8)}.txt`);
       writeFileSync(file, oldContent, "utf-8");
       await handler(makeCtx({
         event: "onToolCallPre",
+        sessionId: sid,
         data: { toolName: "fs_write", args: JSON.stringify({ path: file, content: newContent }) },
       }));
       writeFileSync(file, newContent, "utf-8");
       await handler(makeCtx({
         event: "onToolCallPost",
+        sessionId: sid,
         data: { toolName: "fs_write", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
       }));
-      // 按 mtime 取刚写入的快照（目录共享，readdirSync 顺序不定）
-      const snapFiles = readdirSync(snapDir)
-        .filter((f) => f.endsWith(".diff"))
-        .map((f) => resolve(snapDir, f))
-        .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-      const c = readFileSync(snapFiles[0], "utf-8");
+      const snapDir = resolve(testDir, "snapshots", sid);
+      const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+      expect(snapFiles.length).toBe(1);
+      const c = readFileSync(resolve(snapDir, snapFiles[0]!), "utf-8");
       return {
         adds: (c.match(/^\+ /gm) || []).length,
         dels: (c.match(/^- /gm) || []).length,
@@ -301,26 +302,27 @@ describe("13. Phase 3 Hook Handlers", () => {
   it("captureDiff fs_edit 局部修改：精确 diff（含删除行）", async () => {
     const { createCaptureDiff } = await import("../src/hooks/handlers.js");
     const handler = createCaptureDiff({ dataDir: testDir, scanThrottleMs: 0 });
+    const sid = `edit-${Math.random().toString(36).slice(2, 8)}`;
     const file = resolve(testDir, `edit-${Math.random().toString(36).slice(2, 8)}.txt`);
     writeFileSync(file, "a\nold1\nold2\nb\n", "utf-8");
 
     // fs_edit 删除跨行片段（oldText 匹配 old1\nold2，newText 为空）
     await handler(makeCtx({
       event: "onToolCallPre",
+      sessionId: sid,
       data: { toolName: "fs_edit", args: JSON.stringify({ path: file, oldText: "old1\nold2\n", newText: "" }) },
     }));
     writeFileSync(file, "a\nb\n", "utf-8");
     await handler(makeCtx({
       event: "onToolCallPost",
+      sessionId: sid,
       data: { toolName: "fs_edit", args: JSON.stringify({ path: file }), result: { success: true, content: "ok" } },
     }));
 
-    const snapDir = resolve(testDir, "snapshots", "test-session");
-    const snapFiles = readdirSync(snapDir)
-      .filter((f) => f.endsWith(".diff"))
-      .map((f) => resolve(snapDir, f))
-      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-    const content = readFileSync(snapFiles[0], "utf-8");
+    const snapDir = resolve(testDir, "snapshots", sid);
+    const snapFiles = readdirSync(snapDir).filter((f) => f.endsWith(".diff"));
+    expect(snapFiles.length).toBe(1);
+    const content = readFileSync(resolve(snapDir, snapFiles[0]!), "utf-8");
     const dels = (content.match(/^- /gm) || []).length;
     const adds = (content.match(/^\+ /gm) || []).length;
     expect(dels).toBe(2);

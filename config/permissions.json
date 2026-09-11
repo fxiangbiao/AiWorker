@@ -28,5 +28,18 @@
     "format C:",
     "shutdown",
     "reboot"
+  ],
+  "rules": [],
+  "never_auto_approve": [],
+  "protected_paths": [
+    ".git",
+    ".ssh",
+    ".aws",
+    ".kube",
+    ".claude",
+    ".npmrc",
+    ".env",
+    ".envrc",
+    "id_rsa"
   ]
 }

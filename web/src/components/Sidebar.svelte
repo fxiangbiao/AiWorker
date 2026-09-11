@@ -201,23 +201,25 @@
 
 {#if modal}
   {#if modal.type === "delete"}
+    {@const m = modal}
     <ConfirmModal
       title="删除会话"
       message="确定删除该会话？此操作不可恢复。"
       confirmText="删除"
       danger
-      onConfirm={() => confirmDelete(modal.id)}
+      onConfirm={() => confirmDelete(m.id)}
       onCancel={() => (modal = null)}
     />
   {:else if modal.type === "rename"}
-    {@const chat = store.chats.find((c) => c.id === modal.id)}
+    {@const m = modal}
+    {@const chat = store.chats.find((c) => c.id === m.id)}
     <ConfirmModal
       title="重命名会话"
       mode="input"
       inputLabel="新标题"
       inputValue={chat?.title ?? ""}
       confirmText="保存"
-      onConfirm={(v) => confirmRename(modal.id, v)}
+      onConfirm={(v) => confirmRename(m.id, v)}
       onCancel={() => (modal = null)}
     />
   {/if}

@@ -307,7 +307,7 @@
     try {
       const r = await fetch(`${API}/evolution/proposals/${id}/change`);
       if (r.ok) {
-        const d = (await r.json()) as { ok: boolean; view?: ChangeView };
+        const d = (await r.json()) as { ok: boolean; view?: ChangeView; error?: string };
         if (d.ok && d.view) changes = { ...changes, [id]: d.view };
         else if (d.error) msg = { kind: "err", text: d.error };
       } else {

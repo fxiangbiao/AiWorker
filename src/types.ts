@@ -164,6 +164,21 @@ export interface StreamCallbacks {
 
 export type PermissionMode = "ask" | "plan" | "auto";
 
+/** 权限规则动作：deny 直接拒绝 > ask 强制确认 > allow 免确认（allow 不绕过只读模式） */
+export type PermissionRuleAction = "deny" | "ask" | "allow";
+
+/**
+ * 权限规则（Tool(specifier) 级）
+ * - `tool`：工具名，支持通配（`fs_*`、`mcp_*`、`*`）
+ * - `match`：对"目标串"的 glob；fs 类工具为目标绝对路径，terminal_exec 为命令文本，其余为参数 JSON
+ * - `action`：命中后的动作（同类多条时 deny 优先于 ask 优先于 allow）
+ */
+export interface PermissionRule {
+  tool: string;
+  match?: string;
+  action: PermissionRuleAction;
+}
+
 export interface PermissionConfig {
   defaultMode: PermissionMode;
   modes: Record<
@@ -178,6 +193,12 @@ export interface PermissionConfig {
   >;
   allowedDirs: string[];
   deniedPatterns: string[];
+  /** 显式规则（deny → ask → allow 求值；留空即不启用） */
+  rules?: PermissionRule[];
+  /** 永不自动批准的工具（通配）：任何模式都必须经确认，无确认通道则拒绝 */
+  neverAutoApprove?: string[];
+  /** 受保护路径片段：命中即对写入类工具强制确认（如 .git/.ssh/.env） */
+  protectedPaths?: string[];
 }
 
 export interface AgentConfig {

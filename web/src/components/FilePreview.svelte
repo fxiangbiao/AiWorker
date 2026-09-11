@@ -174,11 +174,12 @@
           const res = await (mammoth.convertToHtml as (o: { arrayBuffer: ArrayBuffer }) => Promise<{ value: string }>)({ arrayBuffer: buf });
           html = res.value || "";
         } else if (ext === "xlsx" || ext === "xls" || ext === "csv") {
-          const mod = (await import("xlsx")) as { default?: { read: (d: unknown, o: { type: string }) => { SheetNames: string[]; Sheets: Record<string, unknown> }; utils: { sheet_to_html: (s: unknown) => string } }; read?: unknown };
+          // 动态导入：CJS 包经 ESM interop 后实际导出在 default 上（回退命名空间对象）
+          const mod = (await import("xlsx")) as typeof import("xlsx") & { default?: typeof import("xlsx") };
           const XLSX = mod.default ?? mod;
-          const wb = (XLSX.read as (d: unknown, o: { type: string }) => { SheetNames: string[]; Sheets: Record<string, unknown> })(new Uint8Array(buf), { type: "array" });
-          const sheet = wb.Sheets[wb.SheetNames[0]!];
-          html = (XLSX.utils.sheet_to_html as (s: unknown) => string)(sheet);
+          const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          html = XLSX.utils.sheet_to_html(sheet);
         } else {
           // pptx/odt 等：下载兜底
           officeErr = true;

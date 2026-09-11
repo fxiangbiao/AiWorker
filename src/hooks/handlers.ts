@@ -89,7 +89,8 @@ export function createPermissionCheck(deps: HandlerDependencies): HookHandler {
 
     const mode = (ctx.data.permissions as PermissionMode) || deps.permissionModel?.getMode() || "auto";
     const toolName = ctx.data.toolName as string;
-    const decision = approval.checkPermission(toolName, mode);
+    // 传入 args 以便 Tool(specifier) 级 deny 规则参与求值
+    const decision = approval.checkPermission(toolName, mode, ctx.data.args);
     if (!decision.proceed) {
       return { proceed: false, message: decision.message };
     }

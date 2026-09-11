@@ -10,7 +10,7 @@ import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext } from "../
 import { toolRegistry } from "../core/tool-registry.js";
 import { buildFileArtifact, isTextPath, sniffIsBinary, simpleDiffLines, formatSize } from "../core/preview.js";
 import { DangerDetector } from "../security/danger-detector.js";
-import { loadSandboxPolicy, checkCommand, checkDeniedCommand, sanitizeEnv } from "../security/sandbox.js";
+import { loadSandboxPolicy, checkCommand, sanitizeEnv } from "../security/sandbox.js";
 import { spillOrTruncate, SPILL_THRESHOLD } from "./spill.js";
 import { requestAsk } from "./ask-channel.js";
 import { terminalSessionPool } from "./terminal-session.js";
@@ -745,7 +745,9 @@ const terminalSessionHandler: ToolHandler = async (args, ctx) => {
       return { tool_call_id: "", success: true, content: "持久终端会话已关闭" };
     }
     if (action === "exec") {
-      const denyCheck = checkDeniedCommand(command, loadSandboxPolicy());
+      // 与 terminal_exec 同一套沙箱：黑名单 + 写入目标可写根约束（相对路径按会话工作目录解析）
+      const sandboxPolicy = loadSandboxPolicy();
+      const denyCheck = checkCommand(command, ctx.workingDir, ctx.workingDir, sandboxPolicy);
       if (!denyCheck.allowed) {
         return {
           tool_call_id: "",
