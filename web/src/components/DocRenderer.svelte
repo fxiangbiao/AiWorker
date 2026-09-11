@@ -7,6 +7,7 @@
   import DOMPurify from "dompurify";
   import { ListTree } from "lucide-svelte";
   import { API } from "$lib/stores/chat.svelte";
+  import { rewriteDocAssetUrls } from "$lib/asset-url";
 
   let { path, sessionId }: { path: string; sessionId?: string | null } = $props();
 
@@ -46,7 +47,14 @@
       const d = (await r.json()) as { content?: string };
       if (seq !== loadSeq) return; // 过期响应丢弃
       content = d.content ?? "";
-      html = addHeadingIds(DOMPurify.sanitize(marked.parse(content) as string));
+      html = addHeadingIds(
+        rewriteDocAssetUrls(DOMPurify.sanitize(marked.parse(content) as string), {
+          root,
+          docRel: rel,
+          sessionId,
+          apiBase: API,
+        }),
+      );
       // 图表 sidecar 仅会话资产（data/docs/）加载：项目目录里的 data.json 可能是业务数据，误读为图表
       if (root === "session" && rel.includes("/")) {
         void loadChart(rel.slice(0, rel.lastIndexOf("/")), seq);
@@ -78,6 +86,26 @@
       /* data.json 不存在或损坏则无图表 */
     }
   }
+
+  /**
+   * 本地引用改写失败（404 / 被根白名单拒绝）时回退原引用：
+   * 保证站点根相对（/logo.png）、外部链接与任何服务端不认的路径仍按原样加载，不会因改写而丢失。
+   */
+  $effect(() => {
+    if (!html || !renderEl) return;
+    for (const img of renderEl.querySelectorAll<HTMLImageElement>("img[data-orig-src]")) {
+      if (img.dataset.fallbackBound === "1") continue;
+      img.dataset.fallbackBound = "1";
+      img.addEventListener(
+        "error",
+        () => {
+          const orig = img.dataset.origSrc;
+          if (orig && img.getAttribute("src") !== orig) img.setAttribute("src", orig);
+        },
+        { once: true },
+      );
+    }
+  });
 
   /** 给渲染后 HTML 的标题加锚点 id（doc-h-N），供目录定位；先剥离标题自带 id 避免锚点冲突 */
   function addHeadingIds(cleanHtml: string): string {
@@ -249,5 +277,7 @@
   .dr-render :global(table) { border-collapse: collapse; margin: 8px 0; max-width: 100%; display: block; overflow-x: auto; }
   .dr-render :global(th), .dr-render :global(td) { border: 1px solid var(--border); padding: 4px 10px; font-size: 12px; }
   .dr-render :global(code) { background: var(--hover-bg); padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono); font-size: 12px; }
+  .dr-render :global(img) { max-width: 100%; height: auto; border-radius: var(--radius-sm); background: var(--bg); }
+  .dr-render :global(p > img:only-child) { display: block; margin: 8px auto; }
   .dr-empty { color: var(--dim); font-size: 12px; margin: auto; }
 </style>

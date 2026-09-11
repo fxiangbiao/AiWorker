@@ -1867,9 +1867,15 @@ export function startServer(deps: ServerDeps, port: number) {
           ? deps.sessionStore.getWorkingDir(sessionIdParam) ?? deps.workingDir
           : deps.workingDir;
 
-      // 根：会话项目目录 + 数据目录仅白名单子目录（docs/spills；排除 aiworker.db/runtime-config 等敏感文件）
-      const roots = [resolve(projectDir), resolve(dataDir, "docs"), resolve(dataDir, "spills")];
-      const abs = isAbsolute(rel) ? resolve(rel) : resolve(projectDir, rel);
+      // root=session|project（文档内图片等资源按文档根解析）；缺省为宽根：项目目录 + data 白名单子目录
+      const rootParam = u.searchParams.get("root") ?? "";
+      const roots =
+        rootParam === "session"
+          ? [resolve(dataDir, "docs")]
+          : rootParam === "project"
+            ? [resolve(projectDir)]
+            : [resolve(projectDir), resolve(dataDir, "docs"), resolve(dataDir, "spills")];
+      const abs = isAbsolute(rel) ? resolve(rel) : resolve(roots[0]!, rel);
       let real = abs;
       try {
         if (existsSync(abs)) real = realpathSync(abs);

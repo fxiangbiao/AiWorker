@@ -244,6 +244,10 @@ describe("HTTP Server", () => {
     mkdirSync(projDir, { recursive: true });
     writeFileSync(resolve(dataRoot, "aiworker.db"), "secret", "utf-8");
     writeFileSync(resolve(dataRoot, "docs", "note.md"), "# 会话文档", "utf-8");
+    // 文档内图片：项目根与 data/docs 各放一份（root=project / root=session 两种解析）
+    writeFileSync(resolve(projDir, "pic.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>", "utf-8");
+    mkdirSync(resolve(dataRoot, "docs", "assets"), { recursive: true });
+    writeFileSync(resolve(dataRoot, "docs", "assets", "pic.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>", "utf-8");
 
     const srv = startServer({ ...mockDeps(), workingDir: projDir, dataDir: dataRoot } as never, 0);
     await new Promise<void>((r) => srv.once("listening", () => r()));
@@ -256,6 +260,26 @@ describe("HTTP Server", () => {
       const okDoc = await fetch(`${b}${API}/files?path=${encodeURIComponent(resolve(dataRoot, "docs", "note.md"))}`);
       expect(okDoc.status).toBe(200);
       expect(await okDoc.text()).toContain("会话文档");
+
+      // root=project：相对项目目录解析（文档内相对图片）
+      const projImg = await fetch(`${b}${API}/files?root=project&path=${encodeURIComponent("pic.svg")}`);
+      expect(projImg.status).toBe(200);
+      expect(projImg.headers.get("content-type")).toContain("image/svg+xml");
+
+      // root=session：相对 data/docs 解析（会话资产内图片）
+      const sessImg = await fetch(`${b}${API}/files?root=session&path=${encodeURIComponent("assets/pic.svg")}`);
+      expect(sessImg.status).toBe(200);
+      expect(sessImg.headers.get("content-type")).toContain("image/svg+xml");
+
+      // root=session 越界到 data 根（aiworker.db）→ 404
+      const sessEscape = await fetch(`${b}${API}/files?root=session&path=${encodeURIComponent("../aiworker.db")}`);
+      expect(sessEscape.status).toBe(404);
+
+      // root=project 下绝对路径越界 → 404
+      const absEscape = await fetch(
+        `${b}${API}/files?root=project&path=${encodeURIComponent(resolve(dataRoot, "aiworker.db"))}`,
+      );
+      expect(absEscape.status).toBe(404);
     } finally {
       srv.close();
     }
