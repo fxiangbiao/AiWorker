@@ -31,13 +31,14 @@ import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
 import { renderSessionMarkdown } from "./memory/session-export.js";
 import { processManager } from "./core/process-manager.js";
 import { APP_BRIDGE_SNIPPET } from "./core/app-bridge.js";
-import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo, AgentConfig } from "./types.js";
+import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo, AgentConfig, RewindScope } from "./types.js";
 import { VALID_MODELS } from "./core/agent-config-loader.js";
 import type { SessionStore } from "./memory/session-store.js";
 import type { AppManager, AppActionResult } from "./core/app-manager.js";
 import type { AppFactory } from "./core/app-factory.js";
 import type { GeneratorQueue } from "./core/generator-queue.js";
 import type { EvolutionEngine } from "./core/evolution-engine.js";
+import type { RewindService } from "./core/rewind-service.js";
 
 interface DelegateAgent {
   runStream(
@@ -48,7 +49,7 @@ interface DelegateAgent {
   ): Promise<AgentRunResult>;
 }
 
-interface ServerDeps {
+export interface ServerDeps {
   modelRouter: ModelRouter;
   workingDir: string;
   coordinator: TeamCoordinator;
@@ -70,9 +71,9 @@ interface ServerDeps {
     isCustom: boolean;
     hasConfig: boolean;
   }[];
-  /** 保存智能体配置（写 YAML + 热重载；index.ts 注入） */
+  /** 保存智能体配置（写 YAML + 热重载；bootstrap 注入） */
   saveAgentConfig?: (id: string, cfg: AgentConfig) => { ok: boolean; error?: string };
-  /** 删除智能体配置（内置回默认 / 自定义移除；index.ts 注入） */
+  /** 删除智能体配置（内置回默认 / 自定义移除；bootstrap 注入） */
   deleteAgentConfig?: (id: string) => { ok: boolean };
   isBuiltinAgent?: (id: string) => boolean;
   /** 智能体表单选项（工具/技能/MCP/插件） */
@@ -110,10 +111,12 @@ interface ServerDeps {
   generatorQueue?: GeneratorQueue;
   /** 进化引擎（Sprint 39：观察/提议/采纳，未注入则进化端点 503） */
   evolutionEngine?: EvolutionEngine;
+  /** 回滚服务（Sprint 48：/sessions/:id/checkpoints 与 /rewind，未注入则 503） */
+  rewindService?: RewindService;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
-  /** Web 配置：应用并持久化单个配置项（index.ts 注入） */
+  /** Web 配置：应用并持久化单个配置项（bootstrap 注入） */
   setConfigField?: (field: string, value: unknown) => { ok: boolean; error?: string };
 }
 
@@ -787,7 +790,13 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    if (url.startsWith(apiUrl("/sessions/")) && req.method === "GET" && !url.endsWith("/export") && !url.endsWith("/working-dir")) {
+    if (
+      url.startsWith(apiUrl("/sessions/")) &&
+      req.method === "GET" &&
+      !url.endsWith("/export") &&
+      !url.endsWith("/working-dir") &&
+      !url.endsWith("/checkpoints")
+    ) {
       if (!deps.sessionStore) { sendJSON(res, 500, { error: "Session store not available" }); return; }
       const sessionId = url.slice(apiUrl("/sessions/").length);
       // 会话不存在（已删除/从未建立）→ 404，与 /context、/trace 语义一致（Web loadRemoteMessages 已容错 404）
@@ -842,6 +851,58 @@ export function startServer(deps: ServerDeps, port: number) {
       const ok = deps.sessionStore.renameSession(sessionId, parsedTitle);
       if (ok) eventBus.broadcast({ type: "session/update", sessionId, kind: "rename", title: parsedTitle });
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
+      return;
+    }
+
+    // 检查点列表（Sprint 48：/rewind 的只读预览面）
+    if (url.startsWith(apiUrl("/sessions/")) && url.endsWith("/checkpoints") && req.method === "GET") {
+      if (!deps.rewindService) { sendJSON(res, 503, { error: "Rewind service not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length).replace(/\/checkpoints$/, "");
+      sendJSON(res, 200, { turns: deps.rewindService.list(sessionId) });
+      return;
+    }
+
+    // 回滚（Sprint 48）：{ toTurn, scope, dryRun?, force? }
+    if (url.startsWith(apiUrl("/sessions/")) && url.endsWith("/rewind") && req.method === "POST") {
+      if (!deps.rewindService) { sendJSON(res, 503, { error: "Rewind service not available" }); return; }
+      const sessionId = url.slice(apiUrl("/sessions/").length).replace(/\/rewind$/, "");
+      let body: { toTurn?: unknown; scope?: unknown; dryRun?: unknown; force?: unknown };
+      try {
+        body = JSON.parse(await parseBody(req)) as typeof body;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+      const toTurn = Number(body.toTurn);
+      const scope = (body.scope ?? "all") as RewindScope;
+      const dryRun = body.dryRun === true;
+      const force = body.force === true;
+      if (!Number.isInteger(toTurn) || toTurn < 1) {
+        sendJSON(res, 400, { error: "toTurn 需为正整数" });
+        return;
+      }
+      if (scope !== "all" && scope !== "chat" && scope !== "code") {
+        sendJSON(res, 400, { error: "scope 需为 all | chat | code" });
+        return;
+      }
+      if (dryRun) {
+        sendJSON(res, 200, { plan: deps.rewindService.preview(sessionId, toTurn, scope) });
+        return;
+      }
+      const result = deps.rewindService.apply(sessionId, toTurn, scope, { force });
+      if (!result.ok) {
+        sendJSON(res, 409, { error: result.error ?? "回滚失败", result });
+        return;
+      }
+      eventBus.broadcast({
+        type: "session/update",
+        sessionId,
+        kind: "rewind",
+        toTurn,
+        scope,
+        messagesDeleted: result.messagesDeleted,
+      });
+      sendJSON(res, 200, { ok: true, result });
       return;
     }
 

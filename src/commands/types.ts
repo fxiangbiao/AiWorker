@@ -11,6 +11,7 @@ import type { BaseAgent } from "../agents/base-agent.js";
 import type { AppManager } from "../core/app-manager.js";
 import type { AppFactory } from "../core/app-factory.js";
 import type { EvolutionEngine } from "../core/evolution-engine.js";
+import type { RewindService } from "../core/rewind-service.js";
 
 export type CommandAction = "continue" | "exit";
 
@@ -53,6 +54,8 @@ export interface CommandContext {
   appFactory?: AppFactory;
   /** 进化引擎（/evo 用；未注入则提示不可用） */
   evolutionEngine?: EvolutionEngine;
+  /** 回滚服务（/rewind 用；未注入则提示不可用） */
+  rewindService?: RewindService;
   // 输出抽象（测试可捕获）
   write: (text: string) => void;
   writeLine: (line: string) => void;

@@ -63,6 +63,13 @@ export function initWs(): void {
     if (type === "session/update") {
       // 会话元数据变更（创建/重命名/删除/新消息）→ 刷新会话列表
       void syncServerSessions();
+      // 回滚（Sprint 48）：当前会话被回滚（可能来自 TUI 或其他标签页）→ 重新拉取消息投影
+      const sid = data.sessionId;
+      if (data.kind === "rewind" && typeof sid === "string" && sid && store.activeChatId === sid && !stream.sending) {
+        void loadRemoteMessages(sid).then((msgs) => {
+          if (store.activeChatId === sid && !stream.sending) store.messages = msgs;
+        });
+      }
       return;
     }
     // chat 回合结束（done 事件 SSE 与 WS 双写）→ 其他标签页同步消息

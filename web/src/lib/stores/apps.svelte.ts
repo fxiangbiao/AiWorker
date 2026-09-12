@@ -60,8 +60,8 @@ export const processResources = writable<{ tokens: { total: number; prompt: numb
 export const openWindows = writable<Record<string, boolean>>({});
 /** 窗口状态（位置/尺寸/形态/置顶），localStorage 持久化 appwin-<id> */
 export const winStates = writable<Record<string, AppWinState>>({});
-/** 右侧面板当前 Tab（文件变更 / 文档预览 / 应用预览） */
-export const rightTab = writable<"files" | "docs" | "apps">("files");
+/** 右侧面板当前 Tab（文件变更 / 文档预览 / 回滚 / 应用预览） */
+export const rightTab = writable<"files" | "docs" | "rewind" | "apps">("files");
 /** 右侧面板可见性（默认关闭；新生成应用/文档时自动展开到「应用预览」Tab） */
 export const rightPanelVisible = writable(false);
 /** 文档工作台：待打开的文档相对路径（data/docs/ 内） */
