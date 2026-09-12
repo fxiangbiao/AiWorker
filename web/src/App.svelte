@@ -5,11 +5,12 @@
   import Sidebar from "./components/Sidebar.svelte";
   import ChatPanel from "./components/ChatPanel.svelte";
   import SystemPanel from "./components/SystemPanel.svelte";
+  import SettingsPanel from "./components/SettingsPanel.svelte";
+  import { settingsOpen, consoleOpen, openSettings, openConsole } from "./lib/stores/shell.svelte";
   import ArtifactsPanel from "./components/ArtifactsPanel.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import AppHostLayer from "./components/AppHostLayer.svelte";
   import AppPreviewPanel from "./components/AppPreviewPanel.svelte";
-  import PermissionsPanel from "./components/PermissionsPanel.svelte";
   import { rightTab, rightPanelVisible } from "./lib/stores/apps.svelte";
   import { skills } from "./lib/stores/status";
   import {
@@ -24,14 +25,13 @@
   } from "./lib/stores/chat.svelte";
   import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, contextWindow, workingDir, refreshStatus } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
-  import { PanelRightClose, Box, AppWindow, ShieldCheck } from "lucide-svelte";
+  import { PanelRightClose, Box, AppWindow } from "lucide-svelte";
   import { get } from "svelte/store";
   import { theme, applyTheme } from "./lib/stores/theme.svelte";
 
   let agents: { id: string; name: string }[] = $state([]);
   let leftHidden = $state(false);
   let rightWidth = $state<number | null>(null); // null = 默认 3/7（对话区:右侧栏 ≈ 4:3）
-  let systemOpen = $state(false);
 
   function startDrag(e: PointerEvent) {
     e.preventDefault();
@@ -120,14 +120,21 @@
   <TopBar
     {leftHidden}
     rightHidden={!$rightPanelVisible}
-    onOpenSystem={() => (systemOpen = true)}
+    onOpenSystem={() => openConsole()}
+    onOpenSettings={() => openSettings()}
     onExpandLeft={() => (leftHidden = false)}
     onExpandRight={() => rightPanelVisible.set(true)}
   />
 </div>
 <div id="main">
   {#if !leftHidden}
-    <Sidebar onNewChat={handleNewChat} onSwitch={handleSwitch} onHide={() => (leftHidden = true)} onOpenSystem={() => (systemOpen = true)} />
+    <Sidebar
+      onNewChat={handleNewChat}
+      onSwitch={handleSwitch}
+      onHide={() => (leftHidden = true)}
+      onOpenSystem={() => openConsole()}
+      onOpenSettings={() => openSettings()}
+    />
   {/if}
   <ChatPanel {agents} />
   {#if $rightPanelVisible}
@@ -137,9 +144,6 @@
         <button class="rp-tab" class:active={$rightTab === "artifacts"} onclick={() => rightTab.set("artifacts")}>
           <span class="rp-ico"><Box size={13} /></span>产物
         </button>
-        <button class="rp-tab" class:active={$rightTab === "permissions"} onclick={() => rightTab.set("permissions")}>
-          <span class="rp-ico"><ShieldCheck size={13} /></span>权限
-        </button>
         <button class="rp-tab" class:active={$rightTab === "apps"} onclick={() => rightTab.set("apps")}>
           <span class="rp-ico"><AppWindow size={13} /></span>应用
         </button>
@@ -147,8 +151,6 @@
       </div>
       {#if $rightTab === "artifacts"}
         <ArtifactsPanel />
-      {:else if $rightTab === "permissions"}
-        <PermissionsPanel />
       {:else}
         <AppPreviewPanel />
       {/if}
@@ -156,12 +158,24 @@
   {/if}
 </div>
 
-{#if systemOpen}
-  <div class="modal-overlay" onclick={() => (systemOpen = false)}>
+{#if $settingsOpen}
+  <div class="modal-overlay" onclick={() => settingsOpen.set(false)}>
     <div class="modal-box" onclick={(e) => e.stopPropagation()}>
       <div class="modal-head">
-        <span>系统</span>
-        <button class="modal-close" onclick={() => (systemOpen = false)}>&#10005;</button>
+        <span>设置</span>
+        <button class="modal-close" onclick={() => settingsOpen.set(false)}>&#10005;</button>
+      </div>
+      <SettingsPanel />
+    </div>
+  </div>
+{/if}
+
+{#if $consoleOpen}
+  <div class="modal-overlay" onclick={() => consoleOpen.set(false)}>
+    <div class="modal-box" onclick={(e) => e.stopPropagation()}>
+      <div class="modal-head">
+        <span>控制台</span>
+        <button class="modal-close" onclick={() => consoleOpen.set(false)}>&#10005;</button>
       </div>
       <SystemPanel />
     </div>
@@ -261,8 +275,4 @@
     cursor: pointer;
   }
   .modal-close:hover { color: var(--text); }
-  .rp-section { margin-bottom: 20px; }
-  .rp-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); margin-bottom: 8px; }
-  .skill-item { font-size: 12px; padding: 2px 0; }
-  .empty { color: var(--dim); font-size: 12px; }
 </style>

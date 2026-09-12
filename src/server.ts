@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomBytes } from "node:crypto";
 import { stdout } from "node:process";
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync, createReadStream, realpathSync } from "node:fs";
-import { resolve, dirname, relative, isAbsolute, basename, join } from "node:path";
+import { resolve, dirname, relative, isAbsolute, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -44,6 +44,9 @@ import type { GeneratorQueue } from "./core/generator-queue.js";
 import type { EvolutionEngine } from "./core/evolution-engine.js";
 import type { RewindService } from "./core/rewind-service.js";
 import type { PermissionMemory } from "./security/permission-memory.js";
+import { DEFAULT_PROTECTED_PATHS } from "./security/permission-model.js";
+import type { PermissionModel } from "./security/permission-model.js";
+import { describeSandboxPolicy, loadSandboxPolicy, resolveSandboxConfigPath, resolveSandboxWritePath, saveSandboxPolicy } from "./security/sandbox.js";
 
 interface DelegateAgent {
   runStream(
@@ -120,6 +123,8 @@ export interface ServerDeps {
   rewindService?: RewindService;
   /** 权限记忆（Sprint 49：/permissions 端点；缺省则端点 503） */
   permissionMemory?: PermissionMemory;
+  /** 权限模型（Sprint 50：/permissions 需要读取当前模式与**生效**的受保护路径清单） */
+  permissionModel?: PermissionModel;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
@@ -1187,16 +1192,85 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    // 权限规则（Sprint 49）：GET 列出（含来源）/ POST 增删重置
+    // 沙箱配置（Sprint 50 / IA 重构：Web「设置→工作区」与「设置→安全」的读写面）
+    if (url === apiUrl("/sandbox") || url.startsWith(`${apiUrl("/sandbox")}?`)) {
+      const writePath = resolveSandboxWritePath(deps.workingDir);
+      const sandboxSnapshot = () => {
+        const readPath = resolveSandboxConfigPath(deps.workingDir);
+        const policy = loadSandboxPolicy(readPath);
+        return {
+          // 读路径与写路径分开：读允许回落到安装目录的配置，写永远跟随 --dir（不污染安装包）
+          writePath,
+          readPath,
+          exists: existsSync(writePath),
+          policy,
+          // 生效值：留空的根按工作目录回退——设置页必须显示"真正生效的范围"，而不是"配置里写了什么"
+          effective: describeSandboxPolicy(policy, deps.workingDir),
+        };
+      };
+      if (req.method === "GET") {
+        sendJSON(res, 200, sandboxSnapshot());
+        return;
+      }
+      if (req.method === "POST") {
+        // 与 /permissions 同一道写入门：跨站拦截 → 进程 token → 参数校验
+        if (isCrossSiteRequest(req.headers)) {
+          sendJSON(res, 403, { error: "跨站请求被拒绝（Origin / Sec-Fetch-Site 校验未通过）" });
+          return;
+        }
+        if (req.headers["x-aiworker-token"] !== serverToken) {
+          sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
+          return;
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(await parseBody(req));
+        } catch {
+          sendJSON(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          sendJSON(res, 400, { error: "请求体必须是对象（沙箱配置字段）" });
+          return;
+        }
+        const result = saveSandboxPolicy(body as Record<string, unknown>, { workingDir: deps.workingDir });
+        if (!result.ok) {
+          sendJSON(res, 400, { error: result.reason, ...sandboxSnapshot() });
+          return;
+        }
+        sendJSON(res, 200, { ok: true, ...sandboxSnapshot() });
+        return;
+      }
+      sendJSON(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    // 权限规则（Sprint 49）：GET 列出（含来源，含安全清单与模式）/ POST 增删重置、写安全清单
     if (url === apiUrl("/permissions") || url.startsWith(`${apiUrl("/permissions")}?`)) {
       if (!deps.permissionMemory) { sendJSON(res, 503, { error: "Permission memory not available" }); return; }
       const memory = deps.permissionMemory;
-      const snapshot = () => ({
-        rules: memory.list(),
-        configPath: memory.getConfigPath(),
-        projectCount: memory.list().filter((r) => r.source === "project").length,
-        sessionCount: memory.list().filter((r) => r.source === "session").length,
-      });
+      const snapshot = () => {
+        const rules = memory.list();
+        const protectedFromFile = memory.readStringList("protected_paths");
+        const neverFromFile = memory.readStringList("never_auto_approve");
+        return {
+          rules,
+          configPath: memory.getConfigPath(),
+          projectCount: rules.filter((r) => r.source === "project").length,
+          sessionCount: rules.filter((r) => r.source === "session").length,
+          mode: deps.permissionModel?.getMode() ?? "auto",
+          protectedPaths: {
+            // null = 配置文件里没有这个键，此时生效值来自内置基线（UI 据此回填草稿，避免"少写一条就静默丢保护"）
+            fromConfig: protectedFromFile.present ? protectedFromFile.values : null,
+            defaults: [...DEFAULT_PROTECTED_PATHS],
+            effective: deps.permissionModel?.getProtectedPaths() ?? [...DEFAULT_PROTECTED_PATHS],
+          },
+          neverAutoApprove: {
+            fromConfig: neverFromFile.present ? neverFromFile.values : null,
+            effective: deps.permissionModel?.getNeverAutoApprove() ?? [],
+          },
+        };
+      };
       if (req.method === "GET") {
         sendJSON(res, 200, snapshot());
         return;
@@ -1211,7 +1285,15 @@ export function startServer(deps: ServerDeps, port: number) {
           sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
           return;
         }
-        let body: { action?: unknown; tool?: unknown; match?: unknown; ruleAction?: unknown; scope?: unknown };
+        let body: {
+          action?: unknown;
+          tool?: unknown;
+          match?: unknown;
+          ruleAction?: unknown;
+          scope?: unknown;
+          values?: unknown;
+          acknowledge?: unknown;
+        };
         try {
           body = JSON.parse(await parseBody(req)) as typeof body;
         } catch {
@@ -1225,6 +1307,23 @@ export function startServer(deps: ServerDeps, port: number) {
           return;
         }
         const scope: PermissionRuleScope = rawScope === "project" ? "project" : "session";
+        if (action === "set-protected-paths" || action === "set-never-auto-approve") {
+          const key = action === "set-protected-paths" ? "protected_paths" : "never_auto_approve";
+          const result = memory.setSafetyList(key, body.values, {
+            defaults: action === "set-protected-paths" ? DEFAULT_PROTECTED_PATHS : [],
+            acknowledge: body.acknowledge === true,
+          });
+          if (!result.ok) {
+            sendJSON(res, 400, {
+              error: result.reason ?? "写入失败",
+              removedDefaults: result.removedDefaults,
+              ...snapshot(),
+            });
+            return;
+          }
+          sendJSON(res, 200, { ok: true, warning: result.warning, ...snapshot() });
+          return;
+        }
         if (action === "add") {
           const ruleAction = String(body.ruleAction ?? "");
           if (ruleAction !== "allow" && ruleAction !== "ask" && ruleAction !== "deny") {
@@ -1597,6 +1696,15 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/config") && req.method === "POST") {
       if (!deps.setConfigField) {
         sendJSON(res, 503, { error: "Config not available" });
+        return;
+      }
+      // 写入门（Sprint 50 / IA 重构补齐）：设置页的模型与交互两组都要写这里，不能再沿用旧的信任模型
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝（Origin / Sec-Fetch-Site 校验未通过）" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
         return;
       }
       let body: string;
@@ -2346,7 +2454,7 @@ export function startServer(deps: ServerDeps, port: number) {
             error:
               cap.source === "config"
                 ? "当前模型声明不支持视觉输入（图片）。请在 config/models.json 的当前 profile 配置 vision:true 后重试。"
-                : "当前模型未声明视觉能力、也未实测，图片输入被拒。请在 Web「设置→设备→模型能力」点【检测图片能力】实测，或在 config/models.json 配置 vision:true 后重试。",
+                : "当前模型未声明视觉能力、也未实测，图片输入被拒。请在 Web「设置→模型→模型能力」点【检测图片能力】实测，或在 config/models.json 配置 vision:true 后重试。",
           });
           return;
         }

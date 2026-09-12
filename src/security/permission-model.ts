@@ -307,6 +307,21 @@ export class PermissionModel {
     return [...this.neverAuto];
   }
 
+  /**
+   * 热更新受保护路径 / 永不自动批准清单（Sprint 50 / IA 重构）
+   *
+   * 存在的理由：这两个清单原本只在构造时从配置读入，Web 上改完文件若不重启就是"看起来改了、其实没生效"。
+   * 归一化规则与构造函数逐字一致（受保护路径：反斜杠转正斜杠 + 小写），避免"同一份配置因入口不同而判定不同"。
+   * 只做替换，不做校验：合法性由写入方（PermissionMemory.setSafetyList）负责。
+   */
+  setProtectedPaths(paths: string[]): void {
+    this.protectedPaths = toStringList(paths).map((p) => p.replace(/\\/g, "/").toLowerCase());
+  }
+
+  setNeverAutoApprove(list: string[]): void {
+    this.neverAuto = toStringList(list);
+  }
+
   getDescription(mode?: PermissionMode): string {
     const m = mode ?? this.currentMode;
     return this.config.modes[m].description;

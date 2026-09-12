@@ -1989,20 +1989,24 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     const got = (await get.json()) as { model: string };
     expect(got.model).toBe("m1");
 
-    const post = await fetch(`${base5}${API}/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ field: "temperature", value: 0.5 }),
-    });
+    // Sprint 50：/config 的 POST 已收进写入门（跨站 403 → 缺 token 401）
+    const token = readFileSync(join(testDir, "server-token"), "utf-8");
+    const postConfig = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(`${base5}${API}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-aiworker-token": token, ...headers },
+        body: JSON.stringify(body),
+      });
+
+    expect((await postConfig({ field: "temperature", value: 0.5 }, { "x-aiworker-token": "" })).status).toBe(401);
+    expect((await postConfig({ field: "temperature", value: 0.5 }, { "sec-fetch-site": "cross-site" })).status).toBe(403);
+
+    const post = await postConfig({ field: "temperature", value: 0.5 });
     expect(post.status).toBe(200);
     const after = (await post.json()) as { state: { runtimeConfig: { temperature: number } } };
     expect(after.state.runtimeConfig.temperature).toBe(0.5);
 
-    const bad = await fetch(`${base5}${API}/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ field: "temperature", value: 9 }),
-    });
+    const bad = await postConfig({ field: "temperature", value: 9 });
     expect(bad.status).toBe(400);
     local.close();
   });
@@ -2039,7 +2043,7 @@ describe("HTTP Server — 后台任务与定时调度", () => {
 
     const ok = await fetch(`${base6}${API}/config`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-aiworker-token": readFileSync(join(testDir, "server-token"), "utf-8") },
       body: JSON.stringify({ field: "addModel", value: { key: "my-gpt", model: "gpt-4o-mini", baseURL: "https://api.example.com/v1", provider: "openai", apiKey: "${MY_KEY}" } }),
     });
     expect(ok.status).toBe(200);

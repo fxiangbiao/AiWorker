@@ -6,10 +6,11 @@
  * 本模块不会主动加规则：无确认通道时由审批层 fail-closed，不存在"默认记住"的路径
  */
 
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { PermissionRule, PermissionRuleChange, PermissionRuleScope, SourcedPermissionRule } from "../types.js";
 import { PermissionModel } from "./permission-model.js";
+import { readJsonObject, writeJsonAtomic } from "./json-file.js";
 import { auditLogger } from "../core/audit-logger.js";
 
 export interface PermissionMemoryDeps {
@@ -268,12 +269,80 @@ export class PermissionMemory {
     return removed;
   }
 
+  /** 读配置里的字符串数组键（`present: false` = 文件里没有该键，此时生效值来自内置基线） */
+  readStringList(key: "protected_paths" | "never_auto_approve"): { present: boolean; values: string[] } {
+    this.refresh();
+    const parsed = this.readConfig();
+    if (!parsed.ok) return { present: false, values: [] };
+    const raw = parsed.data[key];
+    if (!Array.isArray(raw)) return { present: false, values: [] };
+    return { present: true, values: raw.filter((v): v is string => typeof v === "string") };
+  }
+
+  /**
+   * 写「安全清单」键（受保护路径 / 永不自动批准 / 命令黑名单）：整表替换 → 落盘 → **同步更新运行中的模型**
+   *
+   * 两个刻意的安全设计：
+   * - **落盘失败即整体失败**（与 add 不同，这里不回退内存）：清单是"保护范围"的声明，
+   *   内存与磁盘不一致时用户看到的与生效的不一样，比直接报错更危险。
+   * - **移除内置基线项需显式 acknowledge**：文件里的 `protected_paths` 会**整体替换**内置基线
+   *   （bootstrap 用 `?? DEFAULT_PROTECTED_PATHS`），所以"少传一条"就等于静默丢掉一层保护。
+   *   服务端强制要求调用方确认（而不是只靠前端弹窗），避免任何脚本/第三方客户端误删。
+   */
+  setSafetyList(
+    key: "protected_paths" | "never_auto_approve",
+    values: unknown,
+    opts: { defaults?: readonly string[]; acknowledge?: boolean } = {},
+  ): { ok: boolean; reason?: string; warning?: string; removedDefaults?: string[] } {
+    this.refresh();
+    if (!Array.isArray(values)) return { ok: false, reason: `${key} 必须是字符串数组` };
+    const cleaned: string[] = [];
+    for (const item of values) {
+      if (typeof item !== "string") return { ok: false, reason: `${key} 的每一项都必须是字符串` };
+      const v = item.trim();
+      if (!v) return { ok: false, reason: `${key} 不允许空字符串条目` };
+      if (/[\r\n]/.test(v)) return { ok: false, reason: `${key} 的条目不允许多行内容` };
+      if (!cleaned.some((c) => c.toLowerCase() === v.toLowerCase())) cleaned.push(v);
+    }
+    const defaults = opts.defaults ?? [];
+    const removedDefaults = defaults.filter((d) => !cleaned.some((c) => c.toLowerCase() === d.toLowerCase()));
+    if (removedDefaults.length > 0 && opts.acknowledge !== true) {
+      return {
+        ok: false,
+        reason: `本次提交会移除内置基线项（${removedDefaults.join("、")}），需确认后再提交`,
+        removedDefaults,
+      };
+    }
+
+    const written = this.writeConfigData((data) => ({ ...data, [key]: cleaned }));
+    if (!written.ok) return { ok: false, reason: written.reason };
+    if (key === "protected_paths") this.model.setProtectedPaths(cleaned);
+    else this.model.setNeverAutoApprove(cleaned);
+    this.log({
+      action: key === "protected_paths" ? "permission:protected-paths-set" : "permission:never-auto-approve-set",
+      detail: `${cleaned.length} 条${removedDefaults.length > 0 ? `（移除内置基线 ${removedDefaults.join("、")}）` : ""}`,
+    });
+    return removedDefaults.length > 0
+      ? { ok: true, warning: `已移除内置基线项：${removedDefaults.join("、")}（重启后同样生效，因为已经写进配置文件）` }
+      : { ok: true };
+  }
+
   /**
    * 读全量 → 变换 rules → 原子写回（保留其他字段、BOM、行尾风格、权限与无法识别的条目）
    * 目标始终是**项目配置**（跟随 `--dir`）：首次写入时以启动目录配置为模板创建，
    * 因此不会静默改写安装目录/启动目录的配置，也不会因为新建文件而丢掉受保护路径等基础策略
    */
   private writeProject(mutate: (rules: unknown[]) => unknown[]): { ok: boolean; reason?: string } {
+    return this.writeConfigData((data, rawRules) => ({ ...data, rules: mutate(rawRules) }));
+  }
+
+  /**
+   * 通用的"读全量 → 改一处 → 原子写回"。rules 与安全清单（受保护路径 / 永不自动批准）共用同一套
+   * 模板创建、损坏拒绝与风格保留逻辑，避免同一个文件出现两套写法。
+   */
+  private writeConfigData(
+    mutate: (data: Record<string, unknown>, rawRules: unknown[]) => Record<string, unknown>,
+  ): { ok: boolean; reason?: string } {
     const target = this.writePath;
     const creating = !existsSync(target);
     if (!creating && inspectConfig(target) === "foreign") {
@@ -288,57 +357,17 @@ export class PermissionMemory {
     // 首次创建时若模板/回落配置存在但不可读（损坏），同样拒绝：不在一份读不懂的基础策略之上新建授权文件
     if (creating && !parsed.ok && existsSync(source)) return { ok: false, reason: parsed.reason };
     const template = parsed.ok ? parsed.data : {};
-    const data = { ...template, rules: mutate(parsed.ok ? parsed.rawRules : []) };
-    const tmp = `${target}.tmp-${process.pid}-${Date.now().toString(36)}`;
-    try {
-      mkdirSync(dirname(target), { recursive: true });
-      const eol = parsed.ok ? parsed.eol : "\n";
-      const trailing = parsed.ok ? parsed.trailing : true;
-      const body = `${parsed.ok && parsed.hadBom ? "\uFEFF" : ""}${serialize(data, eol, trailing)}`;
-      const fd = openSync(tmp, "w", parsed.ok && parsed.mode !== null ? parsed.mode : 0o644);
-      try {
-        writeSync(fd, body);
-        fsyncSync(fd); // 崩溃/掉电时不留下半截文件
-      } finally {
-        closeSync(fd);
-      }
-      if (parsed.ok && parsed.mode !== null) {
-        try {
-          chmodSync(tmp, parsed.mode);
-        } catch {
-          /* 权限复制失败不影响写入 */
-        }
-      }
-      renameSync(tmp, target);
-      this.configPath = target;
-      this.syncStamp();
-      this.cleanStaleTemps(target);
-      return { ok: true };
-    } catch (err) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        /* 清理失败不影响结论 */
-      }
-      return { ok: false, reason: `写入权限配置失败: ${(err as Error).message}` };
-    }
-  }
-
-  /** 清理同目录下遗留的临时文件（上次崩溃留下），避免长期堆积 */
-  private cleanStaleTemps(target: string): void {
-    try {
-      const dir = dirname(target);
-      const prefix = `${basename(target)}.tmp-`;
-      const cutoff = Date.now() - 60 * 60 * 1000;
-      for (const name of readdirSync(dir)) {
-        if (!name.startsWith(prefix)) continue;
-        const full = resolve(dir, name);
-        const st = statSync(full);
-        if (st.mtimeMs < cutoff) rmSync(full, { force: true });
-      }
-    } catch {
-      /* 清理是尽力而为 */
-    }
+    const data = mutate(template, parsed.ok ? parsed.rawRules : []);
+    const written = writeJsonAtomic(target, data, {
+      hadBom: parsed.ok && parsed.hadBom,
+      eol: parsed.ok ? parsed.eol : "\n",
+      trailing: parsed.ok ? parsed.trailing : true,
+      mode: parsed.ok ? parsed.mode : null,
+    });
+    if (!written.ok) return { ok: false, reason: `写入权限配置失败: ${written.reason}` };
+    this.configPath = target;
+    this.syncStamp();
+    return { ok: true };
   }
 
   private readConfig(): ({ ok: true } & ParsedConfig) | { ok: false; reason: string } {
@@ -346,44 +375,22 @@ export class PermissionMemory {
   }
 
   private readConfigAt(path: string): ({ ok: true } & ParsedConfig) | { ok: false; reason: string } {
-    let text: string;
-    let st: ReturnType<typeof statSync>;
-    try {
-      st = statSync(path);
-      text = readFileSync(path, "utf-8");
-    } catch {
-      return { ok: false, reason: `未找到权限配置文件: ${path}` };
-    }
-    const hadBom = text.charCodeAt(0) === 0xfeff;
-    let data: unknown;
-    try {
-      data = JSON.parse(hadBom ? text.slice(1) : text);
-    } catch (err) {
-      return { ok: false, reason: `权限配置文件不是合法 JSON，已拒绝写入: ${(err as Error).message}` };
-    }
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return { ok: false, reason: "权限配置文件顶层必须是对象，已拒绝写入" };
-    }
-    const rawRules = (data as Record<string, unknown>).rules;
+    const res = readJsonObject(path);
+    if (!res.ok) return { ok: false, reason: `权限配置文件${res.reason}` };
+    const rawRules = res.data.rules;
     if (rawRules !== undefined && !Array.isArray(rawRules)) {
       console.warn(`[permissions] ${path} 的 rules 不是数组，写入时将替换为数组`);
     }
     return {
       ok: true,
-      data: data as Record<string, unknown>,
-      hadBom,
-      eol: text.includes("\r\n") ? "\r\n" : "\n",
-      trailing: /\r?\n$/.test(text),
-      mode: st.mode & 0o777,
-      mtimeMs: st.mtimeMs,
-      size: st.size,
+      data: res.data,
+      hadBom: res.hadBom,
+      eol: res.eol,
+      trailing: res.trailing,
+      mode: res.mode,
+      mtimeMs: res.mtimeMs,
+      size: res.size,
       rawRules: Array.isArray(rawRules) ? rawRules : [],
     };
   }
-}
-
-/** 按原文件风格序列化（缩进 2 空格 + 原行尾 + 原尾换行习惯），把 diff 噪音降到最低 */
-function serialize(data: Record<string, unknown>, eol: string, trailing: boolean): string {
-  const body = JSON.stringify(data, null, 2).split("\n").join(eol);
-  return trailing ? `${body}${eol}` : body;
 }

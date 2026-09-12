@@ -1,18 +1,19 @@
 <script lang="ts">
   import { API, store, deleteChat, renameChat, exportChat } from "$lib/stores/chat.svelte";
   import { stream } from "$lib/stores/stream.svelte";
-  import { MessageSquare, Box, ListChecks, Settings, Cpu, PanelLeftClose } from "lucide-svelte";
+  import { MessageSquare, Box, ListChecks, Settings, LayoutDashboard, Cpu, PanelLeftClose } from "lucide-svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
   import AppsPanel from "./AppsPanel.svelte";
   import ProcessesPanel from "./ProcessesPanel.svelte";
   import JobsPanel from "./JobsPanel.svelte";
   import { sidebarNav } from "$lib/stores/apps.svelte";
 
-  let { onNewChat, onSwitch, onHide, onOpenSystem } = $props<{
+  let { onNewChat, onSwitch, onHide, onOpenSystem, onOpenSettings } = $props<{
     onNewChat: () => void;
     onSwitch: (id: string) => void;
     onHide: () => void;
     onOpenSystem: () => void;
+    onOpenSettings: () => void;
   }>();
 
   type NavTab = "chat" | "apps" | "processes" | "jobs";
@@ -134,7 +135,10 @@
         <span>{item.label}</span>
       </button>
     {/each}
-    <button class="s-nav-fixed" title="设置" onclick={onOpenSystem}>
+    <button class="s-nav-fixed" title="控制台（看系统）" onclick={onOpenSystem}>
+      <LayoutDashboard size={14} />
+    </button>
+    <button class="s-nav-fixed" title="设置（改配置）" onclick={onOpenSettings}>
       <Settings size={14} />
     </button>
     <button class="s-nav-fixed" title="隐藏左侧栏" onclick={onHide}>

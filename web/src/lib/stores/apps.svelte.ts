@@ -60,8 +60,8 @@ export const processResources = writable<{ tokens: { total: number; prompt: numb
 export const openWindows = writable<Record<string, boolean>>({});
 /** 窗口状态（位置/尺寸/形态/置顶），localStorage 持久化 appwin-<id> */
 export const winStates = writable<Record<string, AppWinState>>({});
-/** 右侧面板当前 Tab（产物工作台 / 权限 / 应用，Sprint 50：文件变更+文档预览+回滚 合并为「产物」） */
-export const rightTab = writable<"artifacts" | "permissions" | "apps">("artifacts");
+/** 右侧面板当前 Tab（Sprint 50：文件变更+文档预览+回滚 合并为「产物」；权限已迁到 设置→安全，故只剩两个） */
+export const rightTab = writable<"artifacts" | "apps">("artifacts");
 /** 右侧面板可见性（默认关闭；新生成应用/文档时自动展开到对应 Tab） */
 export const rightPanelVisible = writable(false);
 /** 待打开的文档（`<root>:<rel>`）——产物面板据此在列表里选中该文档 */

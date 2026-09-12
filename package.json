@@ -1,6 +1,6 @@
 {
   "name": "aiworker",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "AiWorker - 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化",
   "type": "module",
   "main": "dist/index.js",

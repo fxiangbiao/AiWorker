@@ -142,7 +142,6 @@
       <span class="ico" class:spin={loading}><RefreshCw size={13} /></span>
     </button>
   </div>
-
   {#if configPath}
     <div class="path-line" title={configPath}>项目配置：{configPath}</div>
   {/if}
@@ -199,10 +198,15 @@
 </div>
 
 <style>
-  .perms { display: flex; flex-direction: column; height: 100%; overflow-y: auto; font-size: 12px; }
+  /*
+   * Sprint 50 / IA 重构：本面板从「右栏 Tab」改为「设置 → 安全」里的一个 section。
+   * 因此**不再自带高度与滚动**（原先 `height:100% + overflow-y:auto` 会与外层设置面板形成双层滚动，
+   * 这正是上一轮用户反馈过的问题）；滚动交给设置面板唯一的滚动容器。
+   */
+  .perms { display: flex; flex-direction: column; font-size: 12px; }
   .head {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0;
+    padding: 6px 0; border-bottom: 1px solid var(--border);
     background: var(--surface); z-index: 1;
   }
   .title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }

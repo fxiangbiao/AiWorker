@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { evaluatePath, isInsideDir, resolveRealPath, resolveRoots } from "./path-policy.js";
+import { readJsonObject, writeJsonAtomic } from "./json-file.js";
 
 export interface SandboxPolicy {
   enabled: boolean;
@@ -91,6 +92,109 @@ export function loadSandboxPolicy(configPath?: string): SandboxPolicy {
 }
 
 const SECRET_ENV_PATTERN = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)/i;
+
+/**
+ * 沙箱配置的**写入路径**：始终跟随 `--dir`（与权限配置 `permission-memory` 的策略一致）
+ * 理由：读取侧允许回落到安装目录的 `config/sandbox.json`，但**写入绝不落到安装目录**——
+ * 否则一次 UI 保存就会改写安装包里的文件（升级/重装即丢失，且污染仓库）。
+ */
+export function resolveSandboxWritePath(workingDir: string): string {
+  return resolve(workingDir, "config", "sandbox.json");
+}
+
+/**
+ * 校验并原子写入沙箱配置（Sprint 50 / IA 重构：Web「设置→安全」与「设置→工作区」的写面）
+ *
+ * 四条刻意的取舍：
+ * - **目录必须绝对路径**：`loadSandboxPolicy` 对相对路径按 cwd 解析，Web 端传相对路径语义含糊
+ *   （浏览器不知道服务端 cwd），直接拒绝比"猜一个"更诚实。
+ * - **未知键拒绝**：拼错 `allowWriteDir` 这类字段若被静默忽略，用户会以为"已放开写入"。
+ * - **保留文件里的未知键**：不因为一次 UI 写入就丢掉别人（或未来版本）写在同文件里的配置。
+ * - **首次创建以当前生效配置为模板**：不会因为新建文件而丢掉既有策略。
+ *
+ * 生效时机：无需重启——`loadSandboxPolicy()` 在每次工具调用时现读磁盘（见 tools/builtin.ts）。
+ */
+export function saveSandboxPolicy(
+  patch: Record<string, unknown>,
+  opts: { workingDir: string },
+): { ok: boolean; reason?: string; path?: string } {
+  const target = resolveSandboxWritePath(opts.workingDir);
+  const allowedKeys = new Set(SANDBOX_KEYS);
+  const unknown = Object.keys(patch).filter((k) => !allowedKeys.has(k));
+  if (unknown.length > 0) {
+    return { ok: false, reason: `未知配置项：${unknown.join("、")}（可用：${SANDBOX_KEYS.join(" / ")}）` };
+  }
+
+  const next: Partial<SandboxPolicy> = {};
+  if ("enabled" in patch) {
+    if (typeof patch.enabled !== "boolean") return { ok: false, reason: "enabled 必须是布尔值" };
+    next.enabled = patch.enabled;
+  }
+  if ("stripSecretEnv" in patch) {
+    if (typeof patch.stripSecretEnv !== "boolean") return { ok: false, reason: "stripSecretEnv 必须是布尔值" };
+    next.stripSecretEnv = patch.stripSecretEnv;
+  }
+  for (const key of ["allowDirs", "allowWriteDirs", "allowReadDirs"] as const) {
+    if (!(key in patch)) continue;
+    const raw = patch[key];
+    if (!Array.isArray(raw)) return { ok: false, reason: `${key} 必须是字符串数组` };
+    const dirs: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== "string") return { ok: false, reason: `${key} 的每一项都必须是字符串` };
+      const v = item.trim();
+      if (!v) return { ok: false, reason: `${key} 不允许空条目` };
+      if (!isAbsolute(v)) return { ok: false, reason: `${key} 只接受绝对路径：${v}` };
+      if (!dirs.some((d) => d.toLowerCase() === v.toLowerCase())) dirs.push(v);
+    }
+    next[key] = dirs as SandboxPolicy[typeof key];
+  }
+  if ("denyCommands" in patch) {
+    const raw = patch.denyCommands;
+    if (!Array.isArray(raw)) return { ok: false, reason: "denyCommands 必须是字符串数组" };
+    const list: string[] = [];
+    for (const item of raw) {
+      if (typeof item !== "string") return { ok: false, reason: "denyCommands 的每一项都必须是字符串" };
+      const v = item.trim();
+      if (!v) return { ok: false, reason: "denyCommands 不允许空条目" };
+      if (/[\r\n]/.test(v)) return { ok: false, reason: "denyCommands 的条目不允许多行内容" };
+      if (!list.some((d) => d.toLowerCase() === v.toLowerCase())) list.push(v);
+    }
+    next.denyCommands = list;
+  }
+
+  if (existsSync(target) && !looksLikeSandboxConfig(target)) {
+    return { ok: false, reason: `${target} 已存在但不含任何沙箱配置键（可能是别的工具的配置），拒绝覆盖` };
+  }
+  const creating = !existsSync(target);
+  const source = creating ? resolveSandboxConfigPath(opts.workingDir) : target;
+  const existing = readJsonObject(source);
+  if (existing.ok === false && existsSync(source)) {
+    return { ok: false, reason: `沙箱配置不可读，已拒绝写入：${existing.reason}` };
+  }
+  const template = existing.ok ? existing.data : {};
+  const data: Record<string, unknown> = { ...template, ...next };
+  const written = writeJsonAtomic(target, data, {
+    hadBom: existing.ok ? existing.hadBom : false,
+    eol: existing.ok ? existing.eol : "\n",
+    trailing: existing.ok ? existing.trailing : true,
+    mode: existing.ok ? existing.mode : null,
+  });
+  if (!written.ok) return { ok: false, reason: `写入沙箱配置失败: ${written.reason}` };
+  return { ok: true, path: target };
+}
+
+/** 沙箱配置的**生效值**（留空的根按工作目录回退，必须让用户在设置页看到真正生效的范围） */
+export function describeSandboxPolicy(policy: SandboxPolicy, workingDir: string): {
+  allowDirs: string[];
+  allowWriteDirs: string[];
+  allowReadDirs: string[];
+} {
+  return {
+    allowDirs: resolveRoots(policy.allowDirs, workingDir),
+    allowWriteDirs: resolveRoots(policy.allowWriteDirs, workingDir),
+    allowReadDirs: resolveRoots(policy.allowReadDirs, workingDir),
+  };
+}
 
 export function sanitizeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};

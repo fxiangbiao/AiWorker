@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { RefreshCw } from "lucide-svelte";
   import { API, store } from "$lib/stores/chat.svelte";
-  import { refreshStatus } from "$lib/stores/status";
+  import { consoleTab as consoleTabStore, type ConsoleTab } from "$lib/stores/shell.svelte";
   import { onWsEvent } from "$lib/stores/ws.svelte";
   import TracePanel from "./TracePanel.svelte";
   import AppsPanel from "./AppsPanel.svelte";
@@ -10,8 +10,9 @@
   import AgentsPanel from "./AgentsPanel.svelte";
   import EvolutionPanel from "./EvolutionPanel.svelte";
 
-  type SystemTab = "context" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "config" | "trace" | "agents" | "evolution" | "audit" | "devices";
-  let tab = $state<SystemTab>("context");
+  /** 控制台 tab 与 shell store 同构（`ConsoleTab`），此处别名只为可读性 */
+  type SystemTab = ConsoleTab;
+  let tab = $state<SystemTab>($consoleTabStore);
   let breakdown: {
     systemPromptBase?: number;
     projectMemory?: number;
@@ -137,19 +138,9 @@
   }
   let deviceStatus = $state<DeviceStatus | null>(null);
   let mediaBusy = $state<"" | "asr" | "tts">("");
-  let probeBusy = $state(false);
   let msg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
 
   const VISION_SOURCE_LABEL: Record<string, string> = { probe: "实测", config: "配置声明", unknown: "未检测" };
-
-  /** ISO 时间 → 本地"月-日 时:分"（实测时间戳展示） */
-  function fmtTime(iso: string): string {
-    if (!iso) return "时间未知";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  }
 
   function fmtUptime(sec: number): string {
     if (sec < 60) return `${sec}s`;
@@ -166,44 +157,8 @@
     }
   }
 
-  /**
-   * 实测当前模型是否接受图片输入：真实发一次 1×1 PNG 请求（约几十 token），结果按模型缓存到 dataDir。
-   * 需服务端注入的进程 token（跨站/无 token 会被 401/403 拒），故只在服务端页面可用。
-   */
-  async function probeModelVision() {
-    if (probeBusy) return;
-    probeBusy = true;
-    msg = null;
-    try {
-      const token = typeof window !== "undefined" ? (window.__AIWORKER_TOKEN__ ?? "") : "";
-      const r = await fetch(`${API}/devices/probe`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-aiworker-token": token },
-        body: JSON.stringify({ kind: "model-vision" }),
-      });
-      const d = (await r.json()) as {
-        ok?: boolean;
-        probe?: VisionProbe;
-        warning?: string;
-        error?: string;
-        status?: DeviceStatus;
-      };
-      if (!r.ok || !d.ok) {
-        msg = { kind: "err", text: d.error ?? `检测失败（HTTP ${r.status}）` };
-        return;
-      }
-      if (d.status) deviceStatus = d.status;
-      const p = d.probe;
-      const tail = d.warning ? ` · ${d.warning}` : "";
-      if (p?.supported === true) msg = { kind: "ok", text: `实测通过：端点接受图片输入（${p.latencyMs}ms）${tail}` };
-      else if (p?.supported === false) msg = { kind: "err", text: `实测拒绝：端点不接受图片输入${p.error ? ` · ${p.error}` : ""}${tail}` };
-      else msg = { kind: "err", text: `无法判定${p?.error ? `：${p.error}` : ""}${tail}` };
-    } catch (e) {
-      msg = { kind: "err", text: (e as Error).message };
-    } finally {
-      probeBusy = false;
-    }
-  }
+  // 模型视觉能力的实测按钮已迁到「设置 → 模型」（同一份数据只保留一个编辑入口），
+  // 控制台只展示结论与来源，不再发写请求。
 
   /** 一键下载语音模型（hf-mirror；约 232MB(ASR)/118MB(TTS)，本地 fetch 等待完成） */
   async function downloadMedia(kind: "asr" | "tts") {
@@ -447,101 +402,9 @@
     failed: "失败",
   };
 
-  // ── 系统配置（等价 TUI /config；迭代上限已统一由「智能体」Tab 管理） ──
-  interface ConfigState {
-    model: string;
-    availableModels: { key: string; model: string; provider: string }[];
-    runtimeConfig: { profileKey?: string; temperature?: number | null; maxTokens?: number | null };
-    thinking: boolean;
-    skillEvo: boolean;
-    appVersion: string;
-  }
-  let configState = $state<ConfigState | null>(null);
-  let cfgModel = $state("default");
-  let cfgTemperature = $state("");
-  let cfgMaxTokens = $state("");
-  let cfgMsg = $state("");
-  // 添加模型表单
-  let newModelKey = $state("");
-  let newModelName = $state("");
-  let newModelBase = $state("");
-  let newModelProvider = $state("");
-  let newModelKeyVal = $state("");
-
-  function loadConfig() {
-    loading = true;
-    fetch(`${API}/config`)
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => {
-        configState = d as ConfigState;
-        cfgModel = configState.runtimeConfig.profileKey || "default";
-        cfgTemperature = configState.runtimeConfig.temperature != null ? String(configState.runtimeConfig.temperature) : "";
-        cfgMaxTokens = configState.runtimeConfig.maxTokens != null ? String(configState.runtimeConfig.maxTokens) : "";
-      })
-      .catch(() => { configState = null; })
-      .finally(() => { loading = false; });
-  }
-
-  async function applyConfig(field: string, value: unknown): Promise<boolean> {
-    cfgMsg = "";
-    const resp = await fetch(`${API}/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ field, value }),
-    });
-    const data = (await resp.json()) as { ok?: boolean; error?: string; state?: ConfigState };
-    if (!resp.ok || !data.ok) {
-      cfgMsg = `设置失败: ${data.error ?? resp.status}`;
-      return false;
-    }
-    if (data.state) configState = data.state;
-    // 立即刷新底部状态栏（模型/窗口等），避免等 30s 轮询或下一轮 done
-    void refreshStatus();
-    loadConfig();
-    return true;
-  }
-
-  function onModelChange(e: Event) {
-    void applyConfig("model", (e.target as HTMLSelectElement).value);
-  }
-  function onTemperature() {
-    void applyConfig("temperature", parseFloat(cfgTemperature));
-  }
-  function onMaxTokens() {
-    void applyConfig("maxTokens", parseInt(cfgMaxTokens, 10));
-  }
-  function onThinking(e: Event) {
-    void applyConfig("thinking", (e.target as HTMLInputElement).checked);
-  }
-  function onSkillEvo(e: Event) {
-    void applyConfig("skillEvo", (e.target as HTMLInputElement).checked);
-  }
-  function onReset() {
-    if (!confirm("恢复配置文件默认（模型/温度/max-tokens）？")) return;
-    void applyConfig("reset", null);
-  }
-
-  function onAddModel() {
-    if (!newModelKey.trim() || !newModelName.trim() || !newModelBase.trim()) {
-      cfgMsg = "添加模型需填写 key / 模型名 / baseURL";
-      return;
-    }
-    void applyConfig("addModel", {
-      key: newModelKey.trim(),
-      model: newModelName.trim(),
-      baseURL: newModelBase.trim(),
-      provider: newModelProvider.trim() || undefined,
-      apiKey: newModelKeyVal.trim() || undefined,
-    }).then((ok) => {
-      if (ok) {
-        newModelKey = "";
-        newModelName = "";
-        newModelBase = "";
-        newModelProvider = "";
-        newModelKeyVal = "";
-      }
-    });
-  }
+  // ── 系统配置已迁到「设置」面板（Sprint 50 / IA 重构） ──
+  // 模型与生成参数、思考展示、技能自动沉淀、添加模型：见 web/src/components/settings/*
+  // 控制台只保留"看"的部分：本面板不再读写 /config。
 
   // ── .aw 资产包导入/导出 ──
 
@@ -652,16 +515,24 @@
 
   function switchTab(t: SystemTab) {
     tab = t;
+    consoleTabStore.set(t);
     detail = null;
     if (t === "skills") loadSkills();
     else if (t === "mcp") loadMcp();
     else if (t === "plugins") loadPlugins();
     else if (t === "schedule") loadSchedule();
-    else if (t === "config") loadConfig();
     else if (t === "audit") loadAudit();
     else if (t === "devices") loadDevices();
     // context Tab 由下方 $effect 驱动（切到 context 时 loadContext）
   }
+  /**
+   * 外部深链（`openConsole("devices")` 等）：store 是唯一入口，这里跟随它切换。
+   * 早先只把 tab 存在组件内部，`openConsole(tab)` 会**静默无效**——已修正为双向同步（写回同值时不会成环）。
+   */
+  $effect(() => {
+    const want = $consoleTabStore;
+    if (want !== tab) switchTab(want);
+  });
   // WS job/done 事件 → 调度 Tab 数据实时刷新
   let unsubWs: (() => void) | null = null;
 
@@ -692,19 +563,22 @@
     </div>
   {/snippet}
   <div class="sp-side">
+    <!-- 分组只是视觉归类：观测 = 只看运行痕迹；资源 = 装了什么/在跑什么；系统 = 这台机器的状态 -->
+    <div class="sp-nav-group">观测</div>
     <button class="sp-nav" class:active={tab === "context"} onclick={() => switchTab("context")}>上下文</button>
+    <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
+    <button class="sp-nav" class:active={tab === "audit"} onclick={() => switchTab("audit")}>审计</button>
+    <button class="sp-nav" class:active={tab === "evolution"} onclick={() => switchTab("evolution")}>进化</button>
+    <div class="sp-nav-group">资源</div>
     <button class="sp-nav" class:active={tab === "agents"} onclick={() => switchTab("agents")}>智能体</button>
     <button class="sp-nav" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
     <button class="sp-nav" class:active={tab === "apps"} onclick={() => switchTab("apps")}>应用</button>
     <button class="sp-nav" class:active={tab === "processes"} onclick={() => switchTab("processes")}>进程</button>
-    <button class="sp-nav" class:active={tab === "devices"} onclick={() => switchTab("devices")}>设备</button>
-    <button class="sp-nav" class:active={tab === "evolution"} onclick={() => switchTab("evolution")}>进化</button>
     <button class="sp-nav" class:active={tab === "schedule"} onclick={() => switchTab("schedule")}>调度</button>
-    <button class="sp-nav" class:active={tab === "config"} onclick={() => switchTab("config")}>配置</button>
-    <button class="sp-nav" class:active={tab === "audit"} onclick={() => switchTab("audit")}>审计</button>
-    <button class="sp-nav" class:active={tab === "trace"} onclick={() => switchTab("trace")}>轨迹</button>
+    <div class="sp-nav-group">系统</div>
+    <button class="sp-nav" class:active={tab === "devices"} onclick={() => switchTab("devices")}>设备与运行时</button>
   </div>
 
   <div class="sp-body">
@@ -794,25 +668,9 @@
                 {#if deviceStatus.model.provider}· {deviceStatus.model.provider}{/if}
                 · {deviceStatus.model.vision ? "🖼 支持图片输入" : "不支持图片输入"}
               </div>
-              <div class="sp-dev-kv">
-                {#if deviceStatus.model.baseURL}<span title={deviceStatus.model.baseURL}>端点 {deviceStatus.model.baseURL}</span>{/if}
-                {#if deviceStatus.model.adapter}<span>{deviceStatus.model.adapter}</span>{/if}
-                {#if deviceStatus.model.thinking !== undefined}<span>思考 {deviceStatus.model.thinking ? "开" : "关"}</span>{/if}
-                <span>temp {deviceStatus.model.temperature ?? "默认"}</span>
-                <span>max {deviceStatus.model.maxTokens ?? "默认"}</span>
-              </div>
               <div class="sp-dev-note">{deviceStatus.model.detail}</div>
-              {#if deviceStatus.model.visionProbe}
-                <div class="sp-dev-note">
-                  最近实测：{deviceStatus.model.visionProbe.model} ·
-                  {deviceStatus.model.visionProbe.supported === true ? "支持图片" : deviceStatus.model.visionProbe.supported === false ? "拒绝图片" : "无法判定"}
-                  · {deviceStatus.model.visionProbe.latencyMs}ms · {fmtTime(deviceStatus.model.visionProbe.at)}
-                  {#if deviceStatus.model.visionProbe.stale}<b>（模型已切换，此结果失效）</b>{/if}
-                </div>
-              {/if}
-              <button class="sp-dev-btn" onclick={probeModelVision} disabled={probeBusy}>
-                {probeBusy ? "检测中…（一次极小图片请求）" : "检测图片能力"}
-              </button>
+              <!-- 只读快照：改模型与实测能力都在「设置 → 模型」（同一份数据只应有一个编辑入口） -->
+              <div class="sp-dev-note">要修改模型或重新实测能力：设置 → 模型</div>
             </div>
             {#if deviceStatus.runtime}
               <div class="sp-dev-card">
@@ -1032,62 +890,6 @@
           {/each}
         </div>
       {/if}
-    {:else if tab === "config"}
-      {#if !configState}
-        <div class="sp-empty">配置不可用（需 --server 模式）</div>
-      {:else}
-        <div class="sp-section">
-          <div class="sp-row"><span>版本</span><b>v{configState.appVersion}</b></div>
-          <div class="sp-row"><span>当前模型</span><b>{configState.model}</b></div>
-          <label class="sp-cfg-row">模型
-            <select class="sp-cfg-input" bind:value={cfgModel} onchange={onModelChange}>
-              {#each configState.availableModels as m}
-                <option value={m.key}>{m.key}（{m.model} · {m.provider}）</option>
-              {/each}
-            </select>
-          </label>
-          <label class="sp-cfg-row">温度（0-2，空=默认）
-            <input class="sp-cfg-input" bind:value={cfgTemperature} placeholder="默认" />
-            <button class="sp-io-mini" onclick={onTemperature}>应用</button>
-          </label>
-          <label class="sp-cfg-row">max-tokens（≥100，空=默认）
-            <input class="sp-cfg-input" bind:value={cfgMaxTokens} placeholder="默认" />
-            <button class="sp-io-mini" onclick={onMaxTokens}>应用</button>
-          </label>
-          <label class="sp-cfg-row">思考展示
-            <input type="checkbox" checked={configState.thinking} onchange={onThinking} />
-          </label>
-          <label class="sp-cfg-row">技能自动沉淀
-            <input type="checkbox" checked={configState.skillEvo} onchange={onSkillEvo} />
-          </label>
-          <div class="sp-cfg-row">
-            <button class="sp-io-btn" onclick={onReset}>恢复模型默认（reset）</button>
-          </div>
-          <div class="sp-cfg-sep">添加模型 / Provider</div>
-          <label class="sp-cfg-row">key（唯一标识，如 my-gpt）
-            <input class="sp-cfg-input" bind:value={newModelKey} placeholder="如 my-gpt" />
-          </label>
-          <label class="sp-cfg-row">模型名
-            <input class="sp-cfg-input" bind:value={newModelName} placeholder="如 gpt-4o-mini" />
-          </label>
-          <label class="sp-cfg-row">baseURL
-            <input class="sp-cfg-input" bind:value={newModelBase} placeholder="https://api.example.com/v1" />
-          </label>
-          <label class="sp-cfg-row">provider（可选）
-            <input class="sp-cfg-input" bind:value={newModelProvider} placeholder="如 openai / deepseek" />
-          </label>
-          <label class="sp-cfg-row">apiKey（可选，建议环境变量引用）
-            <input class="sp-cfg-input" bind:value={newModelKeyVal} placeholder={'${MY_API_KEY} 或留空继承默认'} />
-          </label>
-          <div class="sp-cfg-row">
-            <button class="sp-io-btn" onclick={onAddModel}>添加模型</button>
-          </div>
-          {#if cfgMsg}
-            <div class="sp-mcp-error">{cfgMsg}</div>
-          {/if}
-          <div class="sp-note">设置持久化到 data/runtime-config.json 与 config/models.json，重启后仍生效</div>
-        </div>
-      {/if}
     {:else}
       <div class="sp-io-bar"><button class="sp-io-btn" onclick={importAsset}>导入资产（.aw / .md / .json）</button></div>
       {#if skillList.length === 0}
@@ -1174,6 +976,16 @@
     overflow-y: auto;
     min-height: 0;
   }
+  .sp-nav-group {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--dim);
+    letter-spacing: 0.04em;
+    padding: 8px 10px 2px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+  }
+  .sp-nav-group:first-child { border-top: none; margin-top: 0; padding-top: 2px; }
   .sp-nav {
     padding: 8px 10px;
     background: transparent;

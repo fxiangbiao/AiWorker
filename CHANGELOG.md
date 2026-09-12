@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.8.0 (2026-09-12)
+
+### Web 信息架构重构：设置 / 控制台分离（Sprint 50 收尾 + Sprint 51）
+
+- **问题（用户提问：为何把「权限」放右侧面板而不是「设置」里？布局是否合理）**：`⚙` 一个模态里 13 个 tab 混装"设置 + 观测 + 资源 + 系统"，其中**只有 1 个真写配置**；而**会写文件**的「权限」却挂在右栏与"产物/应用"并列；更要命的是三个安全面**在 Web 上完全看不到**——沙箱目录（`config/sandbox.json` 的 `allowDirs/allowWriteDirs/allowReadDirs/denyCommands/stripSecretEnv`）此前**没有任何 HTTP 端点**、`protected_paths`、`never_auto_approve` 只能手改文件，改错没有反馈。另外"模型配置"与"设备"两处重复展示同一件事，且图片被拒时的错误提示指向了一个**并不存在**的路径「设置→设备→模型能力」
+- **拆分原则**：**设置 = 我改它**（会写配置、改变行为）；**控制台 = 我看它**（观测系统、以只读为主）
+- **设置（新面板，5 个 tab）**：模型（模型选择 / 温度 / max-tokens / 添加模型 + 模型能力卡与「检测图片能力」实测）、安全（权限规则 + 受保护路径 + 永不自动批准 + 命令黑名单 + 敏感环境变量清理 + 当前模式只读）、工作区（工作目录 + 沙箱的三个根 + 目录选择器）、交互（思考展示 / 技能自动沉淀 / 主题）、关于（版本 / 数据目录 / 存储 / 运行时）
+- **控制台（原系统面板）**：左导航按 **观测**（上下文·轨迹·审计·进化）/ **资源**（智能体·技能·MCP·插件·应用·进程·调度）/ **系统**（设备与运行时）分组；`配置` tab 整体迁出，`设备` tab 去掉模型能力卡的**编辑入口**（改为只读快照 + 指引到设置），其余 11 个 tab **一行未改**
+- **右栏 3 → 2 Tab**：产物 / 应用；「权限」迁入 设置→安全。发现性补偿：底部状态栏新增**权限模式徽章**（显示模式与项目级规则条数），一点直达 设置→安全
+
+### 新增可写面（每一条都带写入门 / 原子写 / 生效时机）
+
+- **`GET/POST /api/v1/sandbox`（新增）**：沙箱配置的读写面。GET 同时回带**读路径**与**写路径**、以及 `effective`（留空的根按工作目录回退后的**真正生效范围**，避免用户以为"空着 = 不限制"）；POST 部分更新语义，校验拒绝未知键（拼错 `allowWriteDir` 会被静默忽略 → 用户以为已放开写入）、非布尔、**相对路径**（浏览器不知道服务端 cwd，猜出来的范围没意义）、空条目与多行命令。**写路径始终跟随 `--dir`**（与权限配置一致）：读取允许回落到安装目录配置，写入绝不落到安装包
+- **`/api/v1/permissions` 扩展**：GET 新增 `protectedPaths`（`fromConfig` / `defaults` / `effective`）、`neverAutoApprove`、`mode`；POST 新增 `set-protected-paths` / `set-never-auto-approve`。**移除内置基线项必须显式 `acknowledge`**——文件里的 `protected_paths` 是**整体替换**语义（`bootstrap` 用 `?? DEFAULT_PROTECTED_PATHS`），"少传一条"就等于静默丢掉一层保护，因此这道确认放在**服务端强制**（而不是只靠前端弹窗），前端再用生效清单回填草稿
+- **`PermissionModel` 新增 `setProtectedPaths` / `setNeverAutoApprove`**：清单原本只在构造时读入，Web 改完文件若不重启就是"看起来改了、其实没生效"；归一化规则与构造函数逐字一致（反斜杠转正斜杠 + 小写），避免同一份配置因入口不同而判定不同
+- **`POST /api/v1/config` 补上写入门**（跨站 403 → 缺 token 401 → 参数 400）：此前它是**无门写面**，而设置页的模型与交互两组都要写它。已核实调用方只有 Web 自身（`app-bridge` 只走 `/apps/:id/bridge`），收口不打断应用；`SystemPanel` 的旧调用同步补 token
+- **生效时机（逐条核实，不是推测）**：沙箱配置**立即生效**（`loadSandboxPolicy()` 在每次工具调用时现读磁盘，`src/tools/builtin.ts:27/437/754`）；权限规则与两个安全清单**立即生效**（落盘后同步更新运行中的模型）；`/config` 立即生效。UI 文案与之一致，不写"重启后生效"这种含糊话
+
+### 工程整理
+
+- 抽出 `src/security/json-file.ts`（`readJsonObject` / `writeJsonAtomic`）：权限与沙箱两处都要"读全量 → 改一处 → 原子写回"，各写一份就是两套"保留 BOM/行尾/权限位/清理遗留临时文件"的逻辑。`permission-memory` 改为复用后行为不变（19 个既有用例全绿）
+- Web 侧新增 `lib/stores/shell.svelte.ts`（设置/控制台入口与 tab 深链，避免三处各自 holds 一个 open 变量）与 `lib/stores/settings.svelte.ts`（`/config` 与 `/sandbox` 两个写面的**唯一**实现：模型与交互、安全与工作区各自读同一份，不重复 fetch/错误处理）
+- `PermissionsPanel` 由"右栏 Tab"改为"设置里的 section"：**去掉自带高度与 `overflow-y:auto`**（否则与外层设置面板形成双层滚动——上一轮刚踩过）
+- 修正 `src/server.ts` 的错误提示：图片输入被拒时指向实际存在的「设置→模型→模型能力」
+- **测试**：新增 `test/settings-api.test.ts`（10 例：沙箱读写与三类校验、写路径跟随 `--dir`、未知键拒绝、安全清单的确认机制与**立即生效**、`/sandbox` 与 `/permissions` 的三道门、`/config` 收口）；`test/server.test.ts` 的 `/config` 两例补 token 并加门断言。全量 **1036 例 / 68 文件**全绿，`svelte-check` 0 错
+- **明确不做**（写进 `plans/web-ia-restructure.md`）：不加权限模式的运行时切换（现无端点，模式属启动时决策，本次只读展示）；不给零调用方的死配置 `allowed_dirs` 做 UI；不合并"应用"与"应用预览"；不重写 `SystemPanel`（只搬不动）
+
 ## 1.7.0 (2026-09-12)
 
 ### 权限闭环与路径策略单点（Sprint 49：P1-4 + P1-7）
