@@ -234,6 +234,8 @@ export interface AgentRunResult {
   sessionId?: string;
   /** 本轮最后一次主请求的 usage（assistant/message 事件携带，避免被压缩请求覆盖） */
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  /** 循环内未捕获异常（LLM/工具链致命错误）：text 仅为提示文案，调用方据此判定失败 */
+  error?: string;
 }
 
 // ===== 任务 =====
@@ -465,6 +467,19 @@ export interface SessionEventMap {
   "tool/result": { callId: string; success: boolean; content: string; error?: string; durationMs?: number; artifacts?: ToolArtifact[] };
   "memory/update": { kind: "episodic" | "semantic"; summary?: string };
   "title/set": { title: string };
+  /**
+   * 回滚标记（仅追加，不删事件）：scope 含 chat 时，回放会丢弃 seq >= toEventSeq 的消息
+   * （追加式记录保证审计可追溯；代码回滚范围由 checkpoint 目录承载）
+   */
+  "rewind/applied": {
+    toTurn: number;
+    scope: RewindScope;
+    toEventSeq?: number;
+    files: string[];
+    skipped: string[];
+    conflicts: string[];
+    at: number;
+  };
 }
 
 export type SessionEventType = keyof SessionEventMap;
@@ -745,3 +760,87 @@ export interface GenerateResult {
   /** 文档型产出路径（data/docs/...） */
   docPath?: string;
 }
+
+// ===== 检查点与回滚（Sprint 48） =====
+
+/** 回滚范围：all = 代码+对话；chat = 仅对话；code = 仅代码 */
+export type RewindScope = "all" | "chat" | "code";
+
+/** 检查点内单个文件条目（blob 存"变更前内容"） */
+export interface CheckpointFileEntry {
+  /** 绝对路径 */
+  path: string;
+  /** 相对 manifest 的 blob 路径（files/<hash>-<name>）；无 blob 表示无变更前内容 */
+  blob?: string;
+  existedBefore: boolean;
+  hashBefore?: string;
+  /** 变更后内容哈希（冲突检测：与当前内容不一致则拒绝覆盖，需 --force） */
+  hashAfter?: string;
+  /** 是否可恢复（terminal_exec 等无法取得变更前内容的写入为 false） */
+  restorable: boolean;
+  /** 不可恢复原因 */
+  reason?: "terminal_exec" | "binary" | "too-large" | "unreadable";
+  /** 触发写入的工具名 */
+  tool: string;
+  added?: number;
+  removed?: number;
+}
+
+/** 一个回合的检查点（回滚单位：回到该回合开始之前） */
+export interface CheckpointManifest {
+  sessionId: string;
+  /** 回合序号（与 turn_logs.seq / turn 事件一致，从 1 开始） */
+  turn: number;
+  createdAt: number;
+  userInput?: string;
+  /** 该回合开始前消息投影的下一条 seq（对话回滚阈值） */
+  messageSeqBefore?: number;
+  eventSeqBefore?: number;
+  files: CheckpointFileEntry[];
+}
+
+/** 检查点回滚结果 */
+export interface CheckpointRestoreResult {
+  turn: number;
+  restored: string[];
+  deleted: string[];
+  skipped: { path: string; reason: string }[];
+  conflicts: string[];
+}
+
+/** 回滚预览中的单个文件动作 */
+export interface RewindFileAction {
+  path: string;
+  action: "restore" | "delete" | "skip" | "conflict";
+  reason?: string;
+}
+
+/** 回滚预览（dry-run 与确认前的展示依据） */
+export interface RewindPlan {
+  sessionId: string;
+  toTurn: number;
+  scope: RewindScope;
+  /** 将被回滚的回合（降序） */
+  turns: number[];
+  files: RewindFileAction[];
+  /** 将删除的消息数（对话范围；代码范围为 0） */
+  messageCount: number;
+  /** 无法执行的原因（空数组表示可执行） */
+  blockers: string[];
+}
+
+/** 回滚执行结果 */
+export interface RewindResult {
+  ok: boolean;
+  sessionId: string;
+  toTurn: number;
+  scope: RewindScope;
+  turns: number[];
+  restored: string[];
+  deleted: string[];
+  skipped: { path: string; reason: string }[];
+  conflicts: string[];
+  messagesDeleted: number;
+  error?: string;
+}
+

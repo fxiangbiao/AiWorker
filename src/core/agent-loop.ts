@@ -258,6 +258,7 @@ async function runAgentLoopInner(
         iterations: iterations + 1,
         truncated: false,
         toolCallsExecuted,
+        error: errorMsg,
       };
     }
   }
@@ -594,6 +595,7 @@ async function runAgentLoopStreamInner(
         iterations: iterations + 1,
         truncated: false,
         toolCallsExecuted,
+        error: errorMsg,
       };
     }
   }

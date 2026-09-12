@@ -4,6 +4,7 @@
 
 import type { CliCommand } from "./types.js";
 import { sessionCommands } from "./session.js";
+import { rewindCommands } from "./rewind.js";
 import { collabCommands } from "./collab.js";
 import { skillsCommands } from "./skills.js";
 import { configCommands } from "./config.js";
@@ -23,6 +24,7 @@ export function buildCliCommands(): CliCommand[] {
     ...collabCommands, // plan, debate
     ...configCommands, // mode, status, thinking, config
     ...sessionCommands, // new, log, sessions, switch, copy, trace, context
+    ...rewindCommands, // rewind（检查点回滚）
     ...skillsCommands, // skill, skills, skill-evo
     ...pluginsCommands, // plugins, install
     ...jobsCommands, // bg, jobs, schedule

@@ -8,7 +8,7 @@ import type { Database as DBType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent } from "../types.js";
+import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent, RewindScope } from "../types.js";
 import { messageText } from "../types.js";
 
 const segmenter =
@@ -221,6 +221,14 @@ export class SessionStore {
     return row?.cnt ?? 0;
   }
 
+  /** 消息投影当前最大 seq（0 = 无消息）；检查点据此记录"回合前消息下界" */
+  getLastMessageSeq(sessionId: string): number {
+    const row = this.db
+      .prepare(`SELECT COALESCE(MAX(seq), 0) as last_seq FROM messages WHERE session_id = ?`)
+      .get(sessionId) as { last_seq: number } | undefined;
+    return row?.last_seq ?? 0;
+  }
+
   /** 追加消息（单点入口：同时写事件日志 + messages 投影，同事务；assistant 可携带 usage 供轨迹/遥测） */
   appendMessage(
     sessionId: string,
@@ -303,6 +311,54 @@ export class SessionStore {
     });
   }
 
+  /**
+   * 对话回滚（Sprint 48）：删除 seq >= maxMessageSeq 的消息投影 + 追加 rewind/applied 事件（同事务）
+   * 事件日志仍为仅追加真源：回滚是"追加一条标记"，replayEvents 据此截断派生视图
+   * @returns 实际删除的消息数
+   */
+  rewindMessages(
+    sessionId: string,
+    maxMessageSeq: number,
+    meta: {
+      toTurn: number;
+      scope: RewindScope;
+      toEventSeq?: number;
+      files?: string[];
+      skipped?: string[];
+      conflicts?: string[];
+    },
+  ): number {
+    const tx = this.db.transaction((): number => {
+      const info = this.db
+        .prepare(`DELETE FROM messages WHERE session_id = ? AND seq >= ?`)
+        .run(sessionId, maxMessageSeq);
+      this.appendEvent(
+        sessionId,
+        "rewind/applied",
+        {
+          toTurn: meta.toTurn,
+          scope: meta.scope,
+          toEventSeq: meta.toEventSeq,
+          files: meta.files ?? [],
+          skipped: meta.skipped ?? [],
+          conflicts: meta.conflicts ?? [],
+          at: Date.now(),
+        },
+        "rewind",
+      );
+      return info.changes;
+    });
+    return tx();
+  }
+
+  /** 区间消息数（回滚预览：seq >= minSeq 的投影消息条数） */
+  countMessagesSince(sessionId: string, minSeq: number): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM messages WHERE session_id = ? AND seq >= ?`)
+      .get(sessionId, minSeq) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
   /** 获取会话事件流（仅追加日志，seq 升序；支持分页） */
   getEvents(sessionId: string, fromSeq?: number, limit?: number): SessionEvent[] {
     let sql = `SELECT seq, session_id, type, data, source, created_at FROM session_events WHERE session_id = ?`;
@@ -329,6 +385,7 @@ export class SessionStore {
 
   /**
    * 事件回放 → 消息序列（保持消息语义顺序：助手消息的 tool_calls 后紧跟对应 tool 结果）
+   * rewind/applied（scope 含 chat）会截断该标记之前、seq >= toEventSeq 的消息
    * @param events 可选预取事件（Sprint 44 review：避免 GET /sessions/:id 对同一会话读取两遍全量事件）
    */
   replayEvents(sessionId: string, events?: SessionEvent[]): Message[] {
@@ -344,22 +401,31 @@ export class SessionStore {
         });
       }
     }
-    const messages: Message[] = [];
+    const collected: { msg: Message; seq: number }[] = [];
     for (const ev of evs) {
+      if (ev.type === "rewind/applied") {
+        const d = ev.data as { scope?: RewindScope; toEventSeq?: number };
+        if ((d.scope === "chat" || d.scope === "all") && typeof d.toEventSeq === "number") {
+          for (let i = collected.length - 1; i >= 0; i--) {
+            if (collected[i]!.seq >= d.toEventSeq) collected.splice(i, 1);
+          }
+        }
+        continue;
+      }
       if (ev.type === "user/message") {
-        messages.push(ev.data as unknown as Message);
+        collected.push({ msg: ev.data as unknown as Message, seq: ev.seq });
       } else if (ev.type === "assistant/message") {
         const { message } = ev.data as { message: Message };
-        messages.push(message);
+        collected.push({ msg: message, seq: ev.seq });
         if (message.tool_calls) {
           for (const tc of message.tool_calls) {
             const toolMsg = toolResults.get(tc.id);
-            if (toolMsg) messages.push(toolMsg);
+            if (toolMsg) collected.push({ msg: toolMsg, seq: ev.seq });
           }
         }
       }
     }
-    return messages;
+    return collected.map((c) => c.msg);
   }
 
   /** 一致性校验：事件回放派生消息 vs messages 投影（投影表不含 tool 消息，故仅比较 user/assistant 骨架） */

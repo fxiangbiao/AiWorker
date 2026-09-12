@@ -31,6 +31,8 @@ import type { ModelRouter } from "../core/model-router.js";
 import { skillEvolution } from "../core/skill-evolution.js";
 import type { SkillEvolutionResult } from "../core/skill-evolution.js";
 import type { TelemetryCoordinator } from "../memory/telemetry.js";
+import type { CheckpointStore } from "../core/checkpoint-store.js";
+import { pendingTurn, commitTurn } from "./turn-registry.js";
 
 export interface HandlerDependencies {
   dangerDetector?: DangerDetector;
@@ -42,6 +44,8 @@ export interface HandlerDependencies {
   workingDir?: string;
   dataDir?: string;
   telemetry?: TelemetryCoordinator;
+  /** 检查点存储（Sprint 48：回合级文件快照，供 /rewind 回滚） */
+  checkpointStore?: CheckpointStore;
   onFileDiff?: (filePath: string, added: number, removed: number, diffText?: string) => void;
   /** 指纹扫描会话级节流间隔（ms），默认 2000；测试可注入 0 关闭 */
   scanThrottleMs?: number;
@@ -384,13 +388,22 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         snapshots.set(ctx.sessionId, sessionSnap);
       }
 
+      const existedBefore = existsSync(filePath);
+      let oldContent: string | null = null;
       try {
-        if (existsSync(filePath)) {
-          sessionSnap.set(filePath, readFileSync(filePath, "utf-8"));
+        if (existedBefore) {
+          oldContent = readFileSync(filePath, "utf-8");
+          sessionSnap.set(filePath, oldContent);
         }
       } catch {
         // 无法读取旧内容，跳过
+        oldContent = null;
       }
+      // 检查点：写前落盘"变更前内容"（回滚基准 = 回合起点，同路径只记首次）
+      deps.checkpointStore?.capture(ctx.sessionId, pendingTurn(ctx.sessionId), filePath, oldContent, {
+        existedBefore,
+        tool: toolName,
+      });
     }
 
     if (ctx.event === "onToolCallPost") {
@@ -499,6 +512,11 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
       deps.onFileDiff?.(filePath, added, removed, diffText);
 
       writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, oldContent, newContent);
+      // 检查点：补充变更后哈希与行数（冲突检测 + 回滚预览）
+      deps.checkpointStore?.recordAfter(ctx.sessionId, pendingTurn(ctx.sessionId), filePath, newContent, {
+        added,
+        removed,
+      });
     }
   };
 }
@@ -534,6 +552,15 @@ function recordDirDiff(
   }
 
   deps.onFileDiff?.(filePath, added, removed, diffText);
+
+  // 检查点：指纹扫描发现的写入（terminal_exec/MCP/插件）无法取得变更前内容 → 仅记录，不可回滚
+  deps.checkpointStore?.markUnrestorable(
+    ctx.sessionId,
+    pendingTurn(ctx.sessionId),
+    filePath,
+    "terminal_exec",
+    (ctx.data.toolName as string) ?? "unknown",
+  );
 
   // 文件已删除：无新内容可读，仅写元信息快照
   if (deleted) {
@@ -776,8 +803,6 @@ export function createEvaluateSkillCreation(deps: HandlerDependencies): HookHand
 
 // ── 监控日志 Handler (M4) ──
 
-/** per-session turn counter */
-const turnSeq = new Map<string, number>();
 /** per-session turn start time + token baseline（onMessage 记录，onTaskComplete 结算） */
 const turnStart = new Map<string, { at: number; prompt: number; completion: number }>();
 /** per-session 错误标记：onError 置位，onTaskComplete 结算时避免 token 虚增与 reason 错标 */
@@ -804,11 +829,21 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
         completion: sessionTokens(ctx.sessionId).completion,
       });
       turnError.delete(ctx.sessionId);
-      const turn = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
+      const turn = pendingTurn(ctx.sessionId);
       try {
         store.appendEvent(ctx.sessionId, "turn/start", { turn }, "hooks");
       } catch {
         /* 事件失败不阻塞主流程 */
+      }
+      // 检查点：记录回合起点（对话回滚阈值 = 即将写入的用户消息 seq；用户输入供列表展示）
+      try {
+        deps.checkpointStore?.beginTurn(ctx.sessionId, turn, {
+          userInput: typeof ctx.data.instruction === "string" ? ctx.data.instruction : undefined,
+          messageSeqBefore: store.getLastMessageSeq(ctx.sessionId) + 1,
+          eventSeqBefore: store.getEventCount(ctx.sessionId) + 1,
+        });
+      } catch {
+        /* 检查点失败不阻塞主流程 */
       }
       return;
     }
@@ -832,8 +867,7 @@ export function createTurnLogger(deps: HandlerDependencies): HookHandler {
     const tokensCompletion = hadError ? 0 : Math.max(0, tokensNow.completion - (start?.completion ?? 0));
     turnStart.delete(ctx.sessionId);
 
-    const seq = (turnSeq.get(ctx.sessionId) ?? 0) + 1;
-    turnSeq.set(ctx.sessionId, seq);
+    const seq = commitTurn(ctx.sessionId);
 
     const messages = ctx.data.messages as Message[] | undefined;
     // 取本轮最后一条 user 消息（assembleContext 含历史，find 会取到最早一条）

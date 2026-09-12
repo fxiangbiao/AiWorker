@@ -17,7 +17,8 @@
 
 1. 改动后跑 `npm run build && npm run lint && npm test && npm run web:build`，全绿再提交
 2. 升版本：`package.json` → `CHANGELOG.md` → README 徽章
-3. 提交：中文信息（**全角标点**），分支 `dev`，push `origin` + `gitee` 两个远端，结束时工作树干净
+3. 改 README/docs 里的 Mermaid 图后，用 `mmdc -i <file>.mmd -o out.png -b white -w 900` 本地渲染确认（子图 `direction` 在有跨组连线时会被忽略，只看源码判断不了；`-w 900` 模拟 GitHub 内容区宽度）
+4. 提交：中文信息（**全角标点**），分支 `dev`，push `origin` + `gitee` 两个远端，结束时工作树干净
 
 ## 关键约束（违反会直接出错）
 

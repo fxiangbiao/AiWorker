@@ -10,6 +10,7 @@
   import AppHostLayer from "./components/AppHostLayer.svelte";
   import AppPreviewPanel from "./components/AppPreviewPanel.svelte";
   import DocPreviewPanel from "./components/DocPreviewPanel.svelte";
+  import RewindPanel from "./components/RewindPanel.svelte";
   import { rightTab, rightPanelVisible } from "./lib/stores/apps.svelte";
   import { skills } from "./lib/stores/status";
   import {
@@ -24,7 +25,7 @@
   } from "./lib/stores/chat.svelte";
   import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, contextWindow, workingDir, refreshStatus } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
-  import { PanelRightClose, FileText, Box } from "lucide-svelte";
+  import { PanelRightClose, FileText, Box, RotateCcw } from "lucide-svelte";
   import { get } from "svelte/store";
   import { theme, applyTheme } from "./lib/stores/theme.svelte";
 
@@ -140,6 +141,9 @@
         <button class="rp-tab" class:active={$rightTab === "docs"} onclick={() => rightTab.set("docs")}>
           <span class="rp-ico"><FileText size={13} /></span>文档预览
         </button>
+        <button class="rp-tab" class:active={$rightTab === "rewind"} onclick={() => rightTab.set("rewind")}>
+          <span class="rp-ico"><RotateCcw size={13} /></span>回滚
+        </button>
         <button class="rp-tab" class:active={$rightTab === "apps"} onclick={() => rightTab.set("apps")}>
           <span class="rp-ico"><Box size={13} /></span>应用预览
         </button>
@@ -149,6 +153,8 @@
         <FileDiffPanel />
       {:else if $rightTab === "docs"}
         <DocPreviewPanel />
+      {:else if $rightTab === "rewind"}
+        <RewindPanel />
       {:else}
         <AppPreviewPanel />
       {/if}
