@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * 应用预览面板（Sprint 35/36）— 右侧面板「应用预览」Tab
+   * 应用预览面板（Sprint 35/36）— 右侧面板「应用」Tab
    * 停靠的应用（iframe 内嵌）；支持点击切换「浮窗」（拖拽/缩放）/「小部件」（透明悬浮）
-   * （文档预览已独立为「文档预览」Tab，见 DocPreviewPanel）
+   * （文档与文件改动已合并进「产物」Tab，见 ArtifactsPanel）
    */
   import { onMount } from "svelte";
   import { AppWindow, Dock, X, PanelLeft } from "lucide-svelte";

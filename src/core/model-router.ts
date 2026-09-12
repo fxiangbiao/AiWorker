@@ -58,6 +58,15 @@ const BUILTIN_CONTEXT_WINDOWS: Record<string, number> = {
 /** 未配置任何窗口时的最终兜底（与历史 compressor 预算一致，避免行为突变） */
 export const CONTEXT_WINDOW_FALLBACK = 32768;
 
+/** 视觉能力实测用的 1×1 红色 PNG（69 字节，已校验签名与 IHDR 尺寸） */
+const VISION_PROBE_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/** 端点明确拒绝图片输入的报错特征（判定 supported=false 的依据，宁可漏判也不误判） */
+const VISION_REJECT = /image|vision|multimodal|content type|media type|unsupported.*(content|type)|图片|视觉/i;
+/** 鉴权失败 → 无法判定（不能据此断定不支持视觉） */
+const AUTH_REJECT = /401|403|api key|apikey|unauthor|forbidden|authentication|余额|balance|insufficient/i;
+
 /** 非有限/负数 token 计数归 0（Sprint 44 review：OpenAI 兼容端点 usage 字段缺失/异常时不污染全局与账本） */
 function sanitize(n: number): number {
   return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -300,6 +309,102 @@ export class ModelRouter {
   supportsVision(preference?: string): boolean {
     const profile = this.getProfile(preference);
     return profile.vision === true;
+  }
+
+  /** 视觉能力的**原始声明**：true/false 为配置显式声明，undefined 为未声明（交给实测判定） */
+  getVisionDeclaration(preference?: string): boolean | undefined {
+    return this.getProfile(preference).vision;
+  }
+
+  /** 当前生效 profile 的非敏感摘要（供设备面板展示；不含 apiKey；未配置的采样参数保持 undefined 以免被显示成 0） */
+  getEffectiveProfile(): {
+    provider: string;
+    model: string;
+    baseURL: string;
+    adapter?: string;
+    thinking?: boolean;
+    temperature?: number;
+    maxTokens?: number;
+    contextWindow: number;
+    vision?: boolean;
+  } {
+    const profile = this.getProfile(undefined);
+    return {
+      provider: profile.provider,
+      model: profile.model,
+      baseURL: profile.baseURL,
+      adapter: profile.adapter,
+      thinking: profile.thinking,
+      temperature: this.runtimeTemperature ?? profile.temperature,
+      maxTokens: this.runtimeMaxTokens ?? profile.maxTokens,
+      contextWindow: this.getContextWindow(),
+      vision: profile.vision,
+    };
+  }
+
+  /**
+   * 实际发一次带图片的请求来判定视觉能力（设备面板「检测图片能力」与 /chat 图片门禁共用）
+   * - 1×1 PNG data URI，`thinking:false` + 12 token 上限，成本可忽略
+   * - 返回 supported=null 表示**无法判定**（鉴权失败 / 网络或超时 / 端点报其他错），不猜
+   */
+  async probeVision(timeoutMs = 20000): Promise<{
+    supported: boolean | null;
+    latencyMs: number;
+    model: string;
+    detail: string;
+    error?: string;
+  }> {
+    const profile = this.getProfile(undefined);
+    const started = Date.now();
+    const controller = new AbortController();
+    // 双层保护：signal 交给适配器（能中断底层请求），race 兜底（适配器不理会 signal 也不会挂住调用方）
+    let timer: NodeJS.Timeout | undefined;
+    const guard = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`probe timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([
+        this.complete({
+          model: profile.model,
+          thinking: false,
+          temperature: 0,
+          maxTokens: 12,
+          signal: controller.signal,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "这张图是什么颜色？只回答颜色。" },
+                { type: "image_url", image_url: { url: VISION_PROBE_IMAGE } },
+              ],
+            },
+          ],
+        }),
+        guard,
+      ]);
+      return {
+        supported: true,
+        latencyMs: Date.now() - started,
+        model: profile.model,
+        detail: "端点接受了图片输入（实测）",
+      };
+    } catch (err) {
+      const latencyMs = Date.now() - started;
+      const raw = err instanceof Error ? err.message : String(err);
+      const reason = /timeout|abort/i.test(raw) ? `探测超时（${timeoutMs}ms）` : raw;
+      if (VISION_REJECT.test(raw)) {
+        return { supported: false, latencyMs, model: profile.model, detail: "端点拒绝图片输入（实测）", error: raw };
+      }
+      if (AUTH_REJECT.test(raw)) {
+        return { supported: null, latencyMs, model: profile.model, detail: `无法判定：鉴权或权限失败（${reason}）`, error: raw };
+      }
+      return { supported: null, latencyMs, model: profile.model, detail: `无法判定：${reason}`, error: raw };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // ── 运行时配置（/config 命令支持）──

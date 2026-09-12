@@ -112,4 +112,42 @@ describe("21. JobRunner 后台任务", () => {
     expect(events[0]!.jobId).toBe(id);
     expect(events[0]!.status).toBe("done");
   });
+
+  it("后台任务期间确认/提问立即被拒（不落到 stdin 交互提示）", async () => {
+    const { requestConfirm, setConfirmProvider } = await import("../src/hooks/confirm-channel.js");
+    const { requestAsk, setAskProvider } = await import("../src/tools/ask-channel.js");
+
+    // 模拟交互态：先注册一个真实 provider（TUI/HTTP 场景）
+    const restoreConfirm = setConfirmProvider(async () => "allow");
+    const restoreAsk = setAskProvider(async () => "x");
+    let confirmAnswer: string | null | undefined;
+    let askAnswer: string | null | undefined;
+
+    const probing = new JobRunner();
+    probing.init({
+      createAgent: () =>
+        ({
+          runStream: async () => {
+            confirmAnswer = await requestConfirm("危险操作？", [
+              { value: "allow", label: "允许" },
+              { value: "deny", label: "拒绝" },
+            ]);
+            askAnswer = await requestAsk({ question: "q", options: [], multiple: false });
+            return { success: true, text: "ok", truncated: false };
+          },
+        }) as unknown as BaseAgent,
+      workingDir: dir,
+      sessionStore: store,
+    });
+
+    const id = probing.submit("default", "需确认的任务");
+    await waitFor(() => probing.get(id)!.status === "done");
+    expect(confirmAnswer).toBeNull(); // 立即拒绝，而不是 30 秒后超时、更不是被放行
+    expect(askAnswer).toBeNull();
+
+    // 任务结束后通道恢复
+    expect(await requestConfirm("恢复了吗？", [{ value: "allow", label: "允许" }])).toBe("allow");
+    setConfirmProvider(restoreConfirm);
+    setAskProvider(restoreAsk);
+  });
 });

@@ -83,16 +83,79 @@
     return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
-  // ── 设备 Tab（Sprint 42 A2：媒体通道 + 模型能力，只读；Sprint 43：一键下载语音模型） ──
+  // ── 设备 Tab（Sprint 42 A2；Sprint 49.4：运行时/存储/模型能力全部实测） ──
+  interface VisionProbe {
+    model: string;
+    supported: boolean | null;
+    latencyMs: number;
+    at: string;
+    detail: string;
+    error?: string;
+    stale?: boolean;
+  }
   interface DeviceStatus {
-    asr: { enabled: boolean; engine: string; detail: string };
-    tts: { engine: string; localModelReady: boolean; detail: string };
+    asr: { enabled: boolean; engine: string; ready?: boolean; missing?: string[]; detail: string };
+    tts: { engine: string; localModelReady: boolean; missing?: string[]; detail: string };
     mediaServer: { active: boolean; path?: string; clients?: number };
-    model: { current: string; vision: boolean; contextWindow?: number; detail: string };
+    model: {
+      current: string;
+      provider?: string;
+      baseURL?: string;
+      adapter?: string;
+      thinking?: boolean;
+      temperature?: number;
+      maxTokens?: number;
+      contextWindow?: number;
+      vision: boolean;
+      visionSource?: "probe" | "config" | "unknown";
+      visionDeclaration?: boolean;
+      visionProbe?: VisionProbe | null;
+      detail: string;
+    };
+    runtime?: {
+      node: string;
+      platform: string;
+      arch: string;
+      cpus: number;
+      cpuModel: string;
+      totalMemGB: number;
+      freeMemGB: number;
+      dataDir: string;
+      dataDirWritable: boolean;
+      pid: number;
+      uptimeSec: number;
+    };
+    storage?: {
+      ok: boolean;
+      sqlite: string;
+      fts5: boolean;
+      dbPath: string;
+      dbPresent: boolean;
+      dbSizeKb: number;
+      error?: string;
+    };
   }
   let deviceStatus = $state<DeviceStatus | null>(null);
   let mediaBusy = $state<"" | "asr" | "tts">("");
+  let probeBusy = $state(false);
   let msg = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const VISION_SOURCE_LABEL: Record<string, string> = { probe: "实测", config: "配置声明", unknown: "未检测" };
+
+  /** ISO 时间 → 本地"月-日 时:分"（实测时间戳展示） */
+  function fmtTime(iso: string): string {
+    if (!iso) return "时间未知";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function fmtUptime(sec: number): string {
+    if (sec < 60) return `${sec}s`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+    return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
+  }
 
   async function loadDevices() {
     try {
@@ -100,6 +163,45 @@
       if (r.ok) deviceStatus = (await r.json()) as DeviceStatus;
     } catch {
       deviceStatus = null;
+    }
+  }
+
+  /**
+   * 实测当前模型是否接受图片输入：真实发一次 1×1 PNG 请求（约几十 token），结果按模型缓存到 dataDir。
+   * 需服务端注入的进程 token（跨站/无 token 会被 401/403 拒），故只在服务端页面可用。
+   */
+  async function probeModelVision() {
+    if (probeBusy) return;
+    probeBusy = true;
+    msg = null;
+    try {
+      const token = typeof window !== "undefined" ? (window.__AIWORKER_TOKEN__ ?? "") : "";
+      const r = await fetch(`${API}/devices/probe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-aiworker-token": token },
+        body: JSON.stringify({ kind: "model-vision" }),
+      });
+      const d = (await r.json()) as {
+        ok?: boolean;
+        probe?: VisionProbe;
+        warning?: string;
+        error?: string;
+        status?: DeviceStatus;
+      };
+      if (!r.ok || !d.ok) {
+        msg = { kind: "err", text: d.error ?? `检测失败（HTTP ${r.status}）` };
+        return;
+      }
+      if (d.status) deviceStatus = d.status;
+      const p = d.probe;
+      const tail = d.warning ? ` · ${d.warning}` : "";
+      if (p?.supported === true) msg = { kind: "ok", text: `实测通过：端点接受图片输入（${p.latencyMs}ms）${tail}` };
+      else if (p?.supported === false) msg = { kind: "err", text: `实测拒绝：端点不接受图片输入${p.error ? ` · ${p.error}` : ""}${tail}` };
+      else msg = { kind: "err", text: `无法判定${p?.error ? `：${p.error}` : ""}${tail}` };
+    } catch (e) {
+      msg = { kind: "err", text: (e as Error).message };
+    } finally {
+      probeBusy = false;
     }
   }
 
@@ -632,7 +734,9 @@
       <EvolutionPanel />
     {:else if tab === "devices"}
       <div class="sp-section">
-        <div class="sp-io-bar"><button class="sp-io-btn" onclick={loadDevices}>刷新</button></div>
+        <div class="sp-io-bar">
+          <button class="sp-io-btn" title="重新读取运行环境、存储与语音模型状态（不调用模型）" onclick={loadDevices}>重新检测</button>
+        </div>
         {#if msg}
           <div class="sp-msg sp-msg-{msg.kind}">{msg.text}</div>
         {/if}
@@ -643,6 +747,9 @@
             <div class="sp-dev-card">
               <div class="sp-dev-head"><span class="sp-dev-dot {deviceStatus.asr.enabled ? "ok" : "off"}"></span>语音输入（ASR）</div>
               <div class="sp-dev-detail">{deviceStatus.asr.detail}</div>
+              {#if deviceStatus.asr.missing?.length}
+                <div class="sp-dev-note">缺失文件：{deviceStatus.asr.missing.join("、")}</div>
+              {/if}
               {#if !deviceStatus.asr.enabled}
                 <button class="sp-dev-btn" onclick={() => downloadMedia("asr")} disabled={mediaBusy !== ""}>
                   {mediaBusy === "asr" ? "下载中…（约 232MB）" : "下载 ASR 模型"}
@@ -656,6 +763,9 @@
                 {#if deviceStatus.tts.localModelReady}<span class="sp-dev-badge">离线就绪</span>{/if}
               </div>
               <div class="sp-dev-detail">{deviceStatus.tts.detail}</div>
+              {#if deviceStatus.tts.missing?.length}
+                <div class="sp-dev-note">缺失文件：{deviceStatus.tts.missing.join("、")}</div>
+              {/if}
               {#if !deviceStatus.tts.localModelReady}
                 <button class="sp-dev-btn" onclick={() => downloadMedia("tts")} disabled={mediaBusy !== ""}>
                   {mediaBusy === "tts" ? "下载中…（约 118MB）" : "下载 TTS 模型"}
@@ -672,15 +782,75 @@
               </div>
             </div>
             <div class="sp-dev-card">
-              <div class="sp-dev-head"><span class="sp-dev-dot {deviceStatus.model.vision ? "ok" : "off"}"></span>模型能力</div>
-              <div class="sp-dev-detail">
-                <b>{deviceStatus.model.current}</b> · {deviceStatus.model.vision ? "🖼 支持图片输入" : "不支持视觉"}
+              <div class="sp-dev-head">
+                <span class="sp-dev-dot {deviceStatus.model.vision ? "ok" : "off"}"></span>模型能力
+                <span class="sp-dev-engine">{VISION_SOURCE_LABEL[deviceStatus.model.visionSource ?? "unknown"]}</span>
                 {#if deviceStatus.model.contextWindow}
                   <span class="sp-dev-badge">窗口 {deviceStatus.model.contextWindow >= 1000000 ? `${(deviceStatus.model.contextWindow / 1000000).toFixed(0)}M` : `${Math.round(deviceStatus.model.contextWindow / 1000)}k`}</span>
                 {/if}
-                <div class="sp-dev-note">{deviceStatus.model.detail}</div>
               </div>
+              <div class="sp-dev-detail">
+                <b>{deviceStatus.model.current}</b>
+                {#if deviceStatus.model.provider}· {deviceStatus.model.provider}{/if}
+                · {deviceStatus.model.vision ? "🖼 支持图片输入" : "不支持图片输入"}
+              </div>
+              <div class="sp-dev-kv">
+                {#if deviceStatus.model.baseURL}<span title={deviceStatus.model.baseURL}>端点 {deviceStatus.model.baseURL}</span>{/if}
+                {#if deviceStatus.model.adapter}<span>{deviceStatus.model.adapter}</span>{/if}
+                {#if deviceStatus.model.thinking !== undefined}<span>思考 {deviceStatus.model.thinking ? "开" : "关"}</span>{/if}
+                <span>temp {deviceStatus.model.temperature ?? "默认"}</span>
+                <span>max {deviceStatus.model.maxTokens ?? "默认"}</span>
+              </div>
+              <div class="sp-dev-note">{deviceStatus.model.detail}</div>
+              {#if deviceStatus.model.visionProbe}
+                <div class="sp-dev-note">
+                  最近实测：{deviceStatus.model.visionProbe.model} ·
+                  {deviceStatus.model.visionProbe.supported === true ? "支持图片" : deviceStatus.model.visionProbe.supported === false ? "拒绝图片" : "无法判定"}
+                  · {deviceStatus.model.visionProbe.latencyMs}ms · {fmtTime(deviceStatus.model.visionProbe.at)}
+                  {#if deviceStatus.model.visionProbe.stale}<b>（模型已切换，此结果失效）</b>{/if}
+                </div>
+              {/if}
+              <button class="sp-dev-btn" onclick={probeModelVision} disabled={probeBusy}>
+                {probeBusy ? "检测中…（一次极小图片请求）" : "检测图片能力"}
+              </button>
             </div>
+            {#if deviceStatus.runtime}
+              <div class="sp-dev-card">
+                <div class="sp-dev-head">
+                  <span class="sp-dev-dot {deviceStatus.runtime.dataDirWritable ? "ok" : "off"}"></span>运行时
+                </div>
+                <div class="sp-dev-detail">Node {deviceStatus.runtime.node} · {deviceStatus.runtime.platform} · {deviceStatus.runtime.arch}</div>
+                <div class="sp-dev-kv">
+                  <span>{deviceStatus.runtime.cpus} 核</span>
+                  <span>内存 {deviceStatus.runtime.freeMemGB}/{deviceStatus.runtime.totalMemGB} GB</span>
+                  <span>PID {deviceStatus.runtime.pid}</span>
+                  <span>已运行 {fmtUptime(deviceStatus.runtime.uptimeSec)}</span>
+                </div>
+                <div class="sp-dev-note">{deviceStatus.runtime.cpuModel}</div>
+                <div class="sp-dev-note">
+                  数据目录{deviceStatus.runtime.dataDirWritable ? "可写" : "⛔ 不可写"}：{deviceStatus.runtime.dataDir}
+                </div>
+              </div>
+            {/if}
+            {#if deviceStatus.storage}
+              <div class="sp-dev-card">
+                <div class="sp-dev-head">
+                  <span class="sp-dev-dot {deviceStatus.storage.ok ? "ok" : "off"}"></span>存储（记忆库）
+                  {#if deviceStatus.storage.fts5}<span class="sp-dev-badge">FTS5</span>{/if}
+                </div>
+                <div class="sp-dev-detail">
+                  SQLite {deviceStatus.storage.sqlite || "不可用"} · {deviceStatus.storage.fts5 ? "全文检索可用" : "FTS5 不可用"}
+                </div>
+                <div class="sp-dev-kv">
+                  <span title={deviceStatus.storage.dbPath}>
+                    {deviceStatus.storage.dbPresent ? `库 ${deviceStatus.storage.dbSizeKb} KB` : "库尚未创建"}
+                  </span>
+                </div>
+                {#if deviceStatus.storage.error}
+                  <div class="sp-dev-note">⛔ {deviceStatus.storage.error}</div>
+                {/if}
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -1181,6 +1351,8 @@
   .sp-dev-engine { font-size: 10px; color: var(--primary); border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent); border-radius: 4px; padding: 0 5px; }
   .sp-dev-badge { font-size: 10px; color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 40%, transparent); border-radius: 4px; padding: 0 5px; }
   .sp-dev-detail { font-size: 11px; color: var(--dim); line-height: 1.5; }
+  .sp-dev-kv { display: flex; flex-wrap: wrap; gap: 4px 8px; font-size: 10px; color: var(--dim); }
+  .sp-dev-kv span { border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sp-dev-note { margin-top: 2px; }
   .sp-dev-btn {
     margin-top: 6px;

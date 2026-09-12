@@ -1,12 +1,18 @@
 <script lang="ts">
   import ToolCard from "./ToolCard.svelte";
-  import type { TimelineItem } from "$lib/stores/chat.svelte";
+  import { focusToolCallId, type TimelineItem } from "$lib/stores/chat.svelte";
 
   let { tools, onRetry } = $props<{
     tools: TimelineItem[];
     onRetry?: (tool: TimelineItem) => void;
   }>();
   let open = $state(false);
+
+  // 「在对话中查看」定位到本组内的某张卡片时自动展开（否则卡片不在 DOM 中，无法滚动与高亮）
+  $effect(() => {
+    const want = $focusToolCallId;
+    if (want && tools.some((t: TimelineItem) => t.id === want)) open = true;
+  });
 </script>
 
 {#if tools.length === 1}

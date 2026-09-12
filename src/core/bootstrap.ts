@@ -19,6 +19,8 @@ import { initAuditLog } from "./audit-logger.js";
 import { DangerDetector } from "../security/danger-detector.js";
 import { PermissionModel } from "../security/permission-model.js";
 import { ApprovalService } from "../security/approval-service.js";
+import { PermissionMemory, resolvePermissionConfigPath } from "../security/permission-memory.js";
+import { DEFAULT_PROTECTED_PATHS } from "../security/permission-model.js";
 import { requestConfirm } from "../hooks/confirm-channel.js";
 import { loadHooksFromConfig } from "../hooks/hook-config-loader.js";
 import { hookManager } from "../hooks/hook-manager.js";
@@ -102,6 +104,7 @@ export interface Runtime {
   contextManager: ContextManager;
   permissionModel: PermissionModel;
   approval: ApprovalService;
+  permissionMemory: PermissionMemory;
   telemetry: TelemetryCoordinator;
   coordinator: TeamCoordinator;
   agents: Record<string, BaseAgent>;
@@ -170,7 +173,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
 
   initAuditLog(dataDir);
 
-  // 读取 config/permissions.json（权限模型配置源）；显式 mode 覆盖默认模式
+  // 读取权限配置（Sprint 49 第二轮：跟随 --dir；文件缺失/损坏时用**内置安全默认值**兜底，不静默清空保护）
   let permConfig: {
     default_mode?: PermissionMode;
     modes?: PermissionConfig["modes"];
@@ -180,14 +183,19 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     never_auto_approve?: string[];
     protected_paths?: string[];
   } = {};
+  const permissionConfigPath = resolvePermissionConfigPath(workingDir);
   try {
-    const permPath = resolve(process.cwd(), "config", "permissions.json");
-    if (existsSync(permPath)) {
+    if (existsSync(permissionConfigPath)) {
       // 去除 UTF-8 BOM（Windows 编辑器保存时可能附加）
-      const raw = readFileSync(permPath, "utf-8").replace(/^\uFEFF/, "");
+      const raw = readFileSync(permissionConfigPath, "utf-8").replace(/^\uFEFF/, "");
       permConfig = JSON.parse(raw);
+    } else {
+      console.warn(`[permissions] 未找到 ${permissionConfigPath}，使用内置默认策略（受保护路径取内置清单）`);
     }
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[permissions] ${permissionConfigPath} 解析失败（${(err as Error).message}），使用内置默认策略——受保护路径取内置清单，不会静默清空`,
+    );
     permConfig = {};
   }
 
@@ -209,14 +217,22 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
     deniedPatterns: permConfig.denied_patterns ?? [],
     rules: permConfig.rules ?? [],
     neverAutoApprove: permConfig.never_auto_approve ?? [],
-    protectedPaths: permConfig.protected_paths ?? [],
+    // 缺配置时回落到内置受保护路径清单（`.git`/`.ssh`/`.env`/`id_rsa` …），避免"读不到配置 = 没有保护"
+    protectedPaths: permConfig.protected_paths ?? [...DEFAULT_PROTECTED_PATHS],
   });
   // 审批服务：权限决策单点（hooks 内三个权限 handler 均委托于此，fail-closed）
+  // 权限记忆（Sprint 49）：项目级规则写 `<--dir>/config/permissions.json`（无则回落启动目录），会话级只留内存
+  const permissionMemory = new PermissionMemory({
+    model: permissionModel,
+    configPath: permissionConfigPath,
+    workingDir,
+  });
   const approval = new ApprovalService({
     permissionModel,
     dangerDetector,
     workingDir,
     confirm: (req) => requestConfirm(req.message, req.options, req.title),
+    permissionMemory,
   });
 
   const telemetry = new TelemetryCoordinator(dataDir);
@@ -563,6 +579,7 @@ ${text}
     contextManager,
     permissionModel,
     approval,
+    permissionMemory,
     telemetry,
     coordinator,
     agents,

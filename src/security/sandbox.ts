@@ -2,20 +2,24 @@
  * 策略化命令沙箱（对齐 DSH 沙箱思想，个人项目务实路径）
  * 纵深：cwd 越界约束（fail-closed）+ 命令写入目标可写根约束（Sprint 47）+
  *       配置化命令黑名单 + 敏感环境变量清理
+ * Sprint 49：根的解析与包含判定统一走 path-policy（与 fs 四件套同源，符号链接一并解析）
  * 说明：不做 OS 级进程沙箱（bwrap/restricted-token）——Node 无原生 API、
  *       自研风险高、本项目信任模型为本人执行；叠加 danger-detector /
  *       路径校验 / 超时 / 输出截断构成多层防御。写入目标判定为启发式，
  *       覆盖重定向与常见写入类命令，不覆盖脚本内部动态拼接的路径。
  */
 
-import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve, sep } from "node:path";
+import { evaluatePath, isInsideDir, resolveRealPath, resolveRoots } from "./path-policy.js";
 
 export interface SandboxPolicy {
   enabled: boolean;
   allowDirs: string[];
   /** 允许写入的目录（留空回退到工作目录）；Sprint 47 可写根约束 */
   allowWriteDirs: string[];
+  /** 允许读取的目录（留空回退到工作目录）；Sprint 49 读根约束，fs 四件套共用 */
+  allowReadDirs: string[];
   denyCommands: string[];
   stripSecretEnv: boolean;
 }
@@ -24,6 +28,7 @@ const DEFAULT_POLICY: SandboxPolicy = {
   enabled: true,
   allowDirs: [],
   allowWriteDirs: [],
+  allowReadDirs: [],
   denyCommands: [],
   stripSecretEnv: true,
 };
@@ -33,15 +38,50 @@ export interface SandboxCheckResult {
   reason?: string;
 }
 
+/**
+ * 配置文件路径注入（测试用）：不注入时按 workingDir → cwd → 包目录 的顺序解析
+ */
+let configPathOverride: string | null = null;
+
+export function setSandboxConfigPath(path: string | null): void {
+  configPathOverride = path;
+}
+
+const SANDBOX_KEYS = ["enabled", "allowDirs", "allowWriteDirs", "allowReadDirs", "denyCommands", "stripSecretEnv"];
+
+/** 是不是一份沙箱配置（别的工具可能也有 config/sandbox.json） */
+function looksLikeSandboxConfig(path: string): boolean {
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8").replace(/^\uFEFF/, "")) as Record<string, unknown>;
+    return Boolean(data) && typeof data === "object" && !Array.isArray(data) && SANDBOX_KEYS.some((k) => k in data);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 生效的沙箱配置文件（Sprint 49 第二轮：与权限配置同样跟随 `--dir`）
+ * 优先 `<workingDir>/config/sandbox.json`，其次 `<cwd>/config/sandbox.json`，最后回落到包内 config/sandbox.json
+ */
+export function resolveSandboxConfigPath(workingDir: string, cwd: string = process.cwd()): string {
+  if (configPathOverride) return configPathOverride;
+  const candidates = [resolve(workingDir, "config", "sandbox.json"), resolve(cwd, "config", "sandbox.json")];
+  for (const path of candidates.filter((p, i) => candidates.indexOf(p) === i)) {
+    if (existsSync(path) && looksLikeSandboxConfig(path)) return path;
+  }
+  return resolve(import.meta.dirname, "../../config/sandbox.json");
+}
+
 export function loadSandboxPolicy(configPath?: string): SandboxPolicy {
   try {
-    const path = configPath ?? resolve(import.meta.dirname, "../../config/sandbox.json");
+    const path = configPath ?? configPathOverride ?? resolveSandboxConfigPath(process.cwd());
     const raw = readFileSync(path, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw) as Partial<SandboxPolicy>;
     return {
       enabled: parsed.enabled ?? DEFAULT_POLICY.enabled,
       allowDirs: Array.isArray(parsed.allowDirs) ? parsed.allowDirs.map((d) => resolve(d)) : [],
       allowWriteDirs: Array.isArray(parsed.allowWriteDirs) ? parsed.allowWriteDirs.map((d) => resolve(d)) : [],
+      allowReadDirs: Array.isArray(parsed.allowReadDirs) ? parsed.allowReadDirs.map((d) => resolve(d)) : [],
       denyCommands: Array.isArray(parsed.denyCommands) ? parsed.denyCommands : [],
       stripSecretEnv: parsed.stripSecretEnv ?? DEFAULT_POLICY.stripSecretEnv,
     };
@@ -60,11 +100,6 @@ export function sanitizeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return out;
 }
 
-function isInsideDir(root: string, target: string): boolean {
-  const rel = relative(root, target);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
 export function checkCommand(
   command: string,
   cwd: string,
@@ -72,8 +107,11 @@ export function checkCommand(
   policy: SandboxPolicy,
 ): SandboxCheckResult {
   if (!policy.enabled) return { allowed: true };
-  const base = resolve(cwd);
-  const roots = policy.allowDirs.length > 0 ? policy.allowDirs : [resolve(workingDir)];
+  const base = resolveRealPath(cwd);
+  if (base === null) {
+    return { allowed: false, reason: `工作目录无法解析为真实路径（悬空链接/链接环/权限不足），已按拒绝处理: ${resolve(cwd)}` };
+  }
+  const roots = resolveRoots(policy.allowDirs, workingDir);
   if (!roots.some((root) => isInsideDir(root, base))) {
     return {
       allowed: false,
@@ -82,9 +120,8 @@ export function checkCommand(
   }
   const deny = checkDeniedCommand(command, policy);
   if (!deny.allowed) return deny;
-  // 写入目标可写根约束（Sprint 47：重定向与写入类命令的路径必须落在可写根内）
-  const writeRoots = policy.allowWriteDirs.length > 0 ? policy.allowWriteDirs : [resolve(workingDir)];
-  return checkWriteTargets(command, base, writeRoots);
+  // 写入目标可写根约束（Sprint 47 引入，Sprint 49 起与 fs 工具共用同一套根解析）
+  return checkWriteTargets(command, base, resolveRoots(policy.allowWriteDirs, workingDir));
 }
 
 /** 重定向/写入命令中无需检查的伪目标 */
@@ -233,19 +270,17 @@ export function checkWriteTargets(command: string, cwd: string, writeRoots: stri
   for (const raw of targets) {
     const t = raw.trim();
     if (!t || IGNORED_WRITE_TARGETS.has(t.toLowerCase())) continue;
-    if (/[$%]/.test(t)) {
+    if (/[$%~]/.test(t)) {
       return {
         allowed: false,
-        reason: `写入目标无法静态解析（含变量/通配）: ${t}。请使用明确路径，或改用 fs_write 工具`,
+        reason: `写入目标无法静态解析（含变量/通配/主目录）: ${t}。请使用明确路径，或改用 fs_write 工具`,
       };
     }
-    const abs = isAbsolute(t) ? resolve(t) : resolve(base, t);
-    if (!writeRoots.some((root) => isInsideDir(root, abs))) {
-      return {
-        allowed: false,
-        reason: `写入越界被沙箱拦截: ${abs}（仅允许写入 ${writeRoots.join("、")} 内）`,
-      };
-    }
+    // 相对路径**按原样拼接**（不折叠 `..`）：shell/内核拿到的是命令原文，
+    // 只有按组件次序解析（先解开链接、再弹 `..`）才与真实写入位置一致
+    const abs = isAbsolute(t) ? t : `${base}${sep}${t}`;
+    const decision = evaluatePath("write", abs, { enabled: true, readRoots: [], writeRoots });
+    if (!decision.allowed) return { allowed: false, reason: decision.reason };
   }
   return { allowed: true };
 }

@@ -41,7 +41,7 @@
       const rel = res.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? res.docPath;
       docViewer.set(`session:${rel}`);
       rightPanelVisible.set(true);
-      rightTab.set("docs");
+      rightTab.set("artifacts");
     }
   }
 
@@ -87,8 +87,8 @@
     {#if job.result?.app}
       <div class="gen-done">
         {isUpdate
-          ? `✓ 应用已更新：${job.result.app.name} v${job.result.app.version ?? ""}（已停靠右侧「应用预览」）`
-          : `✓ 应用已就绪：${job.result.app.name}（已停靠右侧「应用预览」）`}
+          ? `✓ 应用已更新：${job.result.app.name} v${job.result.app.version ?? ""}（已停靠右侧「应用」）`
+          : `✓ 应用已就绪：${job.result.app.name}（已停靠右侧「应用」）`}
       </div>
       <button class="gen-btn" onclick={openResult}>打开应用</button>
     {:else if job.result?.docPath}

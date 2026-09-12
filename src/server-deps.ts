@@ -86,6 +86,7 @@ export function buildServerDeps(runtime: Runtime): ServerDeps {
     generatorQueue,
     evolutionEngine: runtime.evolutionEngine,
     rewindService: runtime.rewindService,
+    permissionMemory: runtime.permissionMemory,
     getConfigState: () => ({
       model: runtime.modelRouter.getDisplayModel(),
       availableModels: runtime.modelRouter.getAvailableModels().map((m) => ({

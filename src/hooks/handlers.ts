@@ -32,6 +32,7 @@ import { skillEvolution } from "../core/skill-evolution.js";
 import type { SkillEvolutionResult } from "../core/skill-evolution.js";
 import type { TelemetryCoordinator } from "../memory/telemetry.js";
 import type { CheckpointStore } from "../core/checkpoint-store.js";
+import type { PermissionMemory } from "../security/permission-memory.js";
 import { pendingTurn, commitTurn } from "./turn-registry.js";
 
 export interface HandlerDependencies {
@@ -39,6 +40,8 @@ export interface HandlerDependencies {
   permissionModel?: PermissionModel;
   /** 审批服务（统一权限决策单点；缺省时由各 handler 按 deps 自建） */
   approval?: ApprovalService;
+  /** 权限记忆（Sprint 49：自建审批服务时提供"始终允许"选项） */
+  permissionMemory?: PermissionMemory;
   sessionStore?: SessionStore;
   modelRouter?: ModelRouter;
   workingDir?: string;
@@ -60,6 +63,7 @@ function getApproval(deps: HandlerDependencies): ApprovalService {
       dangerDetector: deps.dangerDetector,
       workingDir: deps.workingDir,
       confirm: (req: ConfirmRequestLike) => requestConfirm(req.message, req.options, req.title),
+      permissionMemory: deps.permissionMemory,
     })
   );
 }
@@ -339,7 +343,10 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
     const toolName = ctx.data.toolName as string;
     const permissions = ctx.data.permissions as string;
 
-    const decision = await approval.checkConfirmation(toolName, ctx.data.args, permissions as PermissionMode);
+    const decision = await approval.checkConfirmation(toolName, ctx.data.args, permissions as PermissionMode, {
+      agentId: ctx.agentId,
+      sessionId: ctx.sessionId,
+    });
     if (!decision.proceed) {
       return { proceed: false, message: decision.message ?? "用户取消操作" };
     }

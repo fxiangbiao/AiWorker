@@ -591,8 +591,8 @@ describe("13. Phase 3 Hook Handlers", () => {
     const sent: { id: string; message: string }[] = [];
     const provider = createHttpConfirmProvider((req) => sent.push({ id: req.id, message: req.message }), 2000);
 
-    const p1 = provider({ id: "cf-1", title: "t", message: "允许执行?", options: [] });
-    const p2 = provider({ id: "cf-2", title: "t", message: "允许执行?", options: [] });
+    const p1 = provider({ id: "cf-1", title: "t", message: "允许执行?", options: [{ value: "allow", label: "允许" }, { value: "deny", label: "拒绝" }] });
+    const p2 = provider({ id: "cf-2", title: "t", message: "允许执行?", options: [{ value: "allow", label: "允许" }, { value: "deny", label: "拒绝" }] });
     expect(sent).toHaveLength(2);
 
     // 响应 cf-2（乱序），应只 resolve cf-2

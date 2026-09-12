@@ -4,17 +4,18 @@
     "openai": 131072,
     "anthropic": 200000,
     "google": 262144,
-    "deepseek.deepseek-v4-flash": 1048576,
+    "deepseek.deepseek-flash": 1048576,
     "openai.Gemma-4-26B-A4B": 16384,
     "openai.Qwen3.8-27B": 16384
   },
   "default": {
     "provider": "deepseek",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "baseURL": "https://api.deepseek.com",
     "apiKey": "${DEEPSEEK_API_KEY}",
     "thinking": true,
     "adapter": "openai-compatible",
+    "vision": true,
     "contextWindow": 1048576
   },
   "profiles": {

@@ -4,18 +4,40 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
-import { resolve, dirname, relative, isAbsolute } from "node:path";
+import { resolve, dirname } from "node:path";
 import { exec, type ExecOptions } from "node:child_process";
-import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext } from "../types.js";
+import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext, ToolResult } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { buildFileArtifact, isTextPath, sniffIsBinary, simpleDiffLines, formatSize } from "../core/preview.js";
 import { DangerDetector } from "../security/danger-detector.js";
-import { loadSandboxPolicy, checkCommand, sanitizeEnv } from "../security/sandbox.js";
+import { loadSandboxPolicy, checkCommand, sanitizeEnv, resolveSandboxConfigPath } from "../security/sandbox.js";
+import { evaluatePath, resolvePathPolicy, type PathAccessKind, type PathPolicy } from "../security/path-policy.js";
 import { spillOrTruncate, SPILL_THRESHOLD } from "./spill.js";
 import { requestAsk } from "./ask-channel.js";
 import { terminalSessionPool } from "./terminal-session.js";
 
 const detector = new DangerDetector();
+
+/**
+ * fs 四件套的读写边界（Sprint 49）：读根 / 写根取自 config/sandbox.json 的
+ * allowReadDirs / allowWriteDirs（留空回退工作目录），且**不受 sandbox.enabled 影响**——
+ * 命令层的开关不能静默关掉文件读写边界；需要更大范围请显式配置读根/写根。
+ */
+function fsPathPolicy(workingDir: string): PathPolicy {
+  const config = loadSandboxPolicy(resolveSandboxConfigPath(workingDir));
+  return resolvePathPolicy(workingDir, {
+    enabled: true,
+    allowReadDirs: config.allowReadDirs,
+    allowWriteDirs: config.allowWriteDirs,
+  });
+}
+
+/** 越界即拒绝（返回错误结果；null = 放行）。判定含符号链接真实路径解析 */
+function denyOutOfScope(kind: PathAccessKind, rawPath: string, ctx: ToolContext): ToolResult | null {
+  const decision = evaluatePath(kind, rawPath, fsPathPolicy(ctx.workingDir), ctx.workingDir);
+  if (decision.allowed) return null;
+  return { tool_call_id: "", success: false, content: "", error: decision.reason };
+}
 
 /**
  * 构造 exec 环境：确保 node 可执行目录在 PATH 中。
@@ -63,6 +85,8 @@ const readFileDef: ToolDefinition = {
 };
 
 const readFileHandler: ToolHandler = async (args, ctx) => {
+  const denied = denyOutOfScope("read", args.path as string, ctx);
+  if (denied) return denied;
   const filePath = resolve(ctx.workingDir, args.path as string);
   if (!existsSync(filePath)) {
     return {
@@ -154,20 +178,9 @@ const writeFileDef: ToolDefinition = {
 };
 
 const writeFileHandler: ToolHandler = async (args, ctx) => {
+  const denied = denyOutOfScope("write", args.path as string, ctx);
+  if (denied) return denied;
   const filePath = resolve(ctx.workingDir, args.path as string);
-
-  // 路径遍历防护: 确保解析后路径仍在工作目录内
-  const resolvedPath = resolve(filePath);
-  const resolvedBase = resolve(ctx.workingDir);
-  const rel = relative(resolvedBase, resolvedPath);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    return {
-      tool_call_id: "",
-      success: false,
-      content: "",
-      error: `路径超出项目目录: ${args.path as string}`,
-    };
-  }
 
   // 权限检查：Auto 模式下高危需确认
   const dangerCheck = detector.check(`write ${filePath}`);
@@ -217,20 +230,9 @@ const editFileDef: ToolDefinition = {
 };
 
 const editFileHandler: ToolHandler = async (args, ctx) => {
+  const denied = denyOutOfScope("write", args.path as string, ctx);
+  if (denied) return denied;
   const filePath = resolve(ctx.workingDir, args.path as string);
-
-  // 路径遍历防护: 确保解析后路径仍在工作目录内
-  const resolvedPath = resolve(filePath);
-  const resolvedBase = resolve(ctx.workingDir);
-  const rel = relative(resolvedBase, resolvedPath);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    return {
-      tool_call_id: "",
-      success: false,
-      content: "",
-      error: `路径超出项目目录: ${args.path as string}`,
-    };
-  }
 
   // 权限检查：Auto 模式下高危需确认
   const dangerCheck = detector.check(`write ${filePath}`);
@@ -384,7 +386,10 @@ const listDirDef: ToolDefinition = {
 };
 
 const listDirHandler: ToolHandler = async (args, ctx) => {
-  const dirPath = resolve(ctx.workingDir, (args.path as string) ?? ".");
+  const rawPath = (args.path as string) ?? ".";
+  const denied = denyOutOfScope("read", rawPath, ctx);
+  if (denied) return denied;
+  const dirPath = resolve(ctx.workingDir, rawPath);
   if (!existsSync(dirPath)) {
     return { tool_call_id: "", success: false, content: "", error: `目录不存在: ${dirPath}` };
   }
@@ -429,7 +434,7 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const timeout = (args.timeout as number) ?? 30000;
 
   // 沙箱强制层（先于权限层，任何模式都拦截）：cwd 越界 fail-closed + 配置化黑名单
-  const sandbox = loadSandboxPolicy();
+  const sandbox = loadSandboxPolicy(resolveSandboxConfigPath(ctx.workingDir));
   const sandboxCheck = checkCommand(command, cwd, ctx.workingDir, sandbox);
   if (!sandboxCheck.allowed) {
     return {
@@ -746,7 +751,7 @@ const terminalSessionHandler: ToolHandler = async (args, ctx) => {
     }
     if (action === "exec") {
       // 与 terminal_exec 同一套沙箱：黑名单 + 写入目标可写根约束（相对路径按会话工作目录解析）
-      const sandboxPolicy = loadSandboxPolicy();
+      const sandboxPolicy = loadSandboxPolicy(resolveSandboxConfigPath(ctx.workingDir));
       const denyCheck = checkCommand(command, ctx.workingDir, ctx.workingDir, sandboxPolicy);
       if (!denyCheck.allowed) {
         return {

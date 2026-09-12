@@ -5,12 +5,11 @@
   import Sidebar from "./components/Sidebar.svelte";
   import ChatPanel from "./components/ChatPanel.svelte";
   import SystemPanel from "./components/SystemPanel.svelte";
-  import FileDiffPanel from "./components/FileDiffPanel.svelte";
+  import ArtifactsPanel from "./components/ArtifactsPanel.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import AppHostLayer from "./components/AppHostLayer.svelte";
   import AppPreviewPanel from "./components/AppPreviewPanel.svelte";
-  import DocPreviewPanel from "./components/DocPreviewPanel.svelte";
-  import RewindPanel from "./components/RewindPanel.svelte";
+  import PermissionsPanel from "./components/PermissionsPanel.svelte";
   import { rightTab, rightPanelVisible } from "./lib/stores/apps.svelte";
   import { skills } from "./lib/stores/status";
   import {
@@ -25,7 +24,7 @@
   } from "./lib/stores/chat.svelte";
   import { serverOnline, currentModel, totalTokens, promptTokens, completionTokens, contextWindow, workingDir, refreshStatus } from "./lib/stores/status";
   import { initWs } from "./lib/stores/ws.svelte";
-  import { PanelRightClose, FileText, Box, RotateCcw } from "lucide-svelte";
+  import { PanelRightClose, Box, AppWindow, ShieldCheck } from "lucide-svelte";
   import { get } from "svelte/store";
   import { theme, applyTheme } from "./lib/stores/theme.svelte";
 
@@ -135,26 +134,21 @@
     <div class="resizer" role="separator" aria-orientation="vertical" onpointerdown={startDrag}></div>
     <div class="right-panel" id="right-panel" style:width={rightWidth ? `${rightWidth}px` : "42.857%"}>
       <div class="rp-tabs">
-        <button class="rp-tab" class:active={$rightTab === "files"} onclick={() => rightTab.set("files")}>
-          <span class="rp-ico"><FileText size={13} /></span>文件变更
+        <button class="rp-tab" class:active={$rightTab === "artifacts"} onclick={() => rightTab.set("artifacts")}>
+          <span class="rp-ico"><Box size={13} /></span>产物
         </button>
-        <button class="rp-tab" class:active={$rightTab === "docs"} onclick={() => rightTab.set("docs")}>
-          <span class="rp-ico"><FileText size={13} /></span>文档预览
-        </button>
-        <button class="rp-tab" class:active={$rightTab === "rewind"} onclick={() => rightTab.set("rewind")}>
-          <span class="rp-ico"><RotateCcw size={13} /></span>回滚
+        <button class="rp-tab" class:active={$rightTab === "permissions"} onclick={() => rightTab.set("permissions")}>
+          <span class="rp-ico"><ShieldCheck size={13} /></span>权限
         </button>
         <button class="rp-tab" class:active={$rightTab === "apps"} onclick={() => rightTab.set("apps")}>
-          <span class="rp-ico"><Box size={13} /></span>应用预览
+          <span class="rp-ico"><AppWindow size={13} /></span>应用
         </button>
         <button class="rp-hide" title="隐藏右侧栏" onclick={() => rightPanelVisible.set(false)}><PanelRightClose size={14} /></button>
       </div>
-      {#if $rightTab === "files"}
-        <FileDiffPanel />
-      {:else if $rightTab === "docs"}
-        <DocPreviewPanel />
-      {:else if $rightTab === "rewind"}
-        <RewindPanel />
+      {#if $rightTab === "artifacts"}
+        <ArtifactsPanel />
+      {:else if $rightTab === "permissions"}
+        <PermissionsPanel />
       {:else}
         <AppPreviewPanel />
       {/if}

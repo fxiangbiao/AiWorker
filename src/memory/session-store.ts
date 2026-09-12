@@ -8,7 +8,7 @@ import type { Database as DBType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent, RewindScope } from "../types.js";
+import type { Message, SessionRecord, EpisodicEntry, TurnLog, ToolCallLog, SessionEventType, SessionEvent, RewindScope, ToolArtifact } from "../types.js";
 import { messageText } from "../types.js";
 
 const segmenter =
@@ -388,16 +388,18 @@ export class SessionStore {
    * rewind/applied（scope 含 chat）会截断该标记之前、seq >= toEventSeq 的消息
    * @param events 可选预取事件（Sprint 44 review：避免 GET /sessions/:id 对同一会话读取两遍全量事件）
    */
-  replayEvents(sessionId: string, events?: SessionEvent[]): Message[] {
+  replayEvents(sessionId: string, events?: SessionEvent[]): Array<Message & { seq?: number; artifacts?: ToolArtifact[] }> {
     const evs = events ?? this.getEvents(sessionId);
-    const toolResults = new Map<string, Message>();
+    const toolResults = new Map<string, Message & { artifacts?: ToolArtifact[] }>();
     for (const ev of evs) {
       if (ev.type === "tool/result") {
-        const d = ev.data as { callId: string; success: boolean; content: string; error?: string };
+        const d = ev.data as { callId: string; success: boolean; content: string; error?: string; artifacts?: ToolArtifact[] };
         toolResults.set(d.callId, {
           role: "tool",
           content: d.success ? d.content : `Error: ${d.error ?? d.content}`,
           tool_call_id: d.callId,
+          // 产物随消息回放带出（Sprint 50）：Web 刷新后「在对话中查看」才能定位到产生它的工具卡片
+          ...(Array.isArray(d.artifacts) && d.artifacts.length > 0 ? { artifacts: d.artifacts } : {}),
         });
       }
     }
@@ -425,7 +427,8 @@ export class SessionStore {
         }
       }
     }
-    return collected.map((c) => c.msg);
+    // seq 保留（Sprint 50）：Web 端据此把用户消息映射到回合，做「从这里重新开始」
+    return collected.map((c) => ({ ...c.msg, seq: c.seq }));
   }
 
   /** 一致性校验：事件回放派生消息 vs messages 投影（投影表不含 tool 消息，故仅比较 user/assistant 骨架） */

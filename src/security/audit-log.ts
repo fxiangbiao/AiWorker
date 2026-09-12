@@ -19,6 +19,21 @@ export interface AuditEntry {
   detail?: string;
 }
 
+/** SQLite 行 → AuditEntry：列名是 snake_case，直接用会把 agentId/sessionId 读成 undefined（审计面板会话列恒空） */
+function toEntry(row: unknown): AuditEntry {
+  const r = row as Record<string, unknown>;
+  return {
+    id: typeof r.id === "number" ? r.id : undefined,
+    timestamp: Number(r.timestamp ?? 0),
+    agentId: String(r.agent_id ?? ""),
+    sessionId: String(r.session_id ?? ""),
+    action: String(r.action ?? ""),
+    target: r.target === null || r.target === undefined ? undefined : String(r.target),
+    result: (r.result as AuditEntry["result"]) ?? "success",
+    detail: r.detail === null || r.detail === undefined ? undefined : String(r.detail),
+  };
+}
+
 export class AuditLog {
   private db: DBType;
 
@@ -66,7 +81,7 @@ export class AuditLog {
 
   queryBySession(sessionId: string): AuditEntry[] {
     const stmt = this.db.prepare(`SELECT * FROM audit_log WHERE session_id = ? ORDER BY timestamp ASC`);
-    return stmt.all(sessionId) as AuditEntry[];
+    return stmt.all(sessionId).map(toEntry);
   }
 
   /** 最近 N 条（可选 action 前缀过滤，如 "evolution:"；timestamp 降序 + id 断链，严格最新在前） */
@@ -76,10 +91,10 @@ export class AuditLog {
       const stmt = this.db.prepare(
         `SELECT * FROM audit_log WHERE action LIKE ? ORDER BY timestamp DESC, id DESC LIMIT ?`,
       );
-      return stmt.all(`${actionPrefix}%`, safeLimit) as AuditEntry[];
+      return stmt.all(`${actionPrefix}%`, safeLimit).map(toEntry);
     }
     const stmt = this.db.prepare(`SELECT * FROM audit_log ORDER BY timestamp DESC, id DESC LIMIT ?`);
-    return stmt.all(safeLimit) as AuditEntry[];
+    return stmt.all(safeLimit).map(toEntry);
   }
 
   /** 按 action 精确匹配计数（进化观察的生成统计用） */

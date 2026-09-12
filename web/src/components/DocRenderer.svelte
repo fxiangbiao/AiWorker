@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * 文档渲染器（Sprint 35）— Markdown 渲染 + 标题目录（点击定位 + 滚动跟随）+ 图表
-   * 供右侧「应用预览」面板与文档工作台复用；path 为 "root:相对路径"（root ∈ session|project，无前缀兼容视为 session）
+   * 供右侧「应用」面板与文档工作台复用；path 为 "root:相对路径"（root ∈ session|project，无前缀兼容视为 session）
    */
   import { marked } from "marked";
   import DOMPurify from "dompurify";
@@ -13,6 +13,8 @@
 
   let content = $state("");
   let html = $state("");
+  let error = $state("");
+  let loaded = $state(false);
   let chart = $state<{ type: "bar" | "line"; labels: string[]; values: number[] } | null>(null);
   let renderEl = $state<HTMLElement | null>(null);
   let activeHeading = $state("");
@@ -38,12 +40,20 @@
     html = "";
     chart = null;
     activeHeading = "";
+    error = "";
+    loaded = false;
+    anchorNote = "";
     outlineOpen = false; // 每篇文档默认收起大纲
     const { root, rel } = parseDocKey(p);
     try {
       const sidParam = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : "";
       const r = await fetch(`${API}/docs/content?root=${root}&path=${encodeURIComponent(rel)}${sidParam}`);
-      if (!r.ok) return;
+      if (seq !== loadSeq) return;
+      if (!r.ok) {
+        // 失败必须显式暴露：此前直接 return，界面会永远停在"加载文档…"
+        error = r.status === 404 ? `文档不存在或不在 ${root} 根内：${rel}` : `加载失败（${r.status}）`;
+        return;
+      }
       const d = (await r.json()) as { content?: string };
       if (seq !== loadSeq) return; // 过期响应丢弃
       content = d.content ?? "";
@@ -60,7 +70,12 @@
         void loadChart(rel.slice(0, rel.lastIndexOf("/")), seq);
       }
     } catch {
-      if (seq === loadSeq) content = "";
+      if (seq === loadSeq) {
+        content = "";
+        error = "无法连接服务端";
+      }
+    } finally {
+      if (seq === loadSeq) loaded = true;
     }
   }
 
@@ -134,16 +149,40 @@
   let tocHeadings = $derived(html ? extractHeadings() : []);
   /** 大纲侧边栏（内容右侧，默认收起；右上角「大纲」按钮展开） */
   let outlineOpen = $state(false);
+  /** 大纲定位失败时的就地提示（不静默失败） */
+  let anchorNote = $state("");
 
-  /** 目录点击 → 渲染区滚动定位到标题 */
+  /**
+   * 目录点击 → 渲染区滚动定位到标题
+   * 不假设 `renderEl` 就是滚动容器：外层可能是 `.ad-viewer`、右栏等任意一层（Sprint 50 布局改造后
+   * 曾因此失效）。改为沿祖先链找**第一个真正可滚动**的容器，找不到才退回 scrollIntoView。
+   */
+  function scrollableAncestor(node: HTMLElement | null): HTMLElement | null {
+    let p = node?.parentElement ?? null;
+    while (p) {
+      const oy = getComputedStyle(p).overflowY;
+      if ((oy === "auto" || oy === "scroll" || oy === "overlay") && p.scrollHeight > p.clientHeight + 1) return p;
+      p = p.parentElement;
+    }
+    return null;
+  }
+
   function jumpTo(id: string) {
     activeHeading = id;
-    const el = document.getElementById(id);
-    if (el && renderEl) {
-      const r = renderEl.getBoundingClientRect();
-      const e = el.getBoundingClientRect();
-      renderEl.scrollTo({ top: renderEl.scrollTop + (e.top - r.top) - 8, behavior: "smooth" });
+    anchorNote = "";
+    const el = renderEl?.querySelector<HTMLElement>(`[id="${id}"]`) ?? document.getElementById(id);
+    if (!el) {
+      anchorNote = `未找到标题锚点（${id}）`;
+      return;
     }
+    const scroller = scrollableAncestor(el);
+    if (scroller) {
+      const top = scroller.scrollTop + (el.getBoundingClientRect().top - scroller.getBoundingClientRect().top) - 8;
+      scroller.scrollTo({ top, behavior: "smooth" });
+      return;
+    }
+    // 没有任何可滚动祖先（文档未超出容器）→ 交给浏览器；仍然有偏移需求时由 scroll-margin-top 处理
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   /** 滚动跟随：高亮当前可见章节 */
@@ -209,6 +248,9 @@
     </div>
     {#if outlineOpen && tocHeadings.length > 0}
       <div class="dr-toc">
+        {#if anchorNote}
+          <div class="dr-toc-note">{anchorNote}</div>
+        {/if}
         {#each tocHeadings as h (h.id)}
           <button
             class="dr-toc-item"
@@ -222,6 +264,10 @@
         {/each}
       </div>
     {/if}
+  {:else if error}
+    <div class="dr-empty dr-error">{error}</div>
+  {:else if loaded}
+    <div class="dr-empty">（文档为空）</div>
   {:else}
     <div class="dr-empty">加载文档…</div>
   {/if}
@@ -241,9 +287,10 @@
   }
   .dr-outline-btn:hover, .dr-outline-btn.active { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
   .dr-toc {
-    width: 150px; flex-shrink: 0; overflow-y: auto;
+    flex: 0 1 150px; min-width: 92px; overflow-y: auto;
     font-size: 11px; color: var(--dim); border-left: 1px solid var(--border); padding-left: 8px;
   }
+  .dr-toc-note { font-size: 10px; color: var(--danger); padding: 2px 4px; }
   .dr-toc-item {
     display: block; width: 100%; text-align: left;
     padding: 3px 6px; margin-bottom: 1px;
@@ -258,6 +305,8 @@
     flex: 1; overflow-y: auto; overflow-x: auto; font-size: 13px; line-height: 1.7; padding: 4px 8px;
     color: var(--text); min-width: 0; min-height: 0;
   }
+  /* 兜底走 scrollIntoView 时留出顶部间距；正常路径由 jumpTo 自行减 8px */
+  .dr-render :global(h1), .dr-render :global(h2), .dr-render :global(h3), .dr-render :global(h4) { scroll-margin-top: 8px; }
   .dr-chart {
     border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 12px; margin-bottom: 12px; background: var(--surface);
@@ -280,4 +329,5 @@
   .dr-render :global(img) { max-width: 100%; height: auto; border-radius: var(--radius-sm); background: var(--bg); }
   .dr-render :global(p > img:only-child) { display: block; margin: 8px auto; }
   .dr-empty { color: var(--dim); font-size: 12px; margin: auto; }
+  .dr-error { color: var(--danger); }
 </style>

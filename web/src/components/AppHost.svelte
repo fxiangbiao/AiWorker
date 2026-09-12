@@ -133,7 +133,7 @@
           <Maximize2 size={12} />
         </button>
       {:else}
-        <button class="aw-btn" title="停靠回右侧应用预览面板" onclick={() => openAppInPreview(app.id)}>
+        <button class="aw-btn" title="停靠回右侧「应用」面板" onclick={() => openAppInPreview(app.id)}>
           <PanelLeft size={12} />
         </button>
       {/if}

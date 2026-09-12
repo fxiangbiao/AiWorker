@@ -66,7 +66,7 @@
       </div>
       <div class="gw-field">
         <label class="gw-label">进度</label>
-        <span class="gw-hint">生成进度会以状态卡片出现在聊天流中，完成后自动停靠右侧「应用预览」面板</span>
+        <span class="gw-hint">生成进度会以状态卡片出现在聊天流中，完成后自动停靠右侧「应用」面板</span>
       </div>
     </div>
 

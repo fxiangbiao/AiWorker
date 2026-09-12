@@ -60,13 +60,13 @@ export const processResources = writable<{ tokens: { total: number; prompt: numb
 export const openWindows = writable<Record<string, boolean>>({});
 /** 窗口状态（位置/尺寸/形态/置顶），localStorage 持久化 appwin-<id> */
 export const winStates = writable<Record<string, AppWinState>>({});
-/** 右侧面板当前 Tab（文件变更 / 文档预览 / 回滚 / 应用预览） */
-export const rightTab = writable<"files" | "docs" | "rewind" | "apps">("files");
-/** 右侧面板可见性（默认关闭；新生成应用/文档时自动展开到「应用预览」Tab） */
+/** 右侧面板当前 Tab（产物工作台 / 权限 / 应用，Sprint 50：文件变更+文档预览+回滚 合并为「产物」） */
+export const rightTab = writable<"artifacts" | "permissions" | "apps">("artifacts");
+/** 右侧面板可见性（默认关闭；新生成应用/文档时自动展开到对应 Tab） */
 export const rightPanelVisible = writable(false);
-/** 文档工作台：待打开的文档相对路径（data/docs/ 内） */
+/** 待打开的文档（`<root>:<rel>`）——产物面板据此在列表里选中该文档 */
 export const docViewer = writable<string | null>(null);
-/** 右侧「应用预览」面板当前选中的应用 id（左侧应用列表点击/启动时联动切换） */
+/** 右侧「应用」面板当前选中的应用 id（左侧应用列表点击/启动时联动切换） */
 export const previewAppId = writable("");
 /** 左侧导航当前 Tab（对话/应用/进程/任务；供启动台等跨组件切换） */
 export const sidebarNav = writable<"chat" | "apps" | "processes" | "jobs">("chat");
@@ -109,7 +109,7 @@ export function openAppWindow(id: string, app?: AppInfo): void {
   });
 }
 
-/** 打开/启动应用：统一停靠右侧「应用预览」面板展示（不直接弹浮窗），面板折叠时自动展开，并选中该应用 */
+/** 打开/启动应用：统一停靠右侧「应用」面板展示（不直接弹浮窗），面板折叠时自动展开，并选中该应用 */
 export function openAppInPreview(id: string, app?: AppInfo): void {
   setAppSurface(id, "panel");
   openAppWindow(id, app);
@@ -349,13 +349,13 @@ export function initAppsWs(): void {
       const genApp = data.app as AppInfo | undefined;
       if (typeof data.appId === "string" && genApp?.type === "app") {
         openAppWindow(data.appId, genApp);
-        // 新生成的 app 类型应用默认展示在右侧「应用预览」面板
+        // 新生成的 app 类型应用默认展示在右侧「应用」面板
         rightPanelVisible.set(true);
         rightTab.set("apps");
       }
     } else if (type === "app/started") {
       void loadApps();
-      // 启动统一停靠右侧「应用预览」面板展示（不直接弹浮窗/小部件），面板折叠时自动展开
+      // 启动统一停靠右侧「应用」面板展示（不直接弹浮窗/小部件），面板折叠时自动展开
       const app = data.app as AppInfo | undefined;
       const id = app?.id ?? (typeof data.appId === "string" ? data.appId : undefined);
       if (typeof id === "string" && app?.type === "app") {
@@ -421,7 +421,7 @@ function handleGenEvent(type: string, data: Record<string, unknown>): void {
         const rel = next.result.docPath.replace(/\\/g, "/").split("/docs/").pop() ?? next.result.docPath;
         docViewer.set(`session:${rel}`);
         rightPanelVisible.set(true);
-        rightTab.set("docs");
+        rightTab.set("artifacts");
       }
       void loadApps();
     } else if (type === "gen/failed") {
