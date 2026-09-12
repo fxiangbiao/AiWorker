@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.5.0-blue)
+![version](https://img.shields.io/badge/version-1.6.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -15,7 +15,7 @@
 
 ## 目录
 
-- [特性](#特性)
+- [系统总览](#系统总览)
 - [界面预览](#界面预览)
 - [作品展示](#作品展示)
 - [快速开始](#快速开始)
@@ -28,20 +28,63 @@
 - [相关文档](#相关文档)
 - [许可证](#许可证)
 
-## 特性
+## 系统总览
 
-- **Agent 核心**：流式输出 + 中断 + 断路器 + 防循环提醒 + token 压缩；**迭代预算管理**（每专家上限可调、剩余 ≤5 轮收敛提示、空转/失败自动终止）；7 专家路由（正则 → LLM 语义）；`/plan` DAG 协作 + `/debate` 双专家互审
-- **模型**：多 profile 路由（`config/models.json`，支持 `${ENV}`）+ DeepSeek 思考模式；**上下文窗口可配置**（顶层 `contextWindow` 表按 provider/model 声明，TUI/Web 展示窗口与上下文占比、压缩预算独立成本护栏）；`/config` 或 Web「配置」可切换模型、调整温度/max-tokens/迭代上限，并**添加新模型/Provider**；token 用量可查（TUI `/status`、Web 状态栏/轨迹），费用请在模型平台账单核对
-- **工具与扩展**：8 内置工具（fs / terminal_exec / terminal_session / web / ask_user 等）+ MCP（stdio/HTTP、内置服务器、自动重连）+ 38 技能（SKILL.md、正则触发、自沉淀）+ **插件系统**（`setup(ctx)` 即插即用、scope 注册、fail-soft）+ scoped 工具注册
-- **安全**：Ask/Plan/Auto 三权限模式 + `Tool(specifier)` 级规则（deny/ask/allow、通配、永不自动批准、受保护路径）+ 审批服务（fail-closed）+ 危险操作拦截 + 路径防护 + 策略化命令沙箱（cwd 越界/写入根约束/黑名单/敏感环境变量剥离）+ 60s 工具超时 + Hooks 6 事件 14 handlers；CI 门禁含 svelte-check
-- **记忆与上下文**：三层记忆（工作 / 情景 FTS5 / 语义 MEMORY.md）+ 会话事件溯源（replay + `/trace`）+ 超长结果 spill 落盘 + 自动标题 + 上下文压缩
-- **后台与调度**：`/bg` 后台任务（不阻塞交互，完成 WS 推送）；`/schedule` 定时任务（**支持自然语言添加**，如"每天早上8点生成早报"）
-- **资产分发**：技能/MCP/插件统一 `.aw` 包（zip+manifest，`scripts/pack-aw.mjs` 打包）及**裸格式**（SKILL.md / MCP .json / 插件目录）导入导出；`/install`、`/pkg export`、Web 三 Tab 支持
-- **AI OS 应用模型**（0.7.0）：`data/apps/<id>/app.json` manifest（tool/skill/agent/service/app）+ 生命周期状态机 + 子进程能力桥（JSON-RPC 隔离，无 terminal 权限）+ 崩溃自动重启 + `/app` 命令 + Web 应用/进程视图
-- **自进化引擎**（1.0.0）：观察（7 天派生指标）→ 提议（meta-agent，每日 ≤3）→ 两段式确认 → 写入生效 + 快照回滚 → 变更对比 → **黄金用例评测 + A/B 验证 + 回归阈值自动回滚**；`/evo` + Web「进化」Tab（提案/台账/用例/评测）
-- **每会话项目目录**（1.0.0）：`/dir <绝对路径>` 或 Web 会话控制条设置；fs 工具/沙箱/文档面板跟随会话目录，未设置回退全局
-- **AI OS 控制台**（1.0.0）：SystemPanel 13 Tab 含「审计」（全量操作可查，action 前缀过滤）、「设备」（TTS/媒体通道/模型多模态）；进程视图 token 资源仪表；示例应用包（`examples/`：番茄钟 webapp / 批量替换 tool / 待办 service，`.aw` 打包分发 `/pkg export app`）
-- **界面**：TUI 自研帧缓冲渲染引擎；Web（Svelte 5 + SSE + WebSocket 实时总线 + lucide 图标 + 暗色模式）；HTTP Server 托管
+> 一张图看完能力地图：界面接入 → Agent 内核调度 → Harness 能力（工具 / 技能 / 权限 / 回滚）→ AI OS 自动化与自进化。
+
+```mermaid
+flowchart TB
+  subgraph UI["界面与接入"]
+    direction LR
+    TUI["TUI 终端<br/>自研帧缓冲渲染<br/>回合块折叠 · OSC8 产物可点击"]
+    WEB["Web UI<br/>Svelte 5 · SSE/WS 实时<br/>暗色模式 · 系统面板"]
+    API["HTTP API<br/>/api/v1 · 托管 Web UI"]
+    HEAD["headless -p<br/>text / json / stream-json<br/>稳定退出码 · 可进 CI"]
+    TUI --- WEB --- API --- HEAD
+  end
+
+  subgraph CORE["Agent 内核"]
+    direction LR
+    ROUTE["专家路由<br/>内置专家自动选择<br/>正则 → LLM 语义"]
+    LOOP["agent-loop<br/>流式 · 中断 · 迭代预算<br/>空转/失败自动终止"]
+    TEAM["协作模式<br/>/plan DAG 并行<br/>/debate 双专家互审"]
+    CTX["上下文管理<br/>三层记忆 · 事件溯源<br/>压缩 · 超长结果 spill"]
+    ROUTE --- LOOP --- TEAM --- CTX
+  end
+
+  subgraph HARNESS["Harness 能力层"]
+    direction LR
+    TOOLS["工具面<br/>内置工具 · MCP(stdio/HTTP)<br/>插件 setup(ctx) · scope 注册<br/>产物预览：文件 / 链接 / diff"]
+    SKILL["技能库<br/>SKILL.md · 触发词<br/>/技能名 · 使用中自沉淀"]
+    SEC["权限与沙箱<br/>Ask / Plan / Auto · Tool(specifier) 规则<br/>fail-closed 审批 · 写入根约束"]
+    CKPT["检查点回滚<br/>每轮快照 · /rewind<br/>代码 / 对话 / 两者 · 冲突保护"]
+    TOOLS --- SKILL --- SEC --- CKPT
+  end
+
+  subgraph OS["AI OS 自动化"]
+    direction LR
+    JOB["后台与调度<br/>/bg 后台任务<br/>/schedule 自然语言定时"]
+    APP["应用运行时<br/>manifest 多形态 · 生命周期<br/>能力桥(无 terminal) · 崩溃重启"]
+    GEN["应用即时生成<br/>自然语言 → 应用<br/>生成队列 · 安装运行"]
+    EVO["自进化引擎<br/>观察 → 提议 → 两段式确认<br/>用例评测 · 回归自动回滚"]
+    JOB --- APP --- GEN --- EVO
+  end
+
+  subgraph DATA["模型与数据底座"]
+    direction LR
+    MR["ModelRouter<br/>多 profile 路由 · 思考模式<br/>窗口配置 · /config 热切换"]
+    DB[("SQLite WAL + FTS5<br/>会话 · 审计 · 检查点")]
+    SCOPE["作用域与资产<br/>每会话项目目录<br/>.aw 资产包 · 裸格式导入导出"]
+    MR --- DB --- SCOPE
+  end
+
+  UI -->|"对话 / 命令"| CORE
+  CORE -->|"工具调用"| HARNESS
+  CORE -->|"任务派发"| OS
+  HARNESS -->|"审计与快照"| DATA
+  OS -->|"台账与用例"| DATA
+  SEC -.->|"门禁"| TOOLS
+```
 
 ## 界面预览
 
@@ -105,17 +148,42 @@ npm run dev -- [选项]
       --show-thinking          显示思考过程（默认折叠）
       --server                 启动 HTTP Server（REST API + 托管 Web UI）
       --port <端口>            HTTP Server 端口（默认 3000）
+
+headless 一次性运行（1.6.0，可被脚本/CI 编排）：
+  -p, --print <提示词>         执行后退出，不进入交互模式（与 --server 互斥）
+      --output-format <格式>   text（默认，只输出回答）| json（单个结果对象）| stream-json（NDJSON 事件流）
+      --session <id>           续接既有会话（缺省新建）
+      --agent <id>             直接指定智能体（缺省按提示词路由）
+      --yes                    本次运行放行需确认的工具（不覆盖 deny 规则、never_auto_approve 与受保护路径）
+      --max-iterations <n>     覆盖本次运行的迭代上限
 ```
+
+```bash
+# 结构化输出，stdout 只有一行 JSON（日志与告警走 stderr）
+npm run dev -- -p "总结 reports/季度复盘.md 的三个结论" --output-format json --mode auto | jq .
+
+# 事件流：system / thinking / text / tool_call / tool_result / result / confirm_denied
+npm run dev -- -p "把 a.md 里的 TODO 清掉" --output-format stream-json --yes
+
+# 续接会话继续追问
+npm run dev -- -p "接着上面的结论，给出下一步计划" --session <sessionId>
+```
+
+**退出码**：`0` 成功 / `1` 运行失败（含模型连接失败） / `2` 参数错误 / `3` 权限拒绝（fail-closed） /
+`4` 达到迭代上限 / `130` 中断（Ctrl+C）。
+
+headless 的执行语义：不初始化 TUI、不打印 banner 与状态区、不启动定时调度器；**没有确认通道**，
+需要确认的工具一律 fail-closed 拒绝（结构化输出 `confirm_denied`），`ask_user` 直接失败而不是挂起等待输入。
 
 ### 权限模式
 
-| 模式 | 说明 | 工具调用 |
-|------|------|---------|
-| ask | 只读问答 | 是（仅只读工具：读取/搜索） |
-| plan | 先列计划，确认后执行 | 是（每步需确认） |
-| auto | 自动执行，高危仍需确认 | 是 |
+| 模式 | 说明 | 工具调用 | 适用场景 |
+|------|------|---------|---------|
+| ask | 只读问答 | 仅只读工具（读取/搜索） | 只想问、不想被改文件 |
+| plan | 先列计划，确认后执行 | 每步需确认 | 重要改动前先过一遍 |
+| auto | 自动执行，高危仍需确认 | 全部，高危/受保护路径需确认 | 日常使用 |
 
-#### 权限规则（`config/permissions.json`，1.5.0）
+#### 权限规则（`config/permissions.json`）
 
 模式之上可叠加 `Tool(specifier)` 级规则，求值顺序 **deny > ask > allow**：
 
@@ -131,29 +199,57 @@ npm run dev -- [选项]
 }
 ```
 
-- `tool`：工具名 glob（`fs_*`、`mcp_*`、`*`）；`match`：对"目标串"的 glob，缺省=该工具全命中。
-  目标串语义：fs 类为解析后的绝对路径，`terminal_exec`/`terminal_session` 为命令文本，其余为参数 JSON
-  （即 `JSON.stringify(args)`，键顺序敏感，建议只对 fs/终端类写 `match`）。
-- `deny`：任何模式直接拒绝；`ask`：强制确认（auto 也确认，无确认通道则拒绝）；`allow`：仅 auto 模式免确认，
-  但**不绕过只读模式**，也**不能覆盖** `never_auto_approve` 与 `protected_paths`。
-- `never_auto_approve`：这些工具永远需要用户确认；`protected_paths`：命中即对写入类工具强制确认。
-  匹配按**路径段**（`.git` 命中 `.git/config`，不命中 `.gitignore`/`.github/**`；`.env` 命中 `.env.local`）。
-  写错 `action` 的规则会在启动时告警并被忽略，不会静默变成"没规则"。
-- plan 模式保持"全确认"语义，规则不改变它。
+| 字段 | 匹配对象 | 语义 |
+|------|---------|------|
+| `rules[].tool` | 工具名（glob） | `fs_*`、`mcp_*`、`*`，大小写不敏感 |
+| `rules[].match` | 目标串（glob） | 缺省 = 该工具全命中；目标串见下表 |
+| `rules[].action` | — | `deny` 任何模式直接拒绝；`ask` 强制确认（无确认通道即拒绝）；`allow` 仅 auto 免确认，不绕过只读模式，也不能覆盖下方 `never_auto_approve` 与 `protected_paths` |
+| `never_auto_approve` | 工具名（glob） | 任何模式都必须确认，无通道即拒绝 |
+| `protected_paths` | 路径段 | 命中即对写入类工具强制确认；按路径段匹配（`.git` 命中 `.git/config`，不命中 `.gitignore`/`.github/**`；`.env` 命中 `.env.local`） |
 
-#### 命令沙箱边界（诚实说明）
+| 工具类别 | 目标串（`match` 的匹配对象） |
+|---------|----------------------------|
+| fs 类（`fs_read` / `fs_write` / `fs_edit` / `fs_list`） | 解析后的绝对路径 |
+| `terminal_exec` / `terminal_session` | 命令文本 |
+| 其余工具（含 MCP / 插件） | 参数 JSON（`JSON.stringify(args)`，键顺序敏感） |
 
-`config/sandbox.json` 提供**策略级**防线（非 OS 级沙箱）：工作目录越界拒绝（fail-closed）、命令黑名单、
-敏感环境变量剥离，以及 **`allowWriteDirs` 写入根约束**——`terminal_exec` 与 `terminal_session` 的重定向
-（`>`/`>>`，非包裹命令做引号感知，引号内的 `>` 不算重定向）与写入类命令/程序（`Set-Content`/`Out-File`/
-`del`/`copy`/`mkdir`、PowerShell 别名 `rm`/`ri`/`ni`/`sc`/`cp`/`mv`、`curl -o`/`Invoke-WebRequest -OutFile`/
-`robocopy`/`xcopy`/`tar -C`/`Expand-Archive`/`git clone`/`npm install --prefix` 等）**片段内所有像路径的参数**
-（源与目标都查）必须落在可写根内；含变量/通配而无法静态解析的目标直接拒绝。
+| 约定 | 说明 |
+|------|------|
+| 求值优先级 | 命中多条规则时 `deny` > `ask` > `allow`；同类取配置中首条 |
+| plan 模式 | 保持"全确认"语义，规则不改变它 |
+| 规则写错 | `action` 拼写错误等在启动时告警并忽略，不会静默变成"没有规则" |
 
-**不覆盖**（如实说明，非内核级隔离）：解释器脚本体内部的写入（`python -c`、`node -e`、脚本文件）、
-未列举的第三方程序、管道下游程序的写入、`cd` 之后相对路径的真实归属（`terminal_session` 按会话工作目录判定）、
-以及命令位置之外的写入（如 `cmd /c del x` 的子命令参数）。它与 danger-detector、路径校验、工具超时、
-输出截断共同构成多层防御。
+#### 命令沙箱边界
+
+`config/sandbox.json` 是**策略级**防线（非 OS 级隔离）：
+
+| 维度 | 内容 |
+|------|------|
+| 生效约束 | 工作目录越界拒绝（fail-closed）· 命令黑名单 · 敏感环境变量剥离 · **`allowWriteDirs` 写入根约束** |
+| 覆盖范围 | `terminal_exec` / `terminal_session` 的重定向（`>` / `>>`，非包裹命令做引号感知，引号内的 `>` 不算重定向）与写入类命令/程序的**所有像路径参数**（源与目标都查） |
+| 已列举的写入形态 | `Set-Content` / `Out-File` / `del` / `copy` / `mkdir`；PowerShell 别名 `rm` / `ri` / `ni` / `sc` / `cp` / `mv`；`curl -o` / `Invoke-WebRequest -OutFile` / `robocopy` / `xcopy` / `tar -C` / `Expand-Archive` / `git clone` / `npm install --prefix` |
+| 无法静态解析的目标 | 含变量 / 通配（`$`、`%`）→ 直接拒绝，提示改用 `fs_write` |
+| **不覆盖**（诚实说明） | 解释器脚本体内部的写入（`python -c`、`node -e`、脚本文件）· 未列举的第三方程序 · 管道下游程序的写入 · `cd` 之后相对路径的真实归属（`terminal_session` 按会话工作目录判定）· 命令位置之外的写入（如 `cmd /c del x` 的子命令参数） |
+| 定位 | 与 danger-detector、路径校验、工具超时、输出截断共同构成多层防御，**不是沙箱替代品** |
+
+#### 检查点与回滚
+
+| 用法 | 行为 |
+|------|------|
+| `/rewind` | 列出本会话检查点（轮次 / 时间 / 输入摘要 / 文件数 / 可恢复数） |
+| `/rewind <n>` | 先打印预览，再交互三选：**代码+对话** / **仅对话** / **仅代码**（无通道则取消，fail-closed） |
+| `/rewind <n> --code --dry-run` | 只预览将还原/删除/跳过/冲突的文件与将移除的消息数，不改动任何东西 |
+| `/rewind <n> --all --force` | 覆盖"有外部改动"的冲突文件（默认跳过冲突文件） |
+
+| 维度 | 说明 |
+|------|------|
+| 快照时机与位置 | 每轮对话开始时建检查点（`<data>/checkpoints/<sessionId>/turn-<n>/`）；写文件前先落盘**变更前内容** |
+| 对话回滚 | 走事件溯源：不删历史事件，追加 `rewind/applied` 标记，消息视图与后续上下文按标记截断（`/trace` 仍可回看） |
+| 冲突保护 | 恢复前比对当前内容与记录的"变更后哈希"，不一致（手改 / 被 `terminal_exec` 改过）默认拒绝覆盖 |
+| 保留策略 | 每会话最近 20 轮，`AIWORKER_CHECKPOINT_KEEP` 可覆盖 |
+| 边界（诚实说明） | 仅 `fs_write` / `fs_edit` 可精确回滚；`terminal_exec` 等改动只记录条目（`restorable: false`），回滚时列入"跳过"；单文件 > 2MB 或二进制不入快照；回滚是**文件级整体还原**，不能只撤销部分行 |
+| Web 端 | 右侧栏「回滚」Tab 提供同一能力（需重启后端以加载新端点） |
+
 
 ## 交互界面
 
@@ -176,6 +272,7 @@ npm run dev -- [选项]
 | `/skills` | 查看全部技能（按专家分组 + 描述） |
 | `/new` | 开启新会话（清空上下文） |
 | `/log` | 监控日志（轮次/耗时/输入输出 token） |
+| `/rewind [轮次] [--code\|--chat\|--all] [--dry-run] [--force]` | 检查点回滚：无参数列出回合，带轮次交互三选（代码+对话/仅对话/仅代码），先预览再执行 |
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/trace [序号]` | 会话轨迹时间线（--json 输出） |
 | `/status` | 运行状态（版本/模式/模型/专家/token） |
@@ -186,12 +283,42 @@ npm run dev -- [选项]
 | `/copy` | 复制最后回答原始 Markdown |
 | `/help [命令]` / `/exit` | 帮助 / 退出 |
 
-快捷键：`Ctrl+C` 中断，`Tab` 补全，方向键历史/滚动；输入框支持多行（`Shift+Enter` 换行、`Enter` 提交）。
-回合块视图（1.3.0）：思考/工具/回答以区块展示——思考实时流式摘要、工具调用原位显示 ✓/✗ 与耗时，均可折叠回看。
-运行期间按 `t`/`o` 折叠最近思考/工具、`[`/`]` 切换焦点、`c`/`e` 全收/全展（字符此时无法输入、无冲突）；
-空闲（输入为空）时用 `←`/`→` 在历史回合的可折叠块间移动焦点、`Enter` 折叠/展开、`Esc` 清除高亮——不占用字母键，正常输入不受影响。
-工具产物预览（1.4.0）：工具结果以 chips 展示产物（📄 文件 / 🔗 链接 / 📝 变更），终端支持 OSC 8 时文件与链接可直接点击打开；
-Web 端点击 chip 打开预览窗口（Markdown / 代码文本 / 图片 / 视频 / 音频 / PDF / Office 文档 / diff），窗口可拖拽右下角调整大小、可全屏。
+#### 快捷键
+
+| 按键 | 作用 | 生效时机 |
+|------|------|---------|
+| `Enter` | 提交输入（输入为空时不提交） | 输入中 |
+| `Shift+Enter` / `Alt+Enter` / `Ctrl+Enter` | 换行（多行输入） | 输入中 |
+| `Tab` | 补全命令 / 技能名（多候选时显示提示行） | 输入中 |
+| `↑` / `↓` | 多行输入 → 移动光标行；有内容 → 翻历史；输入为空 → 滚动消息区 | 输入中 |
+| `←` / `→` / `Home` / `End` | 光标左右移动 / 行首行尾 | 输入中 |
+| `PgUp` / `PgDn`（滚轮同理） | 消息区翻页（10 行）/ 滚动（3 行） | 任意 |
+| `t` / `o` | 折叠·展开 最近思考 / 工具详情 | 回合运行中 |
+| `[` / `]` | 在思考·工具块之间移动焦点 | 回合运行中 |
+| `c` / `e` | 全部折叠 / 全部展开 | 回合运行中 |
+| `←` / `→` | 在历史回合的可折叠块之间移动焦点 | 输入为空且有可折叠块 |
+| `Enter` | 折叠 / 展开焦点块（无焦点时取最近的思考块） | 同上 |
+| `Esc` | 清除焦点高亮 | 同上 |
+| `Ctrl+C` | 运行中：中断当前回合；空闲：退出 | 全局 |
+| `Ctrl+D` | 退出 | 空闲 |
+
+> 空闲态的 `←` / `→` / `Enter` / `Esc` 仅在输入为空时生效，不占用字母键位；输入任意字符即自动清除高亮。
+
+#### 回合块视图
+
+| 区块 | 展示 | 交互 |
+|------|------|------|
+| 思考 | 流式摘要（`--show-thinking` 时展开全文） | `t` 折叠 / 展开 |
+| 工具调用 | 原位显示 ✓/✗、耗时与参数摘要 | `o` 折叠 / 展开详情 |
+| 回答 | 流式 Markdown + 产物 chips | — |
+
+#### 工具产物预览
+
+| 产物 | TUI | Web |
+|------|-----|-----|
+| 📄 文件 | chip（含大小），终端支持 OSC 8 时可直接点击打开 | 点击 chip 打开预览窗口（Markdown / 代码 / 图片 / 视频 / 音频 / PDF / Office / diff），可全屏、可拖拽调整大小 |
+| 🔗 链接 | chip（站点 + 标题） | 可点击，链接产物同样进预览窗口 |
+| 📝 变更 | chip（`+/-` 行数） | diff 着色预览 |
 
 ### Web UI
 
@@ -202,7 +329,14 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 
 生产部署：`npm run build && npm run start -- --server --port 3000`，浏览器打开 `http://localhost:3000`。
 
-对话/协作/辩论三模式；权限模式实时生效（Ask 只读、Plan/Auto 确认卡片）；发送可中断；系统弹窗（⚙）含 上下文/日志/技能/MCP/插件/调度/配置/轨迹 八面板；右侧文件变更面板（树形折叠、点击行复制）；会话列表多标签实时同步（WebSocket）。
+| 维度 | 内容 |
+|------|------|
+| 对话模式 | 对话 / 多专家协作 / 双专家辩论（顶部切换） |
+| 权限联动 | 权限模式实时生效：Ask 只读；Plan / Auto 走确认卡片 |
+| 流式与中断 | 流式输出，发送后可随时中断 |
+| 系统面板（⚙） | 上下文 / 日志 / 技能 / MCP / 插件 / 调度 / 轨迹 / 审计 / 设备 / 进化 |
+| 右侧栏 | 文件变更 / 文档预览 / 回滚 / 应用预览 四个 Tab |
+| 多标签同步 | 会话列表跨标签页实时同步（WebSocket） |
 
 ### HTTP API（`--server` 模式）
 
@@ -221,6 +355,8 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/sessions/:id` | GET/DELETE | 会话明细 / 删除（级联清理） |
 | `/api/v1/sessions/:id/rename` | POST | 重命名会话 |
 | `/api/v1/sessions/:id/export` | GET | 导出会话为 Markdown |
+| `/api/v1/sessions/:id/checkpoints` | GET | 检查点列表（回合/时间/输入摘要/文件与可恢复数） |
+| `/api/v1/sessions/:id/rewind` | POST | 回滚（`{toTurn, scope: all\|chat\|code, dryRun?, force?}`；dryRun 返回预览） |
 | `/api/v1/mcp` | GET | MCP 服务器状态 + 工具列表 |
 | `/api/v1/context` | GET | 上下文分层 token 占比 |
 | `/api/v1/logs` | GET | 最近轮次日志 |

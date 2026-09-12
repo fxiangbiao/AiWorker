@@ -54,6 +54,15 @@ export class PermissionModel {
     return this.config.modes[this.currentMode].allow_tool_calls;
   }
 
+  /**
+   * 追加一条运行时规则（headless --yes 等显式放行用；不写盘，进程结束即失效）
+   * 置于规则表首位，同类动作下优先命中；仍无法覆盖 deny / never_auto_approve / 受保护路径
+   */
+  addRuntimeRule(rule: PermissionRule): void {
+    if (!isUsableRule(rule)) return;
+    this.rules.unshift(rule);
+  }
+
   /** 指定模式是否允许工具调用（请求级权限判断用） */
   allowsToolCallsFor(mode: PermissionMode): boolean {
     return this.config.modes[mode]?.allow_tool_calls ?? false;

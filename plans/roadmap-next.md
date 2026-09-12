@@ -10,7 +10,7 @@
 
 | 阶段 | 主题 | Sprint | 目标 |
 |---|---|---|---|
-| P0 | **可信基线** | S47 ✅ / S48 | 让 AiWorker 从"能用的个人玩具"变成"可被信任与编排的工具" |
+| P0 | **可信基线** | S47 ✅ / S48 ✅ | 让 AiWorker 从"能用的个人玩具"变成"可被信任与编排的工具" |
 | P1 | **长程与工具纵深** | S49 / S50 / S51 | 从"一次一问"到"可持续推进的任务"；补齐工具面与回滚能力 |
 | P2 | **场景扩张与生态** | S52+ | 交付物（Office 写出）、多端、插件市场、观测与团队特性 |
 
@@ -26,8 +26,8 @@
 | P0-2 | Web 静态检查：svelte-check 纳入门禁并清零既有错误 | 4.2-#7 前端无静态检查 | ✅ S47 |
 | P0-3 | 权限规则化：`Tool(specifier)` 级 deny→ask→allow、通配、永不自动批准清单、受保护路径 | 4.1-#2 权限粒度粗 | ✅ S47 |
 | P0-4 | Windows 最小沙箱：terminal_exec 可写根约束 + cwd/env 约束（非内核级，诚实标注） | 4.1-#1 无进程沙箱 | ✅ S47 |
-| P0-5 | headless 模式：`aiworker -p "<prompt>" --output-format json\|stream-json`（可被 CI/脚本编排） | 4.2-#4 无 headless/SDK | ⏳ S48 |
-| P0-6 | 检查点与回滚：每轮快照 + `/rewind`（代码+对话 / 只对话 / 只代码） | 4.3-#12 无检查点 | ⏳ S48 |
+| P0-5 | headless 模式：`aiworker -p "<prompt>" --output-format json\|stream-json`（可被 CI/脚本编排） | 4.2-#4 无 headless/SDK | ✅ S48 |
+| P0-6 | 检查点与回滚：每轮快照 + `/rewind`（代码+对话 / 只对话 / 只代码） | 4.3-#12 无检查点 | ✅ S48 |
 | P0-7 | 测试确定性：消除依赖 mtime/readdir 顺序的既有 flaky 用例 | 工程质量 | ✅ S47（hooks 两例） |
 
 **验收标准（P0 全体）**：`npm run verify` 一条命令全绿；CI 在 push/PR 上红灯即阻断；任何工具调用都能回答"谁允许的、按哪条规则、是否可撤销"。

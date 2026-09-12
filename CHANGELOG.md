@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.0 (2026-09-12)
+
+### P0 收口：headless 一键运行（`-p`）与检查点回滚（Sprint 48）
+- **运行时装配层**：抽出 `src/core/bootstrap.ts`（`createRuntime`）与 `src/server-deps.ts`，`src/index.ts` 收敛为交互 / server / headless 三套薄壳；TUI、banner、状态区、定时调度器只在交互（或服务）形态下启用。装配顺序与依赖注入与抽出前逐字一致，纯搬迁零行为变更（新增 `test/bootstrap.test.ts` 守护，含"hooks→检查点"接线用例）
+- **headless 模式**（`aiworker -p "<prompt>"`）：`--output-format text|json|stream-json`（NDJSON：`system`/`thinking`/`text`/`tool_call`/`tool_result`/`confirm_denied`/`result`/`error`）、`--session` 续接、`--agent` 指定专家、`--max-iterations` 覆盖、`--yes` 显式放行；stdout 只放结构化输出，日志与告警走 stderr；**没有确认通道时 fail-closed**（`confirm_denied`，不沿用 stdin 的 30 秒超时），`ask_user` 直接失败而非挂起；退出码 `0` 成功 / `1` 运行失败 / `2` 参数错误（装配前校验）/ `3` 权限拒绝 / `4` 达迭代上限 / `130` 中断；进程结束前释放应用子进程与 MCP 连接（否则事件循环不退出）
+- **`AgentRunResult.error`**：agent-loop 原本把循环内异常折成 `text`（"Agent 循环异常: …"）返回，headless 会把它当成成功结果（连接失败退出码 0）——现显式带出错误，`result` 载荷含 `error` 且退出码为 1
+- **检查点**（`src/core/checkpoint-store.ts`）：每回合在 `<data>/checkpoints/<sessionId>/turn-<n>/` 落盘 manifest 与**变更前内容** blob；捕获点复用既有 `captureDiff` hook（`fs_write`/`fs_edit` 精确），`terminal_exec` 等由指纹扫描发现的变更只记 `restorable: false`；记录 `hashAfter` 用于冲突检测，`messageSeqBefore`/`eventSeqBefore` 用于对话回滚定位；单文件 > 2MB 或二进制不入 blob，每会话保留最近 20 轮（`AIWORKER_CHECKPOINT_KEEP` 可覆盖），manifest 损坏 fail-soft；新增 `src/hooks/turn-registry.ts` 让轮次日志与检查点共用同一序号
+- **`/rewind`**：`/rewind` 列检查点，`/rewind <n>` 先预览再交互三选（代码+对话 / 仅对话 / 仅代码；无提问通道则取消），`/rewind <n> --code|--chat|--all [--dry-run] [--force]`；对话回滚**不删事件**，而是追加 `rewind/applied` 标记，`replayEvents` 据此截断派生视图（`verifyProjection` 同步，轨迹与审计仍可回看）；冲突（外部改动 / `terminal_exec` 影响）默认跳过，`--force` 才覆盖；`RewindService` 的预览与执行共用同一判定
+- **HTTP 与 Web**：新增 `GET /api/v1/sessions/:id/checkpoints` 与 `POST /api/v1/sessions/:id/rewind`（`dryRun` 返回预览，成功后广播 `session/update kind=rewind`）；Web 右侧栏新增「回滚」Tab（`RewindPanel.svelte`）：回合列表 + 文件动作预览 + 冲突勾选 + 二次确认（复用 `ConfirmModal`），回滚后清本地缓存并重拉消息投影；WS 收到其他端的回滚广播时同步刷新当前会话
+- **测试与门禁**：新增 `test/headless.test.ts`(17)、`test/checkpoint.test.ts`(10)、`test/rewind.test.ts`(13)、`test/bootstrap.test.ts`(6)；全量 **909 / 63 文件** 全绿，`npm run verify` 一条命令通过，`svelte-check` 0 错误（65 warnings 与基线持平）
+- **诚实边界**（README 与代码注释同步）：`terminal_exec` 造成的改动不可回滚（明确列入"跳过"）；检查点只覆盖 AiWorker 自己改过的文件；回滚是文件级整体还原而非按行撤销；headless 是单轮执行，不做后台长跑
+
 ## 1.5.0 (2026-09-11)
 
 ### 修复：文档预览不显示 Markdown 中的图片
