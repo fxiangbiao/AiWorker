@@ -3,20 +3,24 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { randomBytes } from "node:crypto";
 import { stdout } from "node:process";
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync, createReadStream, realpathSync } from "node:fs";
-import { resolve, dirname, relative, isAbsolute, basename, join } from "node:path";
+import { resolve, dirname, relative, isAbsolute, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createAudioWs } from "./media/media-server.js";
-import { getDeviceStatus } from "./media/status.js";
+import { getDeviceStatus, resolveVisionCapability, writeVisionProbe } from "./media/status.js";
+import type { VisionProbeRecord } from "./media/status.js";
 import { getAsrProvider } from "./media/asr.js";
 import { downloadModel } from "./media/model-manager.js";
 import type { ModelRouter } from "./core/model-router.js";
 import { toolRegistry } from "./core/tool-registry.js";
 import { TeamCoordinator, pickDebateAgents } from "./core/team-coordinator.js";
 import { projectTrace, computeSessionStats } from "./core/trace.js";
+import { collectDocs } from "./core/docs-index.js";
+import { buildArtifactWorkspace } from "./core/artifacts.js";
 import { getAppVersion } from "./core/version.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
@@ -31,7 +35,7 @@ import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
 import { renderSessionMarkdown } from "./memory/session-export.js";
 import { processManager } from "./core/process-manager.js";
 import { APP_BRIDGE_SNIPPET } from "./core/app-bridge.js";
-import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo, AgentConfig, RewindScope } from "./types.js";
+import type { StreamCallbacks, Task, AgentRunResult, PermissionMode, PluginInfo, AgentConfig, RewindScope, PermissionRuleScope, DiffLine, DiffFile, DiffSession, SessionEvent } from "./types.js";
 import { VALID_MODELS } from "./core/agent-config-loader.js";
 import type { SessionStore } from "./memory/session-store.js";
 import type { AppManager, AppActionResult } from "./core/app-manager.js";
@@ -39,6 +43,10 @@ import type { AppFactory } from "./core/app-factory.js";
 import type { GeneratorQueue } from "./core/generator-queue.js";
 import type { EvolutionEngine } from "./core/evolution-engine.js";
 import type { RewindService } from "./core/rewind-service.js";
+import type { PermissionMemory } from "./security/permission-memory.js";
+import { DEFAULT_PROTECTED_PATHS } from "./security/permission-model.js";
+import type { PermissionModel } from "./security/permission-model.js";
+import { describeSandboxPolicy, loadSandboxPolicy, resolveSandboxConfigPath, resolveSandboxWritePath, saveSandboxPolicy } from "./security/sandbox.js";
 
 interface DelegateAgent {
   runStream(
@@ -113,6 +121,10 @@ export interface ServerDeps {
   evolutionEngine?: EvolutionEngine;
   /** 回滚服务（Sprint 48：/sessions/:id/checkpoints 与 /rewind，未注入则 503） */
   rewindService?: RewindService;
+  /** 权限记忆（Sprint 49：/permissions 端点；缺省则端点 503） */
+  permissionMemory?: PermissionMemory;
+  /** 权限模型（Sprint 50：/permissions 需要读取当前模式与**生效**的受保护路径清单） */
+  permissionModel?: PermissionModel;
   dataDir?: string;
   /** Web 配置：读取当前系统配置状态（model/迭代上限/thinking/skill-evo 等） */
   getConfigState?: () => Record<string, unknown>;
@@ -134,6 +146,9 @@ const chatInFlight = new Set<string>();
 
 /** API 统一前缀（与静态资源托管区分，静态托管只需排除该前缀） */
 const API_PREFIX = "/api/v1";
+
+/** 跨会话产物聚合的上限（事件全量读取有成本，超出即截断并标注 degraded） */
+const ARTIFACT_ALL_SESSIONS = 10;
 
 const apiUrl = (path: string) => `${API_PREFIX}${path}`;
 
@@ -193,6 +208,60 @@ function auditFilePreview(sessionId: string, path: string, mime: string, result:
 function attachmentDisposition(filename: string): string {
   const ascii = filename.replace(/[^\x20-\x7e]/g, "").replace(/["\\;/]/g, "_").trim() || "download";
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/**
+ * /files 的安全响应头（Sprint 50 追加）
+ * - `nosniff` 恒发：禁止浏览器按内容嗅探改写我们给出的 MIME。
+ * - **文档导航**（在标签页里直接打开 / 被 iframe 载入）时，对 HTML 与 SVG 追加 `CSP: sandbox`：
+ *   `/files` 与 Web 同源，而 index.html 里内联了 `window.__AIWORKER_TOKEN__`（该响应故意不带 ACAO），
+ *   因此"Agent 写的 HTML 在同一浏览器里被直接打开"就是**同源脚本执行**——`fetch("/")` 即可读到 token
+ *   再调写接口。加 `sandbox` 后文档退化为 opaque origin，读不到 token、也过不了跨站校验。
+ *   仅限导航请求：`<img>` 加载 SVG、媒体元素等子资源请求不受影响（也就不会破坏现有预览）。
+ *   `allow-scripts` 是必须的：否则 HTML 里的脚本（画布/WebAudio/交互）全部失效。
+ */
+function fileSecurityHeaders(mime: string, headers: IncomingMessage["headers"]): Record<string, string> {
+  const out: Record<string, string> = { "X-Content-Type-Options": "nosniff" };
+  const dest = headers["sec-fetch-dest"];
+  const mode = headers["sec-fetch-mode"];
+  const accept = typeof headers.accept === "string" ? headers.accept : "";
+  const navigate = dest === "document" || dest === "iframe" || mode === "navigate" || accept.includes("text/html");
+  if (!navigate) return out;
+  if (mime === "text/html" || mime === "application/xhtml+xml") out["Content-Security-Policy"] = "sandbox allow-scripts";
+  else if (mime === "image/svg+xml") out["Content-Security-Policy"] = "sandbox";
+  return out;
+}
+
+/**
+ * 跨站请求判定（Sprint 49 第二轮：用于新增的可持久化写面 /api/v1/permissions）
+ * - 优先看 `Sec-Fetch-Site`：浏览器一定带，`cross-site` 即拒
+ * - 缺失时回退 `Origin` 与 `Host` 比对（老浏览器 / 代理场景）
+ * - 两者都没有（curl、脚本、本地进程）→ 交给 token 兜底
+ */
+export function isCrossSiteRequest(headers: IncomingMessage["headers"]): boolean {
+  const site = headers["sec-fetch-site"];
+  if (typeof site === "string" && site !== "") return site === "cross-site";
+  const origin = headers.origin;
+  if (typeof origin === "string" && origin !== "") {
+    try {
+      return new URL(origin).host !== headers.host;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** 进程内 token：随机生成、写 <dataDir>/server-token，并在启动日志打印；只用于新增写面 */
+export function createServerToken(dataDir: string): string {
+  const token = randomBytes(24).toString("hex");
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(resolve(dataDir, "server-token"), token, { encoding: "utf-8", mode: 0o600 });
+  } catch {
+    /* 写不进也不致命：启动日志仍会打印 */
+  }
+  return token;
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown) {
@@ -289,35 +358,6 @@ function sendSSE(res: ServerResponse) {
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "*",
   });
-}
-
-interface DiffLine {
-  type: "add" | "del" | "ctx";
-  text: string;
-}
-
-interface DiffFile {
-  path: string;
-  added: number;
-  removed: number;
-  lines: DiffLine[];
-  /** 无行级 diff（指纹监控）时附带的当前内容全文 */
-  currentContent?: string;
-  /** 二进制/不可展示内容文件（指纹监控降级快照，仅元信息） */
-  binary?: boolean;
-  /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
-  modified?: boolean;
-  /** 文件被删除（指纹反向对比发现） */
-  deleted?: boolean;
-}
-
-interface DiffSession {
-  sessionId: string;
-  /** 会话摘要（标题），无则 undefined */
-  summary?: string | null;
-  files: DiffFile[];
-  createdAt: number;
-  updatedAt: number;
 }
 
 /** 解析快照 .diff 文件为结构化行 */
@@ -538,13 +578,21 @@ function getDiffsCached(snapshotsDir: string, sessionStore?: SessionStore): Diff
 
 export function startServer(deps: ServerDeps, port: number) {
   const startTime = Date.now();
+  const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+  const serverToken = createServerToken(dataDir);
+
+  /** index.html 注入进程 token（同源页面可读；该响应不带 ACAO:*，避免被跨源页面读走） */
+  const injectToken = (html: string): string => {
+    const tag = `<script>window.__AIWORKER_TOKEN__=${JSON.stringify(serverToken)};</script>`;
+    return html.includes("</head>") ? html.replace("</head>", `${tag}</head>`) : `${tag}${html}`;
+  };
 
   const server = createServer(async (req, res) => {
     const url = req.url ?? "/";    if (req.method === "OPTIONS") {
       res.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, X-AiWorker-Token",
       });
       res.end();
       return;
@@ -555,15 +603,14 @@ export function startServer(deps: ServerDeps, port: number) {
         const html = readFileSync(resolve(distDir, "index.html"), "utf-8");
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
-          "Access-Control-Allow-Origin": "*",
           "Cache-Control": "no-cache", // index.html 每次校验，确保拿到最新 hash 的 bundle
         });
-        res.end(html);
+        res.end(injectToken(html));
       } catch {
         try {
           const html = readFileSync(resolve(oldWebDir, "index.html"), "utf-8");
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Access-Control-Allow-Origin": "*" });
-          res.end(html);
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(injectToken(html));
         } catch {
           res.writeHead(404);
           res.end("index.html not found");
@@ -1023,10 +1070,317 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
 
-    // 设备状态（Sprint 42 A2：媒体通道 + 模型能力，只读）
+    // 产物工作台（Sprint 50）：合并 工具产物事件 / 快照 diff / 文档索引 / 回合检查点
+    if ((url === apiUrl("/artifacts") || url.startsWith(`${apiUrl("/artifacts")}?`)) && req.method === "GET") {
+      const u = new URL(req.url ?? "", "http://localhost");
+      const sessionId = (u.searchParams.get("sessionId") ?? "").trim();
+      const rawScope = u.searchParams.get("scope") ?? "session";
+      if (rawScope !== "session" && rawScope !== "all") {
+        sendJSON(res, 400, { error: "scope 需为 session | all" });
+        return;
+      }
+      if (!sessionId) {
+        sendJSON(res, 400, { error: "缺少 sessionId" });
+        return;
+      }
+      const scope: "session" | "all" = rawScope === "all" ? "all" : "session";
+      const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const store = deps.sessionStore;
+      const degraded: string[] = [];
+
+      const workingDir = store?.getWorkingDir(sessionId) ?? deps.workingDir;
+      const docs = collectDocs(dataDir, workingDir);
+
+      let events: SessionEvent[] = [];
+      if (store) {
+        events = store.getEvents(sessionId);
+        // 老会话（Sprint 45 之前）事件里没有产物字段：面板需要如实标注，不假装"什么都没有产出"
+        const hasArtifacts = events.some(
+          (e) => e.type === "tool/result" && Array.isArray((e.data as { artifacts?: unknown[] }).artifacts) && ((e.data as { artifacts?: unknown[] }).artifacts?.length ?? 0) > 0,
+        );
+        if (events.length > 0 && !hasArtifacts) degraded.push("early-session");
+      } else {
+        degraded.push("no-session-store");
+      }
+
+      const snapshotsDir = resolve(dataDir, "snapshots");
+      const allDiffs = getDiffsCached(snapshotsDir, store);
+      const sessionWorkingDirs: Record<string, string> = { [sessionId]: workingDir };
+      let truncatedSessions = 0;
+      if (scope === "all") {
+        // 跨会话的工具产物只取"有文件改动的会话"里最近 10 个（事件全量读取有成本，超出即截断并标注）
+        const others = allDiffs
+          .filter((s) => s.sessionId !== sessionId)
+          .sort((a, b) => b.updatedAt - a.updatedAt);
+        const picked = others.slice(0, ARTIFACT_ALL_SESSIONS);
+        truncatedSessions = Math.max(0, others.length - picked.length);
+        for (const s of picked) {
+          sessionWorkingDirs[s.sessionId] = store?.getWorkingDir(s.sessionId) ?? deps.workingDir;
+          if (store) events = events.concat(store.getEvents(s.sessionId));
+        }
+      }
+
+      if (!deps.rewindService) degraded.push("no-rewind");
+      const checkpoints = deps.rewindService?.list(sessionId) ?? [];
+
+      sendJSON(
+        res,
+        200,
+        buildArtifactWorkspace({
+          sessionId,
+          scope,
+          workingDir,
+          sessionWorkingDirs,
+          events,
+          diffs: allDiffs,
+          docs,
+          checkpoints,
+          truncatedSessions,
+          degraded,
+        }),
+      );
+      return;
+    }
+
+    // 设备状态（Sprint 42 A2：媒体通道 + 模型能力；Sprint 49.4：运行时/存储/能力全部实时探测）
     if (url === apiUrl("/devices") && req.method === "GET") {
       const dataDir = deps.dataDir ?? resolve(process.cwd(), "data");
       sendJSON(res, 200, getDeviceStatus(dataDir, deps.modelRouter));
+      return;
+    }
+
+    // 模型能力实测（Sprint 49.4）：唯一会消耗额度的探测面，按写面收口（跨站 403 → token 401 → 参数 400）
+    if (url === apiUrl("/devices/probe") && req.method === "POST") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝（Origin / Sec-Fetch-Site 校验未通过）" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
+        return;
+      }
+      let body: { kind?: unknown };
+      try {
+        body = JSON.parse(await parseBody(req)) as typeof body;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON body" });
+        return;
+      }
+      const kind = String(body.kind ?? "");
+      if (kind !== "model-vision") {
+        sendJSON(res, 400, { error: "kind 需为 model-vision" });
+        return;
+      }
+      const probeDir = deps.dataDir ?? resolve(process.cwd(), "data");
+      const outcome = await deps.modelRouter.probeVision();
+      const record: VisionProbeRecord = {
+        model: outcome.model,
+        supported: outcome.supported,
+        latencyMs: outcome.latencyMs,
+        at: new Date().toISOString(),
+        detail: outcome.detail,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      };
+      const persisted = writeVisionProbe(probeDir, record);
+      sendJSON(res, 200, {
+        ok: true,
+        probe: record,
+        persisted,
+        ...(persisted ? {} : { warning: "实测结果未能写入数据目录，重启后需重新检测" }),
+        status: getDeviceStatus(probeDir, deps.modelRouter),
+      });
+      return;
+    }
+
+    // 沙箱配置（Sprint 50 / IA 重构：Web「设置→工作区」与「设置→安全」的读写面）
+    if (url === apiUrl("/sandbox") || url.startsWith(`${apiUrl("/sandbox")}?`)) {
+      const writePath = resolveSandboxWritePath(deps.workingDir);
+      const sandboxSnapshot = () => {
+        const readPath = resolveSandboxConfigPath(deps.workingDir);
+        const policy = loadSandboxPolicy(readPath);
+        return {
+          // 读路径与写路径分开：读允许回落到安装目录的配置，写永远跟随 --dir（不污染安装包）
+          writePath,
+          readPath,
+          exists: existsSync(writePath),
+          policy,
+          // 生效值：留空的根按工作目录回退——设置页必须显示"真正生效的范围"，而不是"配置里写了什么"
+          effective: describeSandboxPolicy(policy, deps.workingDir),
+        };
+      };
+      if (req.method === "GET") {
+        sendJSON(res, 200, sandboxSnapshot());
+        return;
+      }
+      if (req.method === "POST") {
+        // 与 /permissions 同一道写入门：跨站拦截 → 进程 token → 参数校验
+        if (isCrossSiteRequest(req.headers)) {
+          sendJSON(res, 403, { error: "跨站请求被拒绝（Origin / Sec-Fetch-Site 校验未通过）" });
+          return;
+        }
+        if (req.headers["x-aiworker-token"] !== serverToken) {
+          sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
+          return;
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(await parseBody(req));
+        } catch {
+          sendJSON(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          sendJSON(res, 400, { error: "请求体必须是对象（沙箱配置字段）" });
+          return;
+        }
+        const result = saveSandboxPolicy(body as Record<string, unknown>, { workingDir: deps.workingDir });
+        if (!result.ok) {
+          sendJSON(res, 400, { error: result.reason, ...sandboxSnapshot() });
+          return;
+        }
+        sendJSON(res, 200, { ok: true, ...sandboxSnapshot() });
+        return;
+      }
+      sendJSON(res, 405, { error: "Method not allowed" });
+      return;
+    }
+
+    // 权限规则（Sprint 49）：GET 列出（含来源，含安全清单与模式）/ POST 增删重置、写安全清单
+    if (url === apiUrl("/permissions") || url.startsWith(`${apiUrl("/permissions")}?`)) {
+      if (!deps.permissionMemory) { sendJSON(res, 503, { error: "Permission memory not available" }); return; }
+      const memory = deps.permissionMemory;
+      const snapshot = () => {
+        const rules = memory.list();
+        const protectedFromFile = memory.readStringList("protected_paths");
+        const neverFromFile = memory.readStringList("never_auto_approve");
+        return {
+          rules,
+          configPath: memory.getConfigPath(),
+          projectCount: rules.filter((r) => r.source === "project").length,
+          sessionCount: rules.filter((r) => r.source === "session").length,
+          mode: deps.permissionModel?.getMode() ?? "auto",
+          protectedPaths: {
+            // null = 配置文件里没有这个键，此时生效值来自内置基线（UI 据此回填草稿，避免"少写一条就静默丢保护"）
+            fromConfig: protectedFromFile.present ? protectedFromFile.values : null,
+            defaults: [...DEFAULT_PROTECTED_PATHS],
+            effective: deps.permissionModel?.getProtectedPaths() ?? [...DEFAULT_PROTECTED_PATHS],
+          },
+          neverAutoApprove: {
+            fromConfig: neverFromFile.present ? neverFromFile.values : null,
+            effective: deps.permissionModel?.getNeverAutoApprove() ?? [],
+          },
+        };
+      };
+      if (req.method === "GET") {
+        sendJSON(res, 200, snapshot());
+        return;
+      }
+      if (req.method === "POST") {
+        // 可持久化写面的三重门：跨站拦截 → 进程 token → 参数校验
+        if (isCrossSiteRequest(req.headers)) {
+          sendJSON(res, 403, { error: "跨站请求被拒绝（Origin / Sec-Fetch-Site 校验未通过）" });
+          return;
+        }
+        if (req.headers["x-aiworker-token"] !== serverToken) {
+          sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
+          return;
+        }
+        let body: {
+          action?: unknown;
+          tool?: unknown;
+          match?: unknown;
+          ruleAction?: unknown;
+          scope?: unknown;
+          values?: unknown;
+          acknowledge?: unknown;
+        };
+        try {
+          body = JSON.parse(await parseBody(req)) as typeof body;
+        } catch {
+          sendJSON(res, 400, { error: "Invalid JSON body" });
+          return;
+        }
+        const action = String(body.action ?? "");
+        const rawScope = body.scope;
+        if (rawScope !== undefined && rawScope !== "project" && rawScope !== "session") {
+          sendJSON(res, 400, { error: "scope 需为 project | session（未提供则视为 session）" });
+          return;
+        }
+        const scope: PermissionRuleScope = rawScope === "project" ? "project" : "session";
+        if (action === "set-protected-paths" || action === "set-never-auto-approve") {
+          const key = action === "set-protected-paths" ? "protected_paths" : "never_auto_approve";
+          const result = memory.setSafetyList(key, body.values, {
+            defaults: action === "set-protected-paths" ? DEFAULT_PROTECTED_PATHS : [],
+            acknowledge: body.acknowledge === true,
+          });
+          if (!result.ok) {
+            sendJSON(res, 400, {
+              error: result.reason ?? "写入失败",
+              removedDefaults: result.removedDefaults,
+              ...snapshot(),
+            });
+            return;
+          }
+          sendJSON(res, 200, { ok: true, warning: result.warning, ...snapshot() });
+          return;
+        }
+        if (action === "add") {
+          const ruleAction = String(body.ruleAction ?? "");
+          if (ruleAction !== "allow" && ruleAction !== "ask" && ruleAction !== "deny") {
+            sendJSON(res, 400, { error: "ruleAction 需为 allow | ask | deny" });
+            return;
+          }
+          const tool = String(body.tool ?? "").trim();
+          if (!tool) {
+            sendJSON(res, 400, { error: "缺少 tool" });
+            return;
+          }
+          const match = typeof body.match === "string" && body.match.trim() !== "" ? body.match.trim() : undefined;
+          const result = memory.add({ tool, action: ruleAction, ...(match ? { match } : {}) }, scope);
+          if (!result.ok) {
+            sendJSON(res, 400, { error: result.reason ?? "规则写入失败", ...snapshot() });
+            return;
+          }
+          sendJSON(res, 200, { ok: true, rule: result.rule, warning: result.warning, ...snapshot() });
+          return;
+        }
+        if (action === "revoke") {
+          const tool = String(body.tool ?? "").trim();
+          const ruleAction = String(body.ruleAction ?? "");
+          if (!tool || (ruleAction !== "allow" && ruleAction !== "ask" && ruleAction !== "deny")) {
+            sendJSON(res, 400, { error: "撤销需提供 tool 与 ruleAction" });
+            return;
+          }
+          const match = typeof body.match === "string" && body.match.trim() !== "" ? body.match.trim() : undefined;
+          const result = memory.revoke(
+            { tool, action: ruleAction, ...(match ? { match } : {}) },
+            rawScope === undefined ? undefined : scope,
+          );
+          if (!result.ok) {
+            sendJSON(res, 404, { error: result.reason ?? "未找到匹配规则", ...snapshot() });
+            return;
+          }
+          sendJSON(res, 200, { ok: true, rule: result.rule, warning: result.warning, ...snapshot() });
+          return;
+        }
+        if (action === "reset") {
+          const result = memory.resetProject();
+          if (!result.ok) {
+            sendJSON(res, 400, { error: result.reason ?? "重置失败", ...snapshot() });
+            return;
+          }
+          sendJSON(res, 200, { ok: true, warning: result.warning, ...snapshot() });
+          return;
+        }
+        if (action === "clear-session") {
+          const removed = memory.clearSession();
+          sendJSON(res, 200, { ok: true, removed, ...snapshot() });
+          return;
+        }
+        sendJSON(res, 400, { error: `未知 action: ${action}` });
+        return;
+      }
+      sendJSON(res, 405, { error: "Method not allowed" });
       return;
     }
 
@@ -1342,6 +1696,15 @@ export function startServer(deps: ServerDeps, port: number) {
     if (url === apiUrl("/config") && req.method === "POST") {
       if (!deps.setConfigField) {
         sendJSON(res, 503, { error: "Config not available" });
+        return;
+      }
+      // 写入门（Sprint 50 / IA 重构补齐）：设置页的模型与交互两组都要写这里，不能再沿用旧的信任模型
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝（Origin / Sec-Fetch-Site 校验未通过）" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token（见启动日志或 <dataDir>/server-token）" });
         return;
       }
       let body: string;
@@ -1777,7 +2140,7 @@ export function startServer(deps: ServerDeps, port: number) {
       }
 
       const ok = confirmResponse(confirmReq.id, confirmReq.value ?? null);
-      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Unknown confirm id" });
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Unknown confirm id 或选项值不在本次请求提供范围内" });
       return;
     }
 
@@ -1825,68 +2188,7 @@ export function startServer(deps: ServerDeps, port: number) {
         sessionIdParam && deps.sessionStore
           ? deps.sessionStore.getWorkingDir(sessionIdParam) ?? deps.workingDir
           : deps.workingDir;
-      const docs: { root: string; path: string; title: string; size: number; mtime: number }[] = [];
-      // 会话资产：data/docs/ 全量递归（数量小，无上限）
-      const walkSession = (dir: string, base: string): void => {
-        if (!existsSync(dir)) return;
-        for (const e of readdirSync(dir, { withFileTypes: true })) {
-          const full = resolve(dir, e.name);
-          if (e.isDirectory()) walkSession(full, join(base, e.name));
-          else if (e.name.endsWith(".md")) {
-            const st = statSync(full);
-            docs.push({ root: "session", path: join(base, e.name).replace(/\\/g, "/"), title: e.name.replace(/\.md$/, ""), size: st.size, mtime: st.mtimeMs });
-          }
-        }
-      };
-      walkSession(docsDir, "");
-      // 项目文档：workingDir 递归（排除系统目录 + 应用自身 dataDir；深度/数量/大小上限；mtime 降序）
-      const excludedDirNames = new Set([
-        "node_modules",
-        ".git",
-        "dist",
-        "build",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".next",
-        "coverage",
-        "out",
-      ]);
-      const projectAbs = resolve(projectDir);
-      const dataDirAbs = resolve(dataDir);
-      const relData = relative(projectAbs, dataDirAbs);
-      const excludeDataAbs =
-        projectAbs !== dataDirAbs && relData !== "" && !relData.startsWith("..") && !isAbsolute(relData) ? dataDirAbs : null;
-      const projectDocs: typeof docs = [];
-      let scanStopped = false;
-      const walkProject = (dir: string, base: string, depth: number): void => {
-        if (scanStopped || depth > 4 || !existsSync(dir)) return;
-        for (const e of readdirSync(dir, { withFileTypes: true })) {
-          if (scanStopped) return;
-          const full = resolve(dir, e.name);
-          if (e.isDirectory()) {
-            if (excludedDirNames.has(e.name)) continue;
-            if (excludeDataAbs && full === excludeDataAbs) continue;
-            walkProject(full, join(base, e.name), depth + 1);
-          } else if (e.name.endsWith(".md")) {
-            let st;
-            try {
-              st = statSync(full);
-            } catch {
-              continue;
-            }
-            if (st.size > 1_000_000) continue;
-            projectDocs.push({ root: "project", path: join(base, e.name).replace(/\\/g, "/"), title: e.name.replace(/\.md$/, ""), size: st.size, mtime: st.mtimeMs });
-            if (projectDocs.length >= 200) {
-              scanStopped = true;
-              return;
-            }
-          }
-        }
-      };
-      walkProject(projectDir, "", 0);
-      projectDocs.sort((a, b) => b.mtime - a.mtime);
-      docs.push(...projectDocs);
+      const docs = collectDocs(dataDir, projectDir);
       sendJSON(res, 200, {
         roots: [
           { root: "session", dir: docsDir },
@@ -1963,6 +2265,7 @@ export function startServer(deps: ServerDeps, port: number) {
       }
 
       const mime = mimeFromPath(real);
+      const secHeaders = fileSecurityHeaders(mime, req.headers);
       const range = req.headers.range;
 
       // Range 单区间支持（视频/音频 seek）；多区间不支持 → 416；分片不重复记审计
@@ -1995,6 +2298,7 @@ export function startServer(deps: ServerDeps, port: number) {
           "Content-Range": `bytes ${start}-${end}/${stt.size}`,
           "Accept-Ranges": "bytes",
           "Cache-Control": "no-store",
+          ...secHeaders,
         });
         createReadStream(real, { start, end }).pipe(res);
         return;
@@ -2008,6 +2312,7 @@ export function startServer(deps: ServerDeps, port: number) {
         ...(asDownload ? { "Content-Disposition": attachmentDisposition(basename(real)) } : {}),
         "Accept-Ranges": "bytes",
         "Cache-Control": "no-store",
+        ...secHeaders,
       });
       createReadStream(real).pipe(res);
       return;
@@ -2140,13 +2445,19 @@ export function startServer(deps: ServerDeps, port: number) {
         return;
       }
 
-      // 多模态：图片请求需当前模型支持视觉（models.json 当前 profile 配 vision:true）
+      // 多模态：图片请求需当前模型支持视觉（Sprint 49.4：实测缓存优先 → 配置声明 → 未声明则拒绝）
       const images = Array.isArray(chatReq.images) ? chatReq.images.filter((u) => typeof u === "string") : undefined;
-      if (images && images.length > 0 && !deps.modelRouter.supportsVision()) {
-        sendJSON(res, 400, {
-          error: "当前模型不支持视觉输入（图片）。请在 config/models.json 的模型 profile（default 或当前使用）配置 vision:true（如 deepseek-vl 等视觉模型）后重试。",
-        });
-        return;
+      if (images && images.length > 0) {
+        const cap = resolveVisionCapability(deps.dataDir ?? resolve(process.cwd(), "data"), deps.modelRouter);
+        if (!cap.vision) {
+          sendJSON(res, 400, {
+            error:
+              cap.source === "config"
+                ? "当前模型声明不支持视觉输入（图片）。请在 config/models.json 的当前 profile 配置 vision:true 后重试。"
+                : "当前模型未声明视觉能力、也未实测，图片输入被拒。请在 Web「设置→模型→模型能力」点【检测图片能力】实测，或在 config/models.json 配置 vision:true 后重试。",
+          });
+          return;
+        }
       }
 
       const agentId = chatReq.agentId ?? "default";
@@ -2337,6 +2648,11 @@ export function startServer(deps: ServerDeps, port: number) {
 
   server.listen(port, () => {
     stdout.write(chalk.green(`\n✓ HTTP Server 已启动: http://localhost:${port}\n`));
+    stdout.write(
+      chalk.gray(
+        `  权限写接口 token（请求头 X-AiWorker-Token，也写入 ${resolve(dataDir, "server-token")}）：${serverToken}\n`,
+      ),
+    );
   });
 
   return server;

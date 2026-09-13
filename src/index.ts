@@ -245,9 +245,9 @@ program
 
     // ─── headless 一次性运行（-p）：结构化输出 + 稳定退出码 ───
     if (isHeadless && headlessConfig) {
-      // --yes：仅注入"免确认"allow 规则（不覆盖 deny 规则、never_auto_approve 与受保护路径）
+      // --yes：打开进程内全量免确认开关（不落盘、不覆盖 deny 规则、never_auto_approve 与受保护路径）
       if (headlessConfig.allowAll) {
-        runtime.permissionModel.addRuntimeRule({ tool: "*", action: "allow" });
+        runtime.permissionModel.setAutoApproveAll(true);
       }
       const abortController = new AbortController();
       const onInterrupt = (): void => {
@@ -350,6 +350,7 @@ program
       appFactory: runtime.appFactory,
       evolutionEngine: runtime.evolutionEngine,
       rewindService: runtime.rewindService,
+      permissionMemory: runtime.permissionMemory,
       write: (text) => stdout.write(text),
       writeLine: (line) => renderer.writeLine(line),
       ask: (q) => (tui.isActive() ? tui.ask(q, [], 60000, false) : Promise.resolve(null)),

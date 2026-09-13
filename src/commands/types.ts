@@ -12,6 +12,7 @@ import type { AppManager } from "../core/app-manager.js";
 import type { AppFactory } from "../core/app-factory.js";
 import type { EvolutionEngine } from "../core/evolution-engine.js";
 import type { RewindService } from "../core/rewind-service.js";
+import type { PermissionMemory } from "../security/permission-memory.js";
 
 export type CommandAction = "continue" | "exit";
 
@@ -56,6 +57,8 @@ export interface CommandContext {
   evolutionEngine?: EvolutionEngine;
   /** 回滚服务（/rewind 用；未注入则提示不可用） */
   rewindService?: RewindService;
+  /** 权限记忆（/permissions 用；未注入则提示不可用） */
+  permissionMemory?: PermissionMemory;
   // 输出抽象（测试可捕获）
   write: (text: string) => void;
   writeLine: (line: string) => void;

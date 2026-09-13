@@ -105,9 +105,9 @@
           class="ap-item"
           class:clickable={isWebapp && a.status === "running"}
           role={isWebapp && a.status === "running" ? "button" : undefined}
-          title={isWebapp && a.status === "running" ? "在右侧应用预览面板展示" : undefined}
+          title={isWebapp && a.status === "running" ? "在右侧「应用」面板展示" : undefined}
           onclick={() => {
-            // 打开 = 停靠右侧「应用预览」面板（浮窗/小部件在预览面板内切换）
+            // 打开 = 停靠右侧「应用」面板（浮窗/小部件在预览面板内切换）
             if (isWebapp && a.status === "running") openAppInPreview(a.id);
           }}
         >

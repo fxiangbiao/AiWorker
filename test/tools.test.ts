@@ -2,12 +2,22 @@
  * 工具执行测试
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { resolve } from "node:path";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { join, resolve } from "node:path";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { toolRegistry } from "../src/core/tool-registry.js";
 import type { ToolContext } from "../src/types.js";
-import { makeTestDir, setupEnv, teardownEnv, clearTools } from "./helpers.js";
+import { buildPathPolicy, setPathPolicyOverride } from "../src/security/path-policy.js";
+import {
+  makeTestDir,
+  setupEnv,
+  teardownEnv,
+  clearTools,
+  makeDirLink,
+  makeDanglingLink,
+  DIR_LINK_SUPPORTED,
+  DANGLING_LINK_SUPPORTED,
+} from "./helpers.js";
 
 const testDir = makeTestDir("tools");
 
@@ -76,10 +86,11 @@ describe("7. 工具执行", () => {
     expect(r.success).toBe(false);
     expect(r.error).toContain("不唯一");
 
-    // 路径穿越 → 失败
+    // 路径穿越 → 失败（Sprint 49：由路径策略单点判定，报越界与允许范围）
     r = await handler({ path: "../escape.txt", oldText: "x", newText: "y" }, ectx);
     expect(r.success).toBe(false);
-    expect(r.error).toContain("超出");
+    expect(r.error).toContain("越界");
+    expect(r.error).toContain("路径策略");
 
     // 文件不存在 → 失败
     r = await handler({ path: "nope.txt", oldText: "x", newText: "y" }, ectx);
@@ -198,5 +209,141 @@ describe("7. 工具执行", () => {
     const result = await handler({ command: "definitely-not-a-real-cmd-xyz 2>&1", timeout: 10000 }, ctx);
     expect(result.success).toBe(false);
     expect(result.error).toContain("definitely-not-a-real-cmd-xyz");
+  });
+});
+
+describe("20. fs 四件套路径边界（Sprint 49）", () => {
+  const wd = resolve(testDir, "path-root");
+  const outside = resolve(testDir, "path-outside");
+  const ctx = (dir: string): ToolContext => ({ agentId: "test", sessionId: "test", workingDir: dir, permissions: "auto" });
+
+  beforeAll(() => {
+    rmSync(wd, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+    mkdirSync(wd, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "secret.txt"), "secret", "utf-8");
+  });
+
+  afterEach(() => setPathPolicyOverride(null));
+
+  it("读：工作目录内放行，越界拒绝且原因是路径策略", async () => {
+    const read = toolRegistry.getHandler("fs_read")!;
+    writeFileSync(join(wd, "in.txt"), "inside", "utf-8");
+    const ok = await read({ path: "in.txt" }, ctx(wd));
+    expect(ok.success).toBe(true);
+    expect(ok.content).toBe("inside");
+
+    const denied = await read({ path: join(outside, "secret.txt") }, ctx(wd));
+    expect(denied.success).toBe(false);
+    expect(denied.error).toContain("读取越界");
+    expect(denied.error).toContain("路径策略");
+
+    const escaped = await read({ path: "../path-outside/secret.txt" }, ctx(wd));
+    expect(escaped.success).toBe(false);
+
+    const empty = await read({ path: "" }, ctx(wd));
+    expect(empty.success).toBe(false);
+    expect(empty.error).toContain("为空");
+  });
+
+  it("列目录：越界拒绝，工作目录内放行", async () => {
+    const list = toolRegistry.getHandler("fs_list")!;
+    expect((await list({ path: "." }, ctx(wd))).success).toBe(true);
+    const denied = await list({ path: outside }, ctx(wd));
+    expect(denied.success).toBe(false);
+    expect(denied.error).toContain("读取越界");
+  });
+
+  it("写：../ 与绝对路径越界拒绝，工作目录内放行", async () => {
+    const write = toolRegistry.getHandler("fs_write")!;
+    expect((await write({ path: "sub/a.txt", content: "x" }, ctx(wd))).success).toBe(true);
+    const up = await write({ path: "../path-outside/up.txt" }, ctx(wd));
+    expect(up.success).toBe(false);
+    expect(up.error).toContain("写入越界");
+    const abs = await write({ path: join(outside, "abs.txt"), content: "x" }, ctx(wd));
+    expect(abs.success).toBe(false);
+  });
+
+  it.skipIf(!DIR_LINK_SUPPORTED)("写：符号链接指向工作目录外时拒绝（真实路径判定）", async () => {
+    const link = join(wd, "esc");
+    rmSync(link, { recursive: true, force: true });
+    expect(makeDirLink(link, outside)).toBe(true);
+    const write = toolRegistry.getHandler("fs_write")!;
+    const r = await write({ path: "esc/pwned.txt", content: "x" }, ctx(wd));
+    expect(r.success).toBe(false);
+    expect(r.error).toContain("写入越界");
+    expect(r.error.toLowerCase()).toContain("path-outside");
+  });
+
+  it("读根/写根显式放宽后生效，且互不影响", async () => {
+    const read = toolRegistry.getHandler("fs_read")!;
+    const write = toolRegistry.getHandler("fs_write")!;
+
+    setPathPolicyOverride(buildPathPolicy(wd, { allowWriteDirs: [outside] }));
+    expect((await write({ path: join(outside, "w.txt"), content: "x" }, ctx(wd))).success).toBe(true);
+    expect((await read({ path: join(outside, "secret.txt") }, ctx(wd))).success).toBe(false);
+
+    setPathPolicyOverride(buildPathPolicy(wd, { allowReadDirs: [outside] }));
+    expect((await read({ path: join(outside, "secret.txt") }, ctx(wd))).success).toBe(true);
+    expect((await write({ path: join(outside, "w2.txt"), content: "x" }, ctx(wd))).success).toBe(false);
+  });
+
+  it("fs_edit 越界同样被拒（与 fs_write 同一判定）", async () => {
+    const edit = toolRegistry.getHandler("fs_edit")!;
+    const r = await edit({ path: join(outside, "secret.txt"), oldText: "secret", newText: "x" }, ctx(wd));
+    expect(r.success).toBe(false);
+    expect(r.error).toContain("写入越界");
+  });
+
+  it.skipIf(!DANGLING_LINK_SUPPORTED)("悬空链接不可写（真实路径解析失败 → 拒绝，不退化成词法放行）", async () => {
+    const dangling = join(wd, "dangling.txt");
+    rmSync(dangling, { recursive: true, force: true });
+    rmSync(join(outside, "ghost.txt"), { recursive: true, force: true });
+    expect(makeDanglingLink(dangling, join(outside, "ghost.txt"))).toBe(true);
+
+    const r = await toolRegistry.getHandler("fs_write")!({ path: "dangling.txt", content: "escaped?" }, ctx(wd));
+    expect(r.success).toBe(false);
+    expect(r.error).toContain("无法解析");
+    expect(existsSync(join(outside, "ghost.txt"))).toBe(false); // 关键：根外文件不能被创建
+  });
+
+  /**
+   * 接线测试（审查修复）：走**真实配置文件**而不是策略注入。
+   * 只注入策略对象会短路 loadSandboxPolicy，把 allowReadDirs/allowWriteDirs 接反也测不出来。
+   */
+  describe("config/sandbox.json → fs 工具的读取根/写入根接线", () => {
+    const configPath = join(testDir, "path-policy-sandbox.json");
+
+    afterEach(async () => {
+      const { setSandboxConfigPath } = await import("../src/security/sandbox.js");
+      setSandboxConfigPath(null);
+    });
+
+    it("allowReadDirs 放宽读、allowWriteDirs 放宽写，且两者互不串用", async () => {
+      const { setSandboxConfigPath } = await import("../src/security/sandbox.js");
+      const read = toolRegistry.getHandler("fs_read")!;
+      const write = toolRegistry.getHandler("fs_write")!;
+      writeFileSync(join(outside, "cfg-read.txt"), "cfg-content", "utf-8");
+
+      // 只放宽读：读得到、写不了
+      writeFileSync(configPath, JSON.stringify({ enabled: true, allowReadDirs: [outside] }), "utf-8");
+      setSandboxConfigPath(configPath);
+      expect((await read({ path: join(outside, "cfg-read.txt") }, ctx(wd))).success).toBe(true);
+      expect((await write({ path: join(outside, "cfg-write.txt"), content: "x" }, ctx(wd))).success).toBe(false);
+
+      // 只放宽写：写得进、读不了
+      writeFileSync(configPath, JSON.stringify({ enabled: true, allowWriteDirs: [outside] }), "utf-8");
+      expect((await write({ path: join(outside, "cfg-write.txt"), content: "x" }, ctx(wd))).success).toBe(true);
+      expect((await read({ path: join(outside, "cfg-read.txt") }, ctx(wd))).success).toBe(false);
+    });
+
+    it("sandbox.enabled=false 只关命令层，不关 fs 读写边界", async () => {
+      const { setSandboxConfigPath } = await import("../src/security/sandbox.js");
+      writeFileSync(configPath, JSON.stringify({ enabled: false }), "utf-8");
+      setSandboxConfigPath(configPath);
+      expect((await toolRegistry.getHandler("fs_read")!({ path: join(outside, "cfg-read.txt") }, ctx(wd))).success).toBe(false);
+      expect((await toolRegistry.getHandler("fs_write")!({ path: join(outside, "x.txt"), content: "x" }, ctx(wd))).success).toBe(false);
+    });
   });
 });

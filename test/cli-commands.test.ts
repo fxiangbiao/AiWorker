@@ -11,6 +11,9 @@ import { buildCliCommands } from "../src/commands/registry.js";
 import { modelDir, modelManifest } from "../src/media/model-manager.js";
 import { pluginManager } from "../src/core/plugin-manager.js";
 import type { CommandContext, CliCommand } from "../src/commands/types.js";
+import { PermissionModel } from "../src/security/permission-model.js";
+import { PermissionMemory } from "../src/security/permission-memory.js";
+import type { PermissionConfig } from "../src/types.js";
 import type { ModelRouter } from "../src/core/model-router.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -565,5 +568,125 @@ describe("bg / jobs / schedule 命令", () => {
     const { ctx, writeLines } = makeCtx();
     await find("install").handler(ctx, "no-such-file.aw", "/install no-such-file.aw");
     expect(writeLines.some((l) => l.includes("路径不存在"))).toBe(true);
+  });
+});
+
+describe("permissions 命令（Sprint 49）", () => {
+  function makePermCtx() {
+    const dir = makeTestDir("cli-perms");
+    const configPath = resolve(dir, "config", "permissions.json");
+    mkdirSync(resolve(dir, "config"), { recursive: true });
+    writeFileSync(configPath, `${JSON.stringify({ rules: [] }, null, 2)}\n`, "utf-8");
+    const model = new PermissionModel({
+      defaultMode: "auto",
+      modes: {
+        ask: { description: "只读", allow_tool_calls: true, readOnly: true },
+        plan: { description: "计划", allow_tool_calls: true, require_confirmation: true },
+        auto: { description: "自动", allow_tool_calls: true, high_risk_confirm: true },
+      },
+      allowedDirs: [],
+      deniedPatterns: [],
+      neverAutoApprove: ["terminal_exec"],
+      protectedPaths: [".env"],
+    } as PermissionConfig);
+    const memory = new PermissionMemory({ model, configPath, log: () => {} });
+    const { ctx, writeLines, writes } = makeCtx({ permissionMemory: memory });
+    const fileRules = () => (JSON.parse(readFileSync(configPath, "utf-8")).rules as unknown[]) ?? [];
+    return { ctx, writeLines, writes, memory, configPath, fileRules };
+  }
+
+  it("未注入权限记忆时给出明确提示", async () => {
+    const { ctx, writeLines } = makeCtx();
+    await find("permissions").handler(ctx, "", "/permissions");
+    expect(writeLines.join("\n")).toContain("权限记忆不可用");
+  });
+
+  it("空规则列表给出用法示例", async () => {
+    const { ctx, writeLines } = makePermCtx();
+    await find("permissions").handler(ctx, "", "/permissions");
+    const joined = writeLines.join("\n");
+    expect(joined).toContain("暂无规则");
+    expect(joined).toContain("/permissions allow");
+  });
+
+  it("allow 写入项目级规则并立即列出（含来源与目标）", async () => {
+    const h = makePermCtx();
+    await find("permissions").handler(h.ctx, "allow fs_write(*notes*)", "/permissions allow fs_write(*notes*)");
+    expect(h.writeLines.join("\n")).toContain("已写入项目级规则");
+    expect(h.fileRules()).toEqual([{ tool: "fs_write", match: "*notes*", action: "allow" }]);
+    expect(h.writes.join("")).toContain("ALLOW");
+    expect(h.writes.join("")).toContain("*notes*");
+    expect(h.writes.join("")).toContain("项目");
+  });
+
+  it("allow 触及受保护路径或永不自动批准清单时被拒绝（文件不变）", async () => {
+    const h = makePermCtx();
+    await find("permissions").handler(h.ctx, "allow fs_write(.env)", "/permissions allow fs_write(.env)");
+    expect(h.writeLines.join("\n")).toContain("受保护路径");
+    expect(h.fileRules()).toEqual([]);
+
+    await find("permissions").handler(h.ctx, "allow terminal_exec", "/permissions allow terminal_exec");
+    expect(h.writeLines.join("\n")).toContain("never_auto_approve");
+    expect(h.fileRules()).toEqual([]);
+  });
+
+  it("规则格式非法与未知子命令都给出提示", async () => {
+    const h = makePermCtx();
+    await find("permissions").handler(h.ctx, "allow fs_write(", "/permissions allow fs_write(");
+    expect(h.writeLines.join("\n")).toContain("格式非法");
+
+    h.writeLines.length = 0;
+    await find("permissions").handler(h.ctx, "wat", "/permissions wat");
+    expect(h.writeLines.join("\n")).toContain("未知子命令");
+  });
+
+  it("revoke 按序号撤销；reset 与 clear-session 分别清理两级规则", async () => {
+    const h = makePermCtx();
+    await find("permissions").handler(h.ctx, "deny fs_write(*.log)", "/permissions deny fs_write(*.log)");
+    h.memory.add({ tool: "fs_read", action: "allow" }, "session");
+    // 列表顺序 = 生效顺序：会话级规则置于最前（不进配置文件）
+    expect(h.memory.list().map((r) => r.source)).toEqual(["session", "project"]);
+
+    await find("permissions").handler(h.ctx, "revoke 1", "/permissions revoke 1");
+    expect(h.writeLines.join("\n")).toContain("已撤销（会话级）");
+    expect(h.fileRules()).toHaveLength(1);
+
+    await find("permissions").handler(h.ctx, "revoke 1", "/permissions revoke 1");
+    expect(h.writeLines.join("\n")).toContain("已撤销（项目级）");
+    expect(h.fileRules()).toEqual([]);
+    expect(h.memory.list()).toEqual([]);
+
+    // 序号越界
+    await find("permissions").handler(h.ctx, "revoke 9", "/permissions revoke 9");
+    expect(h.writeLines.join("\n")).toContain("序号需在");
+
+    h.memory.add({ tool: "fs_read", action: "allow" }, "session");
+    await find("permissions").handler(h.ctx, "clear-session", "/permissions clear-session");
+    expect(h.memory.list()).toEqual([]);
+  });
+
+  it("reset 清空项目级规则", async () => {
+    const h = makePermCtx();
+    await find("permissions").handler(h.ctx, "ask fs_write", "/permissions ask fs_write");
+    h.memory.add({ tool: "fs_read", action: "allow" }, "session");
+    await find("permissions").handler(h.ctx, "reset", "/permissions reset");
+    expect(h.fileRules()).toEqual([]);
+    expect(h.memory.list().map((r) => r.source)).toEqual(["session"]);
+  });
+
+  it("revoke 支持按来源限定（--project / --session），来源不符则拒绝", async () => {
+    const h = makePermCtx();
+    h.memory.add({ tool: "fs_read", action: "allow" }, "session");
+    await find("permissions").handler(h.ctx, "deny fs_write", "/permissions deny fs_write");
+    expect(h.memory.list().map((r) => r.source)).toEqual(["session", "project"]);
+
+    // 序号 1 是会话级；用 --project 限定 → 拒绝而不是撤错
+    await find("permissions").handler(h.ctx, "revoke 1 --project", "/permissions revoke 1 --project");
+    expect(h.writeLines.join("\n")).toContain("与 --project 不符");
+    expect(h.memory.list()).toHaveLength(2);
+
+    await find("permissions").handler(h.ctx, "revoke 1 --session", "/permissions revoke 1 --session");
+    expect(h.memory.list().map((r) => r.source)).toEqual(["project"]);
+    expect(h.fileRules()).toHaveLength(1);
   });
 });

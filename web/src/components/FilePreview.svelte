@@ -11,14 +11,15 @@
    * - 图片/视频/音频/PDF → 原生元素（/files，支持 Range）
    * - Office → docx(mammoth)/xlsx(SheetJS) 前端转换（dynamic import，失败回退下载）；pptx 等下载兜底
    * - diff → +/- 着色行渲染
+   * - .html/.htm → HtmlPreview（sandbox iframe，默认预览、可切源码；唯一的 sandbox 实现）
    * - 窗口：右下角拖拽调整大小（尺寸跨打开记忆）+ 全屏切换（Esc 先退全屏再关闭）
    */
   import DOMPurify from "dompurify";
   import { API } from "$lib/stores/chat.svelte";
   import type { ToolArtifact } from "$lib/artifacts";
-  import { artifactIcon, formatBytes, baseName } from "$lib/artifacts";
+  import { artifactIcon, formatBytes, baseName, toDocKey } from "$lib/artifacts";
   import DocRenderer from "./DocRenderer.svelte";
-
+  import HtmlPreview from "./HtmlPreview.svelte";
   let { sessionId, artifact, onClose } = $props<{
     sessionId?: string | null;
     artifact: ToolArtifact | null;
@@ -28,6 +29,8 @@
   // —— 窗口：右下角拖拽调整大小 + 全屏切换 ——
   let cur = $state<{ w: number; h: number } | null>(null);
   let fsMode = $state(false);
+  /** HTML 产物：默认给渲染预览（sandbox iframe），源码降为可切换的次要档——与产物面板同一套语义 */
+  let htmlSource = $state(false);
   let resizing = false;
   let r0 = { x: 0, y: 0, w: 0, h: 0 };
   let cardCss = $derived.by(() => (!fsMode && cur ? `width:${cur.w}px;height:${cur.h}px;` : ""));
@@ -100,6 +103,10 @@
   let isMd = $derived.by(
     () => artifact?.type === "file" && artifact.kind === "text" && relUsable && /\.md$/i.test(artifact.path),
   );
+  /** HTML 产物（用 sandbox iframe 渲染；`/files` 与 Web 同源，绝不能当同源文档执行） */
+  let isHtml = $derived.by(() => artifact?.type === "file" && /\.html?$/i.test(artifact.path));
+  /** 当前是否显示 HTML 渲染预览（而非源码） */
+  let showHtmlPreview = $derived(isHtml && !htmlSource);
   let fileUrl = $derived.by(() => {
     if (artifact?.type !== "file") return "";
     return `${API}/files?session=${encodeURIComponent(sessionId ?? "")}&path=${encodeURIComponent(artifact.path)}`;
@@ -109,7 +116,7 @@
     return `${API}/files?session=${encodeURIComponent(sessionId ?? "")}&path=${encodeURIComponent(artifact.path)}&download=1`;
   });
   let docPath = $derived.by(() =>
-    artifact?.type === "file" && isMd ? `${artifact.root ?? "project"}:${artifact.rel ?? artifact.path}` : "",
+    artifact?.type === "file" && isMd ? toDocKey(artifact.root ?? "project", artifact.rel ?? artifact.path) : "",
   );
 
   // 非 md 文本：fetch 原文
@@ -118,7 +125,7 @@
   let textLoading = $state(false);
   let textSeq = 0;
   $effect(() => {
-    if (artifact?.type === "file" && artifact.kind === "text" && !isMd) {
+    if (artifact?.type === "file" && artifact.kind === "text" && !isMd && !showHtmlPreview) {
       const mySeq = ++textSeq;
       text = "";
       textErr = false;
@@ -244,6 +251,11 @@
         {#if artifact.type === "file"}
           <a class="fp-dl" href={downloadUrl} download>下载</a>
         {/if}
+        {#if isHtml}
+          <button class="fp-act fp-act-txt" title={htmlSource ? "渲染预览（sandbox iframe）" : "查看 HTML 源码"} onclick={() => (htmlSource = !htmlSource)}>
+            {htmlSource ? "预览" : "源码"}
+          </button>
+        {/if}
         <button
           class="fp-act"
           title={fsMode ? "退出全屏 (Esc)" : "全屏"}
@@ -269,6 +281,10 @@
           </div>
         {:else if artifact.type === "file" && artifact.kind === "text" && isMd}
           <DocRenderer path={docPath} sessionId={sessionId} />
+        {:else if showHtmlPreview && artifact.type === "file"}
+          <div class="fp-html">
+            <HtmlPreview src={fileUrl} title={baseName(artifact.path)} />
+          </div>
         {:else if artifact.type === "file" && artifact.kind === "text"}
           {#if textErr}
             <div class="fp-err">文本加载失败，请下载查看。</div>
@@ -394,6 +410,8 @@
   }
   .fp-close:hover { background: var(--hover-bg); color: var(--text); }
   .fp-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
+  .fp-html { height: 100%; min-height: 0; }
+  .fp-act-txt { font-size: 11px; color: var(--primary); }
   .fp-card:not(.fs) .fp-body { padding-bottom: 30px; } /* 给右下角拖拽柄让位，避免末行文本被遮 */
   .fp-code {
     font-family: var(--font-mono); font-size: 12px; line-height: 1.6;

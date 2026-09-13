@@ -45,6 +45,7 @@
 ## 测试
 
 - `makeTestDir(name)` 独立 `data-test/`；读真实 config 注入 fixture；config/agents 读写用 `saveAgentConfig(id, cfg, dir)` 临时目录；端点测试 mock deps + `listen(0)` + fetch；WS 测试用 `ws` 客户端（Node 22 全局 WebSocket 无 `.on`）
+- **需要链接权限的用例必须走 `helpers.ts` 的能力探测**：`makeDirLink`（Windows 用 junction）/ `makeFileLink` / `makeDanglingLink` + `DIR_LINK_SUPPORTED` / `FILE_LINK_SUPPORTED` / `DANGLING_LINK_SUPPORTED`，配 `it.skipIf`；**不要**直接 `symlinkSync(..., "file")`——无开发者模式的 Windows 会 EPERM，用例会硬失败而不是跳过。`AIW_NO_LINKS=1`（无任何链接能力）/ `AIW_NO_FILE_LINKS=1`（仅文件符号链接失败，即无开发者模式的 Windows）可复现受限环境
 
 ## CLI
 
@@ -52,7 +53,8 @@
 /mode /plan /debate         权限模式 / DAG 协作 / 辩论
 /app /bg /jobs /schedule    应用生命周期+生成 / 后台任务 / 定时（自然语言 cron）
 /install /pkg               安装 .aw 或裸格式 / 打包导出
-/skill(s) /setup /new /sessions /trace /config /export /help /exit
+/permissions                权限规则：列出（含来源）/ 写项目级 / 撤销 / 清空
+/skill(s) /setup /new /sessions /trace /config /export /rewind /help /exit
 ```
 
 CLI 参数：`--dir`（默认 ./ai_default_project）`--data-dir` `--mode` `--show-thinking` `--server` `--port`

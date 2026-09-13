@@ -7,12 +7,14 @@
   import ErrorBanner from "./ErrorBanner.svelte";
   import InputArea from "./InputArea.svelte";
   import GenCard from "./GenCard.svelte";
+  import ConfirmModal from "./ConfirmModal.svelte";
   import { spawnGenCard } from "$lib/stores/apps.svelte";
   import type { ToolArtifact } from "$lib/artifacts";
   import {
     store,
     saveChats,
     saveMessages,
+    loadRemoteMessages,
     type ChatItem,
     type UIMessage,
     type PlanStep,
@@ -27,6 +29,127 @@
   let { agents = [] as { id: string; name: string }[] }: { agents?: { id: string; name: string }[] } = $props();
 
   let errors: string[] = $state([]);
+
+  // ── 「从这里重新开始」（仅对话回滚；Sprint 50 从右栏回滚面板下移到对话流） ──
+  interface ChatCheckpoint {
+    turn: number;
+    messageSeqBefore?: number;
+  }
+  let checkpoints = $state<ChatCheckpoint[]>([]);
+  let checkpointSession = "";
+  let rewindPending = $state<{ toTurn: number; messageCount: number } | null>(null);
+  let rewindBusy = $state(false);
+  let rewindError = $state("");
+
+  /** 拉取检查点（按会话缓存；回滚后刷新） */
+  async function loadCheckpoints(force = false): Promise<ChatCheckpoint[]> {
+    const id = store.activeChatId ?? "";
+    if (!id) return [];
+    if (!force && checkpointSession === id) return checkpoints;
+    try {
+      const resp = await fetch(`${API}/sessions/${encodeURIComponent(id)}/checkpoints`);
+      if (!resp.ok) {
+        checkpoints = [];
+        return [];
+      }
+      const data = (await resp.json()) as { turns?: ChatCheckpoint[] };
+      checkpoints = data.turns ?? [];
+      checkpointSession = id;
+    } catch {
+      checkpoints = [];
+    }
+    return checkpoints;
+  }
+
+  /** 用户消息 seq → 所属回合（取"回合开始前消息 seq ≤ 本消息 seq"的最大回合） */
+  function turnOfMessage(seq: number): number | null {
+    let hit: number | null = null;
+    for (const t of checkpoints) {
+      if (typeof t.messageSeqBefore !== "number") continue;
+      if (t.messageSeqBefore <= seq && (hit === null || t.turn > hit)) hit = t.turn;
+    }
+    return hit;
+  }
+
+  async function startChatRewind(index: number): Promise<void> {
+    rewindError = "";
+    const seq = store.messages[index]?.seq;
+    if (seq === undefined) {
+      rewindError = "这条消息没有服务端序号（本地新发的消息需刷新后可回滚）";
+      return;
+    }
+    const turns = await loadCheckpoints();
+    if (turns.length === 0) {
+      rewindError = "本会话暂无检查点（检查点在每轮对话开始时创建，保留最近 20 轮）";
+      return;
+    }
+    const turn = turnOfMessage(seq);
+    if (turn === null) {
+      rewindError = "找不到这条消息对应的检查点（可能已超出最近 20 轮）";
+      return;
+    }
+    const id = store.activeChatId ?? "";
+    rewindBusy = true;
+    try {
+      const resp = await fetch(`${API}/sessions/${encodeURIComponent(id)}/rewind`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ toTurn: turn, scope: "chat", dryRun: true }),
+      });
+      const data = (await resp.json()) as { plan?: { messageCount: number; blockers: string[] } };
+      if (!resp.ok || !data.plan) {
+        rewindError = `预览失败（${resp.status}）`;
+        return;
+      }
+      if (data.plan.blockers.length > 0) {
+        rewindError = data.plan.blockers[0]!;
+        return;
+      }
+      rewindPending = { toTurn: turn, messageCount: data.plan.messageCount };
+    } catch {
+      rewindError = "无法连接服务端";
+    } finally {
+      rewindBusy = false;
+    }
+  }
+
+  async function applyChatRewind(): Promise<void> {
+    const target = rewindPending;
+    rewindPending = null;
+    const id = store.activeChatId ?? "";
+    if (!target || !id) return;
+    rewindBusy = true;
+    try {
+      const resp = await fetch(`${API}/sessions/${encodeURIComponent(id)}/rewind`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ toTurn: target.toTurn, scope: "chat" }),
+      });
+      const data = (await resp.json()) as { ok?: boolean; error?: string };
+      if (!resp.ok || !data.ok) {
+        rewindError = data.error ?? `回滚失败（${resp.status}）`;
+        return;
+      }
+      saveMessages(id, []);
+      const msgs = await loadRemoteMessages(id);
+      if (store.activeChatId === id) {
+        store.messages.length = 0;
+        store.messages.push(...msgs);
+      }
+      await loadCheckpoints(true);
+    } catch {
+      rewindError = "无法连接服务端";
+    } finally {
+      rewindBusy = false;
+    }
+  }
+
+  $effect(() => {
+    void store.activeChatId;
+    checkpointSession = "";
+    rewindError = "";
+    void loadCheckpoints();
+  });
 
   // ── 多模态图片（Sprint 36）：待发送图片 data URL 列表（最多 4 张） ──
   let pendingImages = $state<string[]>([]);
@@ -639,15 +762,24 @@
     {:else}
       <div class="msg-inner">
       {#each store.messages as msg, i (i)}
-        {#if msg.role === "user"}
-          <UserMessage content={msg.content} images={msg.images ?? []} />
-        {:else if msg.role === "assistant" || msg.role === "agent"}
-          {#if msg._kind === "gen"}
-            <GenCard {msg} />
-          {:else}
-            <AgentCard {msg} onRetryTool={retryTool} />
+        <div class="msg-anchor" id={`msg-${i}`}>
+          {#if msg.role === "user"}
+            <UserMessage content={msg.content} images={msg.images ?? []} />
+            {#if msg.seq !== undefined}
+              <button
+                class="msg-rewind"
+                title="回到这条消息之前（仅移除对话，不改动文件）"
+                disabled={rewindBusy}
+                onclick={() => void startChatRewind(i)}>从这里重新开始</button>
+            {/if}
+          {:else if msg.role === "assistant" || msg.role === "agent"}
+            {#if msg._kind === "gen"}
+              <GenCard {msg} />
+            {:else}
+              <AgentCard {msg} onRetryTool={retryTool} />
+            {/if}
           {/if}
-        {/if}
+        </div>
       {/each}
       {#each store.confirms as c}
         <ConfirmCard confirm={c} onRespond={(v) => respondConfirm(c.id, v)} />
@@ -658,9 +790,22 @@
       {#each errors as err}
         <ErrorBanner message={err} />
       {/each}
+      {#if rewindError}
+        <ErrorBanner message={rewindError} />
+      {/if}
       </div>
     {/if}
   </div>
+  {#if rewindPending}
+    <ConfirmModal
+      title="确认回滚对话"
+      danger
+      confirmText="移除对话"
+      message={`回到第 ${rewindPending.toTurn} 轮之前，将移除 ${rewindPending.messageCount} 条消息（文件改动保留）。此操作不可撤销。`}
+      onConfirm={() => void applyChatRewind()}
+      onCancel={() => (rewindPending = null)}
+    />
+  {/if}
   {#if pendingImages.length > 0}
     <div class="img-bar">
       {#each pendingImages as url, i (i)}
@@ -714,6 +859,24 @@
     margin: 0 auto;
     padding: 24px 24px;
   }
+  .msg-anchor { position: relative; }
+  .msg-anchor .msg-rewind {
+    position: absolute;
+    right: 0;
+    top: 2px;
+    font-size: 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--dim);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .msg-anchor:hover .msg-rewind { opacity: 1; }
+  .msg-anchor .msg-rewind:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+  .msg-anchor .msg-rewind:disabled { opacity: 0.4; cursor: not-allowed; }
   .empty-state {
     display: flex;
     flex-direction: column;

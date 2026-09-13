@@ -1,5 +1,129 @@
 # Changelog
 
+## 1.8.0 (2026-09-12)
+
+### Web 信息架构重构：设置 / 控制台分离（Sprint 50 收尾 + Sprint 51）
+
+- **问题（用户提问：为何把「权限」放右侧面板而不是「设置」里？布局是否合理）**：`⚙` 一个模态里 13 个 tab 混装"设置 + 观测 + 资源 + 系统"，其中**只有 1 个真写配置**；而**会写文件**的「权限」却挂在右栏与"产物/应用"并列；更要命的是三个安全面**在 Web 上完全看不到**——沙箱目录（`config/sandbox.json` 的 `allowDirs/allowWriteDirs/allowReadDirs/denyCommands/stripSecretEnv`）此前**没有任何 HTTP 端点**、`protected_paths`、`never_auto_approve` 只能手改文件，改错没有反馈。另外"模型配置"与"设备"两处重复展示同一件事，且图片被拒时的错误提示指向了一个**并不存在**的路径「设置→设备→模型能力」
+- **拆分原则**：**设置 = 我改它**（会写配置、改变行为）；**控制台 = 我看它**（观测系统、以只读为主）
+- **设置（新面板，5 个 tab）**：模型（模型选择 / 温度 / max-tokens / 添加模型 + 模型能力卡与「检测图片能力」实测）、安全（权限规则 + 受保护路径 + 永不自动批准 + 命令黑名单 + 敏感环境变量清理 + 当前模式只读）、工作区（工作目录 + 沙箱的三个根 + 目录选择器）、交互（思考展示 / 技能自动沉淀 / 主题）、关于（版本 / 数据目录 / 存储 / 运行时）
+- **控制台（原系统面板）**：左导航按 **观测**（上下文·轨迹·审计·进化）/ **资源**（智能体·技能·MCP·插件·应用·进程·调度）/ **系统**（设备与运行时）分组；`配置` tab 整体迁出，`设备` tab 去掉模型能力卡的**编辑入口**（改为只读快照 + 指引到设置），其余 11 个 tab **一行未改**
+- **右栏 3 → 2 Tab**：产物 / 应用；「权限」迁入 设置→安全。发现性补偿：底部状态栏新增**权限模式徽章**（显示模式与项目级规则条数），一点直达 设置→安全
+
+### 新增可写面（每一条都带写入门 / 原子写 / 生效时机）
+
+- **`GET/POST /api/v1/sandbox`（新增）**：沙箱配置的读写面。GET 同时回带**读路径**与**写路径**、以及 `effective`（留空的根按工作目录回退后的**真正生效范围**，避免用户以为"空着 = 不限制"）；POST 部分更新语义，校验拒绝未知键（拼错 `allowWriteDir` 会被静默忽略 → 用户以为已放开写入）、非布尔、**相对路径**（浏览器不知道服务端 cwd，猜出来的范围没意义）、空条目与多行命令。**写路径始终跟随 `--dir`**（与权限配置一致）：读取允许回落到安装目录配置，写入绝不落到安装包
+- **`/api/v1/permissions` 扩展**：GET 新增 `protectedPaths`（`fromConfig` / `defaults` / `effective`）、`neverAutoApprove`、`mode`；POST 新增 `set-protected-paths` / `set-never-auto-approve`。**移除内置基线项必须显式 `acknowledge`**——文件里的 `protected_paths` 是**整体替换**语义（`bootstrap` 用 `?? DEFAULT_PROTECTED_PATHS`），"少传一条"就等于静默丢掉一层保护，因此这道确认放在**服务端强制**（而不是只靠前端弹窗），前端再用生效清单回填草稿
+- **`PermissionModel` 新增 `setProtectedPaths` / `setNeverAutoApprove`**：清单原本只在构造时读入，Web 改完文件若不重启就是"看起来改了、其实没生效"；归一化规则与构造函数逐字一致（反斜杠转正斜杠 + 小写），避免同一份配置因入口不同而判定不同
+- **`POST /api/v1/config` 补上写入门**（跨站 403 → 缺 token 401 → 参数 400）：此前它是**无门写面**，而设置页的模型与交互两组都要写它。已核实调用方只有 Web 自身（`app-bridge` 只走 `/apps/:id/bridge`），收口不打断应用；`SystemPanel` 的旧调用同步补 token
+- **生效时机（逐条核实，不是推测）**：沙箱配置**立即生效**（`loadSandboxPolicy()` 在每次工具调用时现读磁盘，`src/tools/builtin.ts:27/437/754`）；权限规则与两个安全清单**立即生效**（落盘后同步更新运行中的模型）；`/config` 立即生效。UI 文案与之一致，不写"重启后生效"这种含糊话
+
+### 工程整理
+
+- 抽出 `src/security/json-file.ts`（`readJsonObject` / `writeJsonAtomic`）：权限与沙箱两处都要"读全量 → 改一处 → 原子写回"，各写一份就是两套"保留 BOM/行尾/权限位/清理遗留临时文件"的逻辑。`permission-memory` 改为复用后行为不变（19 个既有用例全绿）
+- Web 侧新增 `lib/stores/shell.svelte.ts`（设置/控制台入口与 tab 深链，避免三处各自 holds 一个 open 变量）与 `lib/stores/settings.svelte.ts`（`/config` 与 `/sandbox` 两个写面的**唯一**实现：模型与交互、安全与工作区各自读同一份，不重复 fetch/错误处理）
+- `PermissionsPanel` 由"右栏 Tab"改为"设置里的 section"：**去掉自带高度与 `overflow-y:auto`**（否则与外层设置面板形成双层滚动——上一轮刚踩过）
+- 修正 `src/server.ts` 的错误提示：图片输入被拒时指向实际存在的「设置→模型→模型能力」
+- **测试**：新增 `test/settings-api.test.ts`（10 例：沙箱读写与三类校验、写路径跟随 `--dir`、未知键拒绝、安全清单的确认机制与**立即生效**、`/sandbox` 与 `/permissions` 的三道门、`/config` 收口）；`test/server.test.ts` 的 `/config` 两例补 token 并加门断言。全量 **1036 例 / 68 文件**全绿，`svelte-check` 0 错
+- **明确不做**（写进 `plans/web-ia-restructure.md`）：不加权限模式的运行时切换（现无端点，模式属启动时决策，本次只读展示）；不给零调用方的死配置 `allowed_dirs` 做 UI；不合并"应用"与"应用预览"；不重写 `SystemPanel`（只搬不动）
+
+## 1.7.0 (2026-09-12)
+
+### 权限闭环与路径策略单点（Sprint 49：P1-4 + P1-7）
+
+- **路径策略单点**（`src/security/path-policy.ts`）：一处回答"这个路径能不能读/写"——读根（`allowReadDirs`，留空回退工作目录）、写根（`allowWriteDirs`）、**组件级真实路径解析**、开关与 fail-closed。命令沙箱（`terminal_exec` / `terminal_session`）与 fs 四件套共用同一套根解析与包含判定，不再各写一份
+- **修复两个实测缺陷**（先复现再修）：① `fs_read` / `fs_list` 此前**没有任何越界检查**，auto 模式下可静默读 `~/.ssh/id_rsa`、`.env` 与工作目录外任意文件；② `fs_write` / `fs_edit` 的越界判定是 `resolve()` 后的**词法**比较，工作目录内指向外部的符号链接/junction 可绕过（实测写入落在工作目录外，且审批层同样放行）——现按真实路径判定并拦截
+- **读边界收紧（行为变更）**：`fs_read` / `fs_list` 默认限制在工作目录内，拒绝原因是路径策略（并提示 `allowReadDirs`），需要越界读时在 `config/sandbox.json` 显式放宽；fs 读写边界**始终生效**，`sandbox.enabled: false` 只关闭命令层约束
+- **受保护路径对读同样生效**：`protected_paths`（`.env` / `.ssh` / `.git` / `id_rsa` 等）此前只对写入类工具强制确认，读 `.ssh/id_rsa` 在 auto/ask 模式下静默放行；现对 `fs_read` / `fs_list` / `fs_write` / `fs_edit` / `terminal_exec` / `terminal_session` 一律生效，无确认通道时拒绝
+- **权限记忆**（`src/security/permission-memory.ts`）：规则分**项目级**（`config/permissions.json` 的 `rules`，原子替换：临时文件 + `rename`，保留 BOM、其他字段与无法识别的条目）与**会话级**（内存，重启失效）；`PermissionModel` 规则带来源标注
+- **「始终允许」落进确认弹窗**：auto 模式的高危确认提供「始终允许（写入项目配置）」与「本会话始终允许」，选项顺序固定为 `1 允许 / 2 拒绝 / 3 项目级 / 4 会话级`（前两位不随功能变动，避免老习惯把"2"当成拒绝却拿到授权）；生成的规则带 `exact: true` 按**字面精确匹配**，撤销后立即恢复询问；规则 `ask`、`never_auto_approve`、受保护路径按设计每次都问，**不提供记忆选项**（提供也无效，属诚实性而非疏漏）
+- **写入前校验与 fail-closed**：格式非法、`never_auto_approve` 清单内工具写成 `allow`、`allow` 目标触及受保护路径（按路径段判定，`.gitignore` / `.github/*` 不再误伤）、`tool: "*"` 且无 `match` 的全局 allow → 拒绝并回显原因；配置文件不是合法 JSON / 顶层非对象 / 文件缺失 → 一律拒绝写入，原文件不动；记忆失败时仍放行本次，失败原因写审计（`permission:rule-add-failed`）。`deny` 不被任何后来添加的 `allow` 覆盖（求值仍 deny > ask > allow）
+- **撤销语义**：撤销 / 重置**先改内存再落盘**，文件损坏或缺失时规则在当前进程也立即失效并给出"重启后会重新生效"的 warning；同形规则不重复写入，撤销时盘上与内存同时删净（此前会出现"报成功但规则仍生效"）
+- **`/permissions` 命令**：无参数列出规则（动作 / 工具 / 目标 / 来源，会话级在最前即规则表顺序）；`allow|ask|deny <Tool>[(<glob>)]` 写项目级规则；`revoke <序号>` 撤销（按来源分别写回文件或清内存）；`reset` / `clear-session` 清空两级
+- **HTTP 与 Web**：新增 `GET/POST /api/v1/permissions`（列出 / `add|revoke|reset|clear-session`，错误码 400/404/405/503 并回带当前清单）；Web 右侧栏新增「权限」Tab（`PermissionsPanel.svelte`）：规则表 + 来源徽标 + 新增/撤销/清空；规则变更写审计（`permission:rule-added` / `rule-removed` / `rules-reset`）
+- **测试与门禁**：全量 **989 例 / 65 文件** 全绿（第一轮收口时 975），`npm run verify` 一条命令通过（exit 0），`svelte-check` 0 错误 65 warnings（与基线持平）；无链接权限的机器上 978 通过 / 11 跳过（`AIW_NO_LINKS=1` 复现）。配置→fs 工具接线用例用真实 `config/sandbox.json` 走一遍（此前的策略注入会短路配置读取，把读写根接反也测不出来——已用变异测试确认新用例能拦住）
+- **诚实边界**：`sandbox.json` 仍是**策略级**防线（非 OS 级隔离）；命令沙箱不覆盖解释器脚本体内部写入、未列举程序、MCP/插件工具的文件写入；`terminal_exec` 写目标判定为启发式；本机其他进程直接改配置文件不在防护范围；`config/permissions.json` 仍是 git 跟踪文件，手工编辑后被 `git checkout` 会回滚；需要链接权限的用例按能力探测显式跳过（`AIW_NO_LINKS=1` 可复现无链接环境）
+
+### 代码审查修复（第一轮：边界与撤销）
+
+> 本 Sprint 的功能代码经三方独立对抗式审查 + 自查，发现并修复以下缺陷；每条都补了可复现的反例用例。
+
+- **路径解析 fail-open（高）**：旧实现把"存在但解析不出真实路径"当成"路径不存在"逐级剥离，退化成词法判定——悬空符号链接（实测可把内容写到工作目录外）与 40+ 层路径（实测越界成功）都能绕过写根。现改为从盘根**逐组件解析**：每个存在的组件都 `realpath`，`..` 在解析之后才弹出（`link\..\x` 与内核语义一致），悬空链接 / 链接环 / 权限不足 / 组件数超限一律返回"无法解析"并按拒绝处理
+- **命令层 `..` 语义（中）**：`checkWriteTargets` 先前对 token 做 `resolve()` 词法折叠，而 shell 拿到的是原文（POSIX 上是真实逃逸路径）。现按原样拼接后交给同一套组件级解析；`~`（PowerShell 主目录）与 `$`、`%` 一并 fail-closed
+- **junction 绕过规则与受保护路径（高）**：审批层用词法路径判定规则与 `protected_paths`，路径策略用真实路径，二者不一致——实测工作目录内一个 junction 即可绕过 `fs_write(*.git*)` deny 规则并改写 `.git/config`。现审批层对 fs 类目标先 `realpath` 再匹配
+- **allow 规则短路危险检测（高）**：`allow` 命中即免确认发生在 danger-detector 之前，一条通配 allow（含跨源 HTTP 写入的 `tool:"*"`）即可永久关闭高危确认。现危险相关工具（`terminal_exec` / `terminal_session` / `fs_write`）仍跑危险检测，只有交互产生的 `exact` 规则与 `--yes`（进程内开关，不落盘、不可从 HTTP 配置）可豁免；`tool:"*"` 且无 `match` 的规则拒绝写入
+- **记忆规则被 `*` 放大（高）**：确认弹窗把命令文本原样当 glob 存，对 `rm -rf build/*` 点"始终允许"后实测还能放行 `rm -rf build/../../../important`。现弹窗生成的规则带 `exact: true`，按字面精确匹配
+- **撤销语义（高/中）**：撤销 / 重置先前"先写盘再改内存"，文件损坏时返回失败但规则仍生效（"可撤销"是假的）；重复规则撤销后盘上删净、内存仍留一条。现改为内存先撤 + 落盘失败仅告警（warning 说明重启后会回来），同形规则去重、撤销时两侧同时删净
+- **伪造确认值（高）**：`confirm()` 对 `remember` 用 non-null 断言且不校验返回值来源，客户端伪造 `allow_project` 可让 plan 模式的确认抛 `TypeError`。现 `confirmResponse` 校验值必须属于该次请求提供的选项，服务层未提供记忆选项时按拒绝处理；选项顺序固定为 `允许 / 拒绝 / 项目级 / 会话级`
+- **`terminal_session` 未纳入保护（中）**：既不在受保护路径集合，也不走危险检测（实测读 `.ssh/id_rsa`、`rm -rf /` 零确认）。现与 `terminal_exec` 同等对待
+- **`isInsideDir` 误伤（低）**：`rel.startsWith("..")` 把 `..data/f.txt` 这类合法名判为越界，现按 `..` 加分隔符精确判断
+- **审计补口（低）**：记忆失败写 `permission:rule-add-failed`（`proceed=true` 时 hook 会丢弃 message，审计是唯一可靠通道）
+
+### 代码审查修复（第二轮：权限面收口）
+
+- **写接口的来源校验与进程 token（高）**：新增的 `POST /api/v1/permissions` 此前无来源校验——任意网页在 `--server` 运行时即可持久化规则（实测 `OPTIONS` 回 `ACAO:*`、跨源 POST 写入 `tool:"*"` allow，此后 `rm -rf /`、`shutdown /s` 全部零确认）。现写操作需通过 ①`Sec-Fetch-Site` 非 `cross-site`（缺失时回退 `Origin` 与 `Host` 比对）②请求头 `X-AiWorker-Token` 等于本进程 token；token 注入 `index.html`（该响应移除 `ACAO:*`，跨源页面读不到），并写入 `<dataDir>/server-token`、启动日志打印。`GET` 只读接口保持开放（与 `/audit`、`/status` 一致）
+- **配置路径跟随 `--dir`（写入侧）**：项目级规则**始终**写到 `<--dir>/config/permissions.json`，不存在时按需创建（以启动目录配置为模板，含受保护路径等基础策略），创建后读取来源自动切到项目配置；`<--dir>` 下同名文件若不含任何权限键（别的工具的 `permissions.json`）则拒绝覆盖。**启动目录/安装目录的配置不会被 Agent 授权动作改写**——此前实测（端到端冒烟）一次跨源请求就把规则写进了仓库里被 git 跟踪的 `config/permissions.json`，`git checkout` 会静默回滚它。`config/sandbox.json` 同样按 `<--dir>` → 启动目录 → 包内的顺序解析（修复"全局安装或 `--dir` 指向别处时用户配置不生效"）
+- **跨进程一致性**：按文件 `mtime`/`size` 懒重载，权限判定前自动检查——CLI 或另一个进程写入的 deny 对运行中的 server 立即生效；文件不可读时保留当前规则并告警（不静默丢 deny，也不静默清空）
+- **配置缺失/损坏不再静默失去保护**：此前 `bootstrap` 解析失败即 `permConfig = {}`，`protected_paths` 与 `never_auto_approve` 变空（fail-open）；现回落到**内置受保护路径清单**并打印告警
+- **审计归属**：规则变更记录 `agentId` / `sessionId`（确认弹窗触发的记在该会话上，CLI 记为用户操作）；同时修复 `AuditLog.queryRecent/queryBySession` 返回 SQL 行（`agent_id`）却被当作 `agentId` 使用的问题——审计面板的会话列此前恒为空
+- **后台任务立即拒绝**：`job-runner` 此前只是"不注册"确认通道，实际会回落到 stdin 交互提示（受保护读白等 30 秒，且可能在提示里选到持久化授权）；现显式安装"立即拒绝"provider（确认与提问），任务结束恢复
+- **写入副作用**：写回保留原文件 BOM、**行尾风格**、尾换行习惯与权限位；写临时文件后 `fsync` 再 `rename`；顺手清理超过 1 小时的遗留 `permissions.json.tmp-*`
+- **保留设备名 / ADS**：`fs_write("NUL" / "CON" / "a.txt:stream")` 此前回报"已写入文件"（内容被丢弃）；现直接拒绝
+- **端点细节**：非法 `scope`（`"proj"`、`"Project"`）一律 400，不再静默降级为 session 或退化成"不限来源"；`GET /permissions?x=1` 不再 404
+- **规则顺序固定**：会话级在前、项目级在后（新增与文件重载同一顺序），`/permissions` 列表序号与规则表一致；CLI 新增 `revoke <序号> --project|--session` 来源限定（不符即拒，不撤错）
+- **Web 面板**：展示 `warning`（如"配置文件未更新，重启后会重新生效"）、稳定 `{#each}` key、撤销/清空按钮 in-flight 禁用
+- **测试**：新增/扩充反例——跨站与 token 校验、`?x=1` 路由、非法 scope、配置路径优先级与"跟随 `--dir` 首建模板"、mtime 重载、审计归属、写回风格（BOM/CRLF/权限位）、保留设备名、`--dir` 沙箱配置解析、后台任务立即拒绝、CLI 来源限定撤销；**端到端冒烟**（真实 `dist` + 真实 HTTP）复核 403/401/200、token 注入、懒重载与"仓库配置未被改动"
+
+### 代码审查修复（第三轮：测试在受限机器上的硬失败）
+
+> 由用户在本机跑 `npm test` 复现，非本机进程环境差异：该机器能建 junction（无需特权）但**建不了文件符号链接**（Windows 无开发者模式/管理员时 `symlinkSync(..., "file")` 报 EPERM）。
+
+- **链接用例的硬失败（中）**：`test/path-policy.test.ts` 与 `test/tools.test.ts` 里用 `"file"` 创建悬空链接的两处用例，在无特权机器上直接抛 `EPERM` 而**不是 skip**——同一份代码在我这儿绿、在用户机器上红，属测试缺陷而非产品缺陷。现改为：悬空链接统一走 `makeDanglingLink`（Windows 用 junction，不需要开发者模式），链接能力抽成 `test/helpers.ts` 的 `makeDirLink` / `makeFileLink` / `makeDanglingLink` 与 `DIR_LINK_SUPPORTED` / `FILE_LINK_SUPPORTED` / `DANGLING_LINK_SUPPORTED` 探测，相关用例一律 `it.skipIf` / `describe.skipIf`
+- **同类隐患一并收口**：`test/sandbox.test.ts` 与 `test/approval-service.test.ts` 里三处 junction 用例此前是"建不出就 `expect.fail`"，同样会在无链接权限的机器上变红；现改为能力探测 + skip
+- **失败语义不让步**："解析失败一律拒绝"拆成两个用例——**组件数超限**（600 层不存在组件，无需任何链接权限）与**悬空链接 + 链接环**（`a → b → a`），后者在无链接能力时跳过；这样受限机器仍覆盖 fail-closed 判定，而不是整条用例消失
+- **可复现**：`AIW_NO_LINKS=1`（无任何链接能力）与 `AIW_NO_FILE_LINKS=1`（仅文件符号链接失败，即无开发者模式的 Windows，本次用户机器即此情形）强制对应创建失败。实测：前者全量 978 通过 / 11 跳过，后者全量 **989 通过 / 0 跳过**（受限机器上覆盖不缩水），两者 `exit 0`
+
+### 设备面板改为动态探测与模型视觉能力实测（用户反馈）
+
+- **问题**：`default` 换成支持视觉的 `deepseek-v41-flash` 后，设备面板仍显示"不支持视觉"——面板只认 `config/models.json` 的 `vision: true`，而**同一个开关**还决定 `/chat` 能否接收图片（后果是带图请求被 400 拒绝）。配置声明与实际能力脱节时，界面既不报错也不提示怎么查
+- **模型能力三级判定**：实测缓存（按**模型名**失效）→ 配置声明 → 未声明（明确报"未检测"并给出操作指引），不再把"没声明"当成"不支持"静默处理；判定结果与 `/api/v1/chat` 的图片门禁**同源**
+- **实测探针**：`ModelRouter.probeVision()` 真实发一次 1×1 PNG（data URI）请求，`thinking:false` + 12 token 上限；只有端点**明确**报图片/多模态不支持才返回 `supported=false`，鉴权失败、网络错误、超时一律返回 `null`（"无法判定"），不猜；适配器不理会 `AbortSignal` 时由硬超时兜底（实测 120ms 强制超时 → "无法判定"）
+- **新增写面**：`POST /api/v1/devices/probe`（`{kind:"model-vision"}`）按既有写面收口——跨站 403 → `X-AiWorker-Token` 401 → 参数 400，**未过门不调用模型**（测试断言 `calls === 0`）；结果写入 `<dataDir>/device-probe.json`，写失败降级为 warning 不影响结论
+- **其余卡片同样实测**：运行时（Node/平台/架构/CPU/内存/PID/运行时长/数据目录可写性——真实写文件探测而非 `accessSync`）、存储（真实建库验证 SQLite 版本与 FTS5，失败原因原样展示）、ASR/TTS（缺失文件逐个列出）
+- **面板**：模型能力卡增加来源徽标（实测 / 配置声明 / 未检测）、端点、采样参数与实测时间；新增【检测图片能力】（提示"一次极小图片请求"）与【重新检测】（不调用模型）；换模型后旧实测结果标注"此结果失效"
+- **配置**：`config/models.json` 的 default 补 `"vision": true`（按用户确认该模型支持视觉）；即使不写这一行，实测通过后图片输入同样生效
+- **测试**：新增 `test/devices.test.ts`（18 例：缓存读写与损坏容错、三级判定、过期失效、运行时/存储实测、探针成功/拒绝/鉴权/超时，并断言请求体确为 1×1 PNG 且关思考、低上限）+ `test/server.test.ts`（探测端点三道门、落盘后被 `GET /devices` 采纳、`/chat` 图片门禁按实测放行）
+- **实测顺手抓到一处配置错误**：探针首次运行即发现 `config/models.json` 的 `model` 是 `deepseek-v41-flash`，官方端点返回 `400 The supported API model names are deepseek-flash, deepseek-v4-pro`——**该名字下所有对话请求都会失败，不只是图片**。用临时配置对候选名各实测一次：`deepseek-v4-flash`（原值）/ `deepseek-flash` / `deepseek-v4-pro` 均"接受图片输入"；按用户选择把 default 改为 `deepseek-flash`，并同步改掉 `contextWindow` 表里指向旧模型名的键
+- **采样参数未配置时不再显示成 0**：`temperature` / `maxTokens` 未在 profile 中配置时保持 `undefined`（面板显示"默认"），此前被兜底成 `0` 会误导
+
+### 产物工作台：右栏「文件变更 / 文档预览 / 回滚」三合一（Sprint 50）
+
+- **问题**：同一批产出被拆在三个 Tab 里各拉各的数据源（`/diffs`、`/docs`、`/checkpoints`），用户要在三处找同一个文件；更关键的是**工具产物事件里的 artifacts 从未被任何端点读出**（`projectTrace` 投影 `tool/result` 时把它丢了），导致**图片/音视频/检索链接只在对话流卡片里闪一次，事后无处可查**
+- **数据模型**：`src/types.ts` 新增产物工作台类型（`ArtifactItem` / `ArtifactWorkspace` / `DiffFile` / `DocEntry` 等下沉到领域类型），统一产物项带 `sources[]`（工具产物 / 文件系统快照 / 文档索引 / 回合检查点）与 `change/added/removed/restorable/turn/tool`
+- **聚合**（`src/core/artifacts.ts`，纯函数）：`GET /api/v1/artifacts?sessionId=&scope=session|all` 合并四源。去重键 `project:<工作目录相对路径>`——**快照存的是绝对路径而工具产物给的是 `root+rel`，必须先用会话工作目录归一化**（实测同一文件能正确合成 `sources=tool+snapshot+checkpoint` 一条）；字段按权威源取值（kind/mime/size 取工具、added/removed/change 取快照、restorable/turn/tool 取检查点）；已删除文件仍列出并标注；老会话/无回滚服务/跨会话截断都写进 `degraded`
+- **P0.1 修复**：`projectTrace` 的 `tool/result` 分支带上 `artifacts`（轨迹面板此前同样取不到产物）
+- **文档索引复用**：`/docs` 的扫描逻辑抽成 `src/core/docs-index.ts`（只收 `.md`、深度/数量/大小上限原样保留），`/docs` 与新端点共用一份实现
+- **后端其它**：`replayEvents` 的消息带上 `seq`（Web 据此把用户消息映射到回合，做「从这里重新开始」）；`GET /artifacts` 缺 `sessionId` 或非法 `scope` → 400，未知会话 → 空结果而非 500
+- **前端右栏 5 → 3 Tab**：新增「产物」（`ArtifactsPanel` + `ArtifactList` + `ArtifactDetail` + `DiffView` + `TimelineStrip`），删除 `FileDiffPanel` / `DocPreviewPanel` / `RewindPanel`；「应用预览」按用户裁定改名「**应用**」；「权限」Tab 暂留（其迁移属下一次 IA 改造）
+- **交互**：回滚从"独立面板"降级为**产物面板底部的时间线**——点选回合只**高亮**该回合产物（不隐藏其他，避免"东西不见了"）；范围默认「仅代码」（危险面最小）并保留「代码 + 对话」，两者均先 `dry-run` 预览（按所选范围预览，数字与实际一致）再二次确认；`terminal_exec` 不可回滚项仍列「跳过」
+- **「仅对话回滚」下移到对话流**：用户消息 hover 显示「从这里重新开始」，按 `messageSeqBefore` 把消息映射到回合，同样先预览后确认；无序号（本地新发未刷新）或超 20 轮窗口时**明确提示**而不是猜一个回合
+- **查看器复用**：`.md` → `DocRenderer`、文本/代码 → `/files` 原文、图片内联、diff 行级高亮、链接卡；视频/音频/PDF/Office 复用既有 `FilePreview` 窗口（含 mammoth/SheetJS 转换），不重造第二套渲染
+- **测试**：新增 `test/artifacts.test.ts`（15 例：判型与路径归一化、三源去重与权威源、link 去重、deleted 保留、二进制降级、新增/修改判定、范围差异、跨会话截断、时间线排序、`collectDocs` 语义、端点 400/未知会话）；`test/session-events.test.ts` 补 `seq` 断言（回放消息带 seq 且单调）
+- **用户实测发现的缺陷（已修）**：产物面板里点击 **项目文档**时永远停在"加载文档…"。两个原因叠加：① 新面板给 `DocRenderer` 传的是 `rel`，漏了 `project:` 前缀——`DocRenderer` 会把无前缀路径当**会话文档**去 `data/docs/` 找，请求 `root=session` 实测 404（正确请求 `root=project` 实测 200 / 88 行正文）；② `DocRenderer` 对非 2xx **直接 `return`**，界面因此永久停在加载态而不是报错。修法：`toDocKey(root, rel)` 收成 `$lib/artifacts.ts` 的唯一实现（`FilePreview` 原本自己拼字符串、写法正确但属于同一处逻辑两份实现，一并改为调用它）；`DocRenderer` 增加 `error`/`loaded` 状态，404 显示"文档不存在或不在 <root> 根内"、空文档显示"（文档为空）"，不再把失败伪装成加载中
+- **用户实测发现的缺陷（二）：产物面板「在对话中查看」点击无反应**。同样是两层**静默**失效叠加：① 消息锚点 `id="msg-N"` 只加在**用户**消息上，而工具卡片（产物所在）在**助手**消息上 → `getElementById` 返回 `null`，`el?.scrollIntoView()` 什么都不做；② **刷新后时间线里根本没有 artifacts**——`replayEvents` 构造 tool 消息时没带 `artifacts`、`loadRemoteMessages` 也没往时间线项上拷（只有实时流那条路径会写）→ 匹配失败后提示只写在**面板顶部**，用户在详情区看不到。修法：`replayEvents` 的 tool 消息带上 `artifacts`（实测会话 `cmtvk4fo`：7 条 tool 消息中 4 条带产物，样例正是被点的那篇 `reports/…md`）+ `loadRemoteMessages` 写入时间线 + 锚点覆盖**所有**消息 + 结果提示就地显示在详情区（找不到卡片时说清原因：本轮之前写入 / 已回滚 / 来自其他会话），不再有"静默失败"
+- **产物面板左列表 / 右详情支持拖拽调宽**（用户反馈：此前是写死的 `minmax(150px, 40%)`）：与 `App.svelte` 右栏 resizer 同一套 pointer 交互（`pointerdown` + window 监听 move/up，clamp 到 `140px ~ 容器宽-220px`），宽度持久化到 `localStorage`（`aiworker_artifacts_list_width`）；**双击或聚焦后按 `Home` 复位默认 40%**、`←/→` 每次微调 24px；分隔条改为**始终可见**的细线（hover/聚焦高亮）——用户找不到它说明发现性不足，不能只在 hover 时才出现。默认分裂比仍固定 40/60（不用 `flex: 1 1 auto`，避免长路径把详情挤窄）
+- **产物面板铺满可用高度**（用户反馈：预览下方大片留白 → 追加反馈：左列表同样如此）：此前我用**按视口高度裁剪**的写法限制内容区（`.aw-list max-height:46vh`、`.aw-detail max-height:52vh`、详情内 `.ad-pre/.ad-doc/.dv-lines` 同样是 `52vh`），结果是内容到 52vh 就截止、下面是死区，长文档还会在中间被裁断。现改为 **flex 铺满链条**：右栏是 flex 列 → `.aw { flex:1 1 auto; min-height:0 }` → `.aw-body` 同 → `.aw-list`/`.ad-viewer` 各自滚动、`.ad-doc { height:100% }` 给 `DocRenderer` 确定高度（它自身就是 `height:100%` + 内部滚动，缺的只是确定高度）；时间线用 `flex:0 0 auto` 不被压缩。**左列表另有一处叠 bug**：`.aw-list` 与 `ArtifactList` 的 `.al` **两层都 `overflow-y: auto`**，且 `.al` 没有 `flex:1 1 auto` → 列表会长到窗口底部、最后几行被时间线压住且够不着。现改为**单层滚动**（只 `.aw-list` 滚动）+ `.aw-list { display:flex; flex-direction:column }` + `.al { flex:1 1 auto; min-height:0 }`。构建后 CSS 已核对：`.aw-body/.aw-detail/.ad-viewer/.ad-doc/.aw-list/.al` 规则就位，产物面板内 `max-height:52vh` 归零、`.al` 不再有 `overflow`
+- **修复 Markdown 大纲定位失效**（用户反馈：点大纲条目不跳转）：`jumpTo` 原来**假设 `.dr-render` 就是滚动容器**，用 `renderEl.scrollTop + (e.top - r.top)` 手算偏移；Sprint 50 把外层改成 `.ad-viewer { overflow:auto }` + `.ad-doc { overflow:hidden }` 后，滚动可能落在别的祖先层，这个算术落空且**失败时没有任何反馈**（又是静默失败）。现改为沿祖先链找**第一个真正可滚动**的容器（`overflow-y ∈ auto|scroll|overlay` 且 `scrollHeight > clientHeight`）再滚，找不到才退回 `scrollIntoView`（配 `scroll-margin-top: 8px`）；锚点查找改为**先在本实例 DOM 内** `renderEl.querySelector('[id=...]')` 再回落 `document.getElementById`——同页出现第二个 DocRenderer 实例时不会再取错元素。找不到锚点时在**大纲列就地提示**，不再静默。顺带把大纲列从 `width:150px; flex-shrink:0` 改为 `flex: 0 1 150px; min-width: 92px`，窄面板下不再被挤出可视区
+- **修正「在对话中查看」的定位语义**（用户要求核对）：原实现用 `findIndex` **从对话开头**找含该路径的工具卡片，而产物项展示的 `turn` 是**最新**回合（快照/检查点后写覆盖，`listTurns` 升序确认）——文件被多次读写时会跳到**最早**那张卡片。实测会话 `cmtxr65k` 的 `web/sea-song.html` 被工具产物命中 **26 次**（条目 #2 … #17）：旧逻辑跳 #2（对话最上方），新逻辑跳 #17（最近一次）。同时把定位粒度从"整条助手消息"细化到**那张工具卡片**（`ToolCard` 增加 `data-call-id`，用 data 属性匹配避免 callId 特殊字符；一条消息含多张卡片时不再只闪整条）。`TimelineItem.id` 可能缺失 → 类型检查报错后改为回落到整条消息
+- **定位高亮从「闪一下」改为「持久标记 + 脉冲 + 多命中走查」**（用户反馈：1.6s 高亮太短、容易丢焦点）。设计取舍：**脉冲只负责吸引注意，持久环负责不丢焦点**——命中后加 `.artifact-focus`（主题色描边 + 淡底）**一直保留**，直到切换产物、按 `Esc` 或点「清除高亮」；开场另有 `.artifact-pulse`（2.4s）指向性脉冲，连续定位同一元素时用"移除→强制回流→再加"重启动画（否则第二次不触发），并尊重 `prefers-reduced-motion`（关动效时只剩静态环）。此外一个产物往往命中多处（实测 `web/sea-song.html` 命中 26 次），详情区现在显示「已定位：第 n/总数 处（1 = 最近一次）」并给出 **↑更早 / ↓更近 / 清除高亮**，可逐处走查；Esc 亦可清除。样式放在全局 `app.css`（原先的 `.msg-flash` 一次性动画已删除，避免两套机制并存）
+- **修正「在对话中查看」的定位粒度**（用户反馈：高亮框住了**整个中间对话区**，比之前的消息级还差）：根因不是高亮样式，而是**目标卡片根本不在 DOM 里**——`ToolsGroup` 把连续多个工具调用折叠成「工具调用 (N)」，且 `{#if open}` 折叠时**子卡片完全不渲染**，于是 `data-call-id` 查不到、回退到**整条消息容器**（长会话里那条消息极高，视觉上就是整个对话区被框住）。修法两条：① 新增 `focusToolCallId` store，定位前先置入该 callId，`ToolsGroup` 据此**自动展开**所在分组，`await tick()` 等渲染完成后再取卡片；② **取不到具体卡片时只滚动、绝不加环**，并就地说明"已滚动到该消息，但未找到具体工具卡片"——不再用大范围描边冒充定位。`clearFocus` 同时清空该 store
+- **修正定位高亮在「折叠分组内的卡片」上完全不可见**（用户反馈：最下面那张命中的卡片没有高亮）：两个原因叠加，且都只在这种卡片上暴露——① `ToolsGroup` 是 `.tools-group { overflow: hidden }`，而 `outline` 画在元素**外侧**，被祖先裁掉；② 组件样式 `.tool-card { background: var(--surface) }` 与全局 `.artifact-focus { background: … }` **同权重且更靠后**，把底色盖掉。结果：分组内卡片点上去视觉上毫无变化。修法：`outline-offset: -2px`（内侧描边，不受祖先裁剪）+ 底色改用 `box-shadow: inset 0 0 0 9999px`（inset 阴影绘制在内容之下，且不参与 `background` 的级联竞争）；脉冲同步改为 **inset 扩散**（原先向外扩散的 box-shadow 同样被裁）
+- **修正产物查看器的档位：图片/媒体「内容优先」，改动改为可切换**（用户反馈：SVG 是图片资源，产物面板却不预览）。先核实结论：SVG **本来就是**图片产物（工具侧 `svg → image/svg+xml → kind=image`，实测会话 `cmtvk4fob` 的三个 svg 产物事件即 `mime:"image/svg+xml",kind:"image"`，`/files` 也以 `image/svg+xml` 直出），错的是**查看器优先级一刀切**：`ArtifactDetail` 原先 `diff > 内容`，而 `diffMap` 是 `/diffs` **全量按路径**建索引（跨会话也命中），于是刚生成/改过的图（快照里 100+ 行全 `+` 的 SVG 源码）点开看到的是**满屏 `+ <svg …>`**，视觉上等同"不支持预览"；对话流里反而正常（`ToolCard → FilePreview → <img>`），两边表现不一致。修法：把「内容」与「改动」拆成**正交两档 + 段控切换**，默认档按 kind 定——**文本/代码（含 md）保持改动优先**（既有裁定不变），**图片/媒体内容优先**；图片档补 `onerror` 兜底（此前碎图无任何解释，`FilePreview` 早有"加载失败，请下载"，同一功能两套标准）与「文件已删除」的显式说明（不再发一次注定 404 的请求）。切换产物时档位复位，避免上一项的选档串到下一项。**追加修复（用户截图：切换按钮下边缘被切）**：两根因叠加——① `.ad` 是 flex 列，除查看器外各行默认 `flex-shrink:1`，而查看器的 `flex-basis:auto` 等于其内容高度（几百到几千 px），收缩量按「基准×因子」分摊，**小行也会被分到十几 px 的收缩**；行内文本溢出还看得见，但 `.ad-toggle` 当时有 `overflow:hidden`（为段控圆角），于是**只有它把收缩暴露成可见裁切**；② 按钮高度依赖行盒撑开 + 容器裁圆角，本身就有取整/裁切风险。修法：`.ad > *:not(.ad-viewer){flex:0 0 auto}`（`.aw > *:not(.aw-body)` 同理，工具条/时间线一并免疫）、**容器彻底去掉 `overflow:hidden`**（改为给首/末按钮各自圆角）、按钮改 `inline-flex + align-items:center + line-height:16px` 让高度由字高确定。构建后 CSS 已核对：`.ad-toggle` 无 `overflow`、`flex:0 0 auto` 就位
+- **HTML 产物新增 sandbox 渲染预览**（用户反馈：HTML/JS 这种文件切「内容」是否有必要、HTML 不支持预览吗）。先划清两件事：**「全文」不是多余的档**——改动档只含变更行、没有上下文（`src/hooks/handlers.ts` 的 LCS 只推 `+/-`），对**改过的文件**"看完整文件"与"看改了什么"是两个真实需求；但对**新增文件**（如 `+674 −0`）改动档本身就是全文，两档看着一样，所以旧标签「内容」既不准确也容易误解。现按 kind 把标签说清：`text → 全文`、`markdown/html → 预览`、`image → 图片`、媒体/PDF/Office → `说明`。同时补上真正缺的那一档：`.html/.htm` 走 **`HtmlPreview`（`<iframe sandbox="allow-scripts">`，绝不给 `allow-same-origin`）**，产物面板与文件预览窗**共用同一个 sandbox 实现**（新增 `web/src/components/HtmlPreview.svelte`），默认档 = 预览，源码与改动为可切换档
+- **安全面：`/files` 直接导航时对 HTML/SVG 追加 `CSP: sandbox` + 恒发 `nosniff`**。理由不是洁癖：`/api/v1/files` 与 Web **同源**，而 `index.html` 内联了 `window.__AIWORKER_TOKEN__`（该响应故意不带 ACAO）；Agent 写的 HTML 若以同源文档执行，`fetch("/")` 就能读到 token 再调权限写接口——**等于把"一个产物"变成"提权入口"**（同理，绝不能给 HTML 产物加"新标签打开"）。`fileSecurityHeaders()` 仅在**导航请求**（`Sec-Fetch-Dest: document|iframe`）上对 `text/html` 加 `sandbox allow-scripts`、对 `image/svg+xml` 加 `sandbox`，所以 `<img>` 与文档内图片不受影响；新增用例覆盖"导航加头 / 子资源不加头 / 非 HTML 不加头"三种情形。**如实标注边界**：opaque origin 下 `type="module"` 脚本与相对 `import` 会被拦，引用同目录兄弟资源的相对路径也不会解析（`/files?path=…` 的基址不是文件目录）——自包含单文件 HTML 不受影响，多文件站点需另加路径式预览路由（已记入设计文档待办）
+- **顺手修掉门禁里一个既有 flaky（P0-7）**：`test/memory.test.ts` 的 turn_logs 用例用两次独立的 `Date.now()` 生成 `startedAt/finishedAt` 再断言差值恰为 1000，跨毫秒即 1001/999（全量并行跑时偶发红，单跑必绿）。改为同一时间基准；`memory.test.ts` 连跑 5 次、全量 `npm run verify` 连跑 2 次均全绿
+- **诚实边界**：`/diffs` 是工作目录快照，可能含非本会话改动 → UI 打「文件系统快照」来源标并说明；「在对话中查看」因 WS `tool_result` 无 `callId`（既有局限）按路径匹配，精确化留待后续；跨会话工具产物只聚合有文件改动的最近 10 个会话并标注截断
+
 ## 1.6.0 (2026-09-12)
 
 ### P0 收口：headless 一键运行（`-p`）与检查点回滚（Sprint 48）

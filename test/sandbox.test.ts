@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { resolve, join } from "node:path";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { makeTestDir, setupEnv, teardownEnv, clearTools } from "./helpers.js";
+import { makeTestDir, setupEnv, teardownEnv, clearTools, makeDirLink, DIR_LINK_SUPPORTED } from "./helpers.js";
 import { toolRegistry } from "../src/core/tool-registry.js";
 import type { ToolContext } from "../src/types.js";
 
@@ -268,5 +268,63 @@ describe("19. 沙箱写入目标约束（Sprint 47）", () => {
     expect(checkCommand('echo "compare > C:\\Windows\\a.txt"', wdPath, wdPath, policy).allowed).toBe(true);
     expect(checkCommand(`cmd /c "echo x > ${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(false);
     expect(checkCommand(`powershell -Command "Out-File -FilePath ${outsidePath}"`, wdPath, wdPath, policy).allowed).toBe(false);
+  });
+});
+
+describe("20. 路径策略与命令沙箱同源（Sprint 49）", () => {
+  const wdPath = resolve(testDir, "pp-root");
+  const outsidePath = resolve(testDir, "pp-outside");
+
+  beforeAll(() => {
+    mkdirSync(wdPath, { recursive: true });
+    mkdirSync(outsidePath, { recursive: true });
+  });
+
+  it.skipIf(!DIR_LINK_SUPPORTED)("命令写入目标经符号链接越界被拦截（与 fs 工具同一真实路径判定）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const policy = loadSandboxPolicy(join(testDir, "not-exist.json"));
+    const link = resolve(wdPath, "esc");
+    rmSync(link, { recursive: true, force: true });
+    expect(makeDirLink(link, outsidePath)).toBe(true);
+    expect(checkCommand("Set-Content -Path esc\\pwned.txt -Value x", wdPath, wdPath, policy).allowed).toBe(false);
+    expect(checkCommand("echo hi > esc\\pwned.txt", wdPath, wdPath, policy).allowed).toBe(false);
+  });
+
+  it("allowReadDirs 不影响命令层写入约束（读根与写根相互独立）", async () => {
+    const { loadSandboxPolicy, checkCommand } = await import("../src/security/sandbox.js");
+    const path = writeConfig(JSON.stringify({ enabled: true, allowReadDirs: [outsidePath] }));
+    const policy = loadSandboxPolicy(path);
+    expect(checkCommand(`echo hi > "${resolve(outsidePath, "a.txt")}"`, wdPath, wdPath, policy).allowed).toBe(false);
+    expect(checkCommand(`echo hi > "${resolve(wdPath, "a.txt")}"`, wdPath, wdPath, policy).allowed).toBe(true);
+  });
+
+  it("配置 include allowReadDirs 的解析（默认空数组，留空回退工作目录）", async () => {
+    const { loadSandboxPolicy } = await import("../src/security/sandbox.js");
+    expect(loadSandboxPolicy(join(testDir, "not-exist.json")).allowReadDirs).toEqual([]);
+    const path = writeConfig(JSON.stringify({ enabled: true, allowReadDirs: [outsidePath] }));
+    expect(loadSandboxPolicy(path).allowReadDirs).toEqual([resolve(outsidePath)]);
+  });
+
+  it("配置路径跟随 --dir：工作目录优先于启动目录，无关同名文件被忽略", async () => {
+    const { resolveSandboxConfigPath } = await import("../src/security/sandbox.js");
+    const base = makeTestDir("sandbox-path");
+    const work = join(base, "work");
+    const cwd = join(base, "cwd");
+    mkdirSync(join(work, "config"), { recursive: true });
+    mkdirSync(join(cwd, "config"), { recursive: true });
+
+    writeFileSync(join(cwd, "config", "sandbox.json"), JSON.stringify({ enabled: true, allowWriteDirs: [cwd] }), "utf-8");
+    expect(resolveSandboxConfigPath(work, cwd)).toBe(join(cwd, "config", "sandbox.json"));
+
+    writeFileSync(join(work, "config", "sandbox.json"), JSON.stringify({ enabled: true, allowWriteDirs: [work] }), "utf-8");
+    expect(resolveSandboxConfigPath(work, cwd)).toBe(join(work, "config", "sandbox.json"));
+
+    // 工作目录里放一份"别的工具的" sandbox.json → 忽略并回落启动目录
+    writeFileSync(join(work, "config", "sandbox.json"), JSON.stringify({ unrelated: 1 }), "utf-8");
+    expect(resolveSandboxConfigPath(work, cwd)).toBe(join(cwd, "config", "sandbox.json"));
+
+    // 两边都没有 → 回落到包内 config/sandbox.json（存在 && 有已知键）
+    const empty = makeTestDir("sandbox-path-empty");
+    expect(resolveSandboxConfigPath(empty, join(base, "no-such"))).toContain("config");
   });
 });

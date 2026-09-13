@@ -49,14 +49,16 @@ describe("4. 会话存储 (SQLite + FTS5)", () => {
   });
 
   it("turn_logs 写入与查询（当前会话）", () => {
+    // 两次 Date.now() 之间可能跨毫秒 → 固定成同一基准，去掉挂钟竞态（P0-7 确定性）
+    const now = Date.now();
     sessionStore.createTurnLog({
       id: "turn-test-1",
       sessionId: session.id,
       agentId: "test-agent",
       seq: 1,
       userInput: "测试问题",
-      startedAt: Date.now() - 1000,
-      finishedAt: Date.now(),
+      startedAt: now - 1000,
+      finishedAt: now,
       iterations: 3,
       toolCallsTotal: 2,
       toolCallsSuccess: 2,
@@ -71,7 +73,6 @@ describe("4. 会话存储 (SQLite + FTS5)", () => {
     expect(turns[0].iterations).toBe(3);
     expect(turns[0].finishedAt - turns[0].startedAt).toBe(1000);
   });
-
   it("getRecentTurnLogs 回退到最近会话", () => {
     const recent = sessionStore.getRecentTurnLogs(5);
     expect(recent.length).toBeGreaterThanOrEqual(1);

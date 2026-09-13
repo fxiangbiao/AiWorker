@@ -24,7 +24,7 @@
   let sessionId = $derived.by(() => store.activeChatId);
 </script>
 
-<div class="tool-card" class:error={!!tool.error}>
+<div class="tool-card" class:error={!!tool.error} data-call-id={tool.id}>
   <div class="tc-header">
     <span class="tc-icon">&#9881;</span> {tool.name || "tool"}
   </div>

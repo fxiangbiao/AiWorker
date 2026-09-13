@@ -5,8 +5,8 @@
 import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { resolve } from "node:path";
-import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
 import { jobRunner } from "../src/core/job-runner.js";
@@ -285,6 +285,47 @@ describe("HTTP Server", () => {
     }
   });
 
+  it("GET /files 安全响应头：nosniff 恒发；HTML/SVG 仅在文档导航时加 CSP sandbox", async () => {
+    const projDir = resolve(testDir, "proj-sec");
+    mkdirSync(projDir, { recursive: true });
+    const html = "<!doctype html><html><body><script>fetch('/')</script></body></html>";
+    writeFileSync(resolve(projDir, "game.html"), html, "utf-8");
+    writeFileSync(resolve(projDir, "pic.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>", "utf-8");
+    writeFileSync(resolve(projDir, "note.md"), "# 文档", "utf-8");
+
+    const srv = startServer({ ...mockDeps(), workingDir: projDir, dataDir: resolve(testDir, "data-sec") } as never, 0);
+    await new Promise<void>((r) => srv.once("listening", () => r()));
+    const port = (srv.address() as AddressInfo).port;
+    const b = `http://127.0.0.1:${port}`;
+    const url = (name: string) => `${b}${API}/files?root=project&path=${encodeURIComponent(name)}`;
+    try {
+      // ① 直接导航（标签页/iframe 打开）：HTML 必须降级为 opaque origin，否则同源脚本可读 index.html 里的 API token
+      const nav = await fetch(url("game.html"), { headers: { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document", Accept: "text/html" } });
+      expect(nav.status).toBe(200);
+      expect(nav.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+      expect(nav.headers.get("x-content-type-options")).toBe("nosniff");
+
+      // iframe 载入同样是导航语义（产物面板/预览窗都用 sandbox iframe）
+      const framed = await fetch(url("game.html"), { headers: { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe" } });
+      expect(framed.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+
+      // SVG 直接导航：静态降级（不给 allow-scripts）
+      const svgNav = await fetch(url("pic.svg"), { headers: { "Sec-Fetch-Dest": "document" } });
+      expect(svgNav.headers.get("content-security-policy")).toBe("sandbox");
+
+      // ② 子资源请求（<img src> / fetch 取原文）：不加 CSP，避免破坏既有图片与文本预览
+      const subresource = await fetch(url("game.html"), { headers: { "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image" } });
+      expect(subresource.headers.get("content-security-policy")).toBeNull();
+      expect(subresource.headers.get("x-content-type-options")).toBe("nosniff");
+
+      const textFetch = await fetch(url("note.md"));
+      expect(textFetch.headers.get("content-security-policy")).toBeNull();
+      expect(textFetch.headers.get("x-content-type-options")).toBe("nosniff");
+    } finally {
+      srv.close();
+    }
+  });
+
   it("GET /audit 返回审计记录列表（limit/action 参数）", async () => {
     const resp = await fetch(`${base}${API}/audit?limit=50&action=app:`);
     expect(resp.status).toBe(200);
@@ -292,18 +333,133 @@ describe("HTTP Server", () => {
     expect(Array.isArray(data.entries)).toBe(true);
   });
 
-  it("GET /devices 返回设备状态（媒体通道 + 模型能力）", async () => {
+  it("GET /devices 返回设备状态（媒体通道 + 模型能力 + 运行时 + 存储，全部实测）", async () => {
     const resp = await fetch(`${base}${API}/devices`);
     expect(resp.status).toBe(200);
     const data = (await resp.json()) as {
-      asr: { enabled: boolean };
-      tts: { engine: string };
+      asr: { enabled: boolean; missing: string[] };
+      tts: { engine: string; missing: string[] };
       mediaServer: { active: boolean };
-      model: { current: string; vision: boolean };
+      model: { current: string; vision: boolean; visionSource: string; provider: string; temperature: number };
+      runtime: { node: string; cpus: number; dataDirWritable: boolean };
+      storage: { ok: boolean; fts5: boolean; sqlite: string };
     };
     expect(data.asr.enabled).toBe(false);
     expect(["edge-tts", "sherpa"]).toContain(data.tts.engine);
+    expect(Array.isArray(data.asr.missing)).toBe(true);
+    expect(Array.isArray(data.tts.missing)).toBe(true);
     expect(typeof data.model.vision).toBe("boolean");
+    // 替身 router 未声明视觉 → 判定为"未声明"而不是静默 false
+    expect(data.model.visionSource).toBe("unknown");
+    expect(data.runtime.node).toMatch(/^v\d+/);
+    expect(data.runtime.cpus).toBeGreaterThan(0);
+    expect(data.runtime.dataDirWritable).toBe(true);
+    expect(data.storage.ok).toBe(true);
+    expect(data.storage.fts5).toBe(true);
+    expect(data.storage.sqlite).toMatch(/^\d+\.\d+/);
+  });
+
+  it("POST /devices/probe：跨站 403 / token 401 / 非法 kind 400；通过后落盘并被 GET /devices 采纳", async () => {
+    const dir = resolve(testDir, "devices-probe");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    let calls = 0;
+    const router = {
+      ...mockModelRouter(),
+      getCurrentModel: () => "deepseek-flash",
+      getVisionDeclaration: () => undefined,
+      probeVision: async () => {
+        calls++;
+        return { supported: true, latencyMs: 12, model: "deepseek-flash", detail: "端点接受了图片输入（实测）" };
+      },
+    };
+    const local = startServer({ ...mockDeps(), dataDir: dir, modelRouter: router } as never, 0);
+    await new Promise<void>((r) => local.once("listening", () => r()));
+    const port = (local.address() as AddressInfo).port;
+    const b = `http://127.0.0.1:${port}`;
+    try {
+      const token = readFileSync(join(dir, "server-token"), "utf-8");
+      const post = (headers: Record<string, string>, body: unknown) =>
+        fetch(`${b}${API}/devices/probe`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify(body),
+        });
+
+      expect((await post({}, { kind: "model-vision" })).status).toBe(401);
+      expect((await post({ "x-aiworker-token": "bad" }, { kind: "model-vision" })).status).toBe(401);
+      expect(
+        (await post({ "x-aiworker-token": token, origin: "http://evil.example" }, { kind: "model-vision" })).status,
+      ).toBe(403);
+      expect(
+        (await post({ "x-aiworker-token": token, "sec-fetch-site": "cross-site" }, { kind: "model-vision" })).status,
+      ).toBe(403);
+      expect((await post({ "x-aiworker-token": token }, { kind: "other" })).status).toBe(400);
+      expect(calls).toBe(0); // 三道门未过时绝不真调模型
+
+      const ok = await post({ "x-aiworker-token": token, origin: `http://127.0.0.1:${port}` }, { kind: "model-vision" });
+      expect(ok.status).toBe(200);
+      const data = (await ok.json()) as {
+        persisted: boolean;
+        probe: { supported: boolean; model: string };
+        status: { model: { vision: boolean; visionSource: string } };
+      };
+      expect(calls).toBe(1);
+      expect(data.persisted).toBe(true);
+      expect(data.probe.supported).toBe(true);
+      expect(data.status.model.vision).toBe(true);
+      expect(data.status.model.visionSource).toBe("probe");
+
+      const cached = JSON.parse(readFileSync(join(dir, "device-probe.json"), "utf-8")) as { model: string };
+      expect(cached.model).toBe("deepseek-flash");
+
+      const st = (await (await fetch(`${b}${API}/devices`)).json()) as {
+        model: { vision: boolean; visionSource: string };
+      };
+      expect(st.model.vision).toBe(true);
+      expect(st.model.visionSource).toBe("probe");
+    } finally {
+      local.close();
+    }
+  });
+
+  it("POST /chat 图片门禁按实测能力判定：未实测时给出可操作指引，实测通过后放行到后续流程", async () => {
+    const dir = resolve(testDir, "chat-vision");
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const router = {
+      ...mockModelRouter(),
+      getCurrentModel: () => "deepseek-flash",
+      getVisionDeclaration: () => undefined,
+    };
+    const local = startServer({ ...mockDeps(), dataDir: dir, modelRouter: router } as never, 0);
+    await new Promise<void>((r) => local.once("listening", () => r()));
+    const port = (local.address() as AddressInfo).port;
+    const b = `http://127.0.0.1:${port}`;
+    const chat = (body: unknown) =>
+      fetch(`${b}${API}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    try {
+      const blocked = await chat({ message: "这是什么", images: ["data:image/png;base64,AAA"], agentId: "nope" });
+      expect(blocked.status).toBe(400);
+      expect(((await blocked.json()) as { error: string }).error).toContain("检测图片能力");
+
+      writeFileSync(
+        join(dir, "device-probe.json"),
+        JSON.stringify({ model: "deepseek-flash", supported: true, latencyMs: 5, at: "2026-09-12T00:00:00Z", detail: "" }),
+        "utf-8",
+      );
+      const passed = await chat({ message: "这是什么", images: ["data:image/png;base64,AAA"], agentId: "nope" });
+      // 实测通过 → 图片门禁放行，请求进入智能体流程（200 流式），不再是视觉能力的 400
+      expect(passed.status).toBe(200);
+      expect(passed.headers.get("content-type")).toContain("text/event-stream");
+      expect(await passed.text()).not.toContain("检测图片能力");
+    } finally {
+      local.close();
+    }
   });
 
   it("POST /media/download：非法 kind 400；模型已就绪时纯跳过（不触网）", async () => {
@@ -1833,20 +1989,24 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     const got = (await get.json()) as { model: string };
     expect(got.model).toBe("m1");
 
-    const post = await fetch(`${base5}${API}/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ field: "temperature", value: 0.5 }),
-    });
+    // Sprint 50：/config 的 POST 已收进写入门（跨站 403 → 缺 token 401）
+    const token = readFileSync(join(testDir, "server-token"), "utf-8");
+    const postConfig = (body: unknown, headers: Record<string, string> = {}) =>
+      fetch(`${base5}${API}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-aiworker-token": token, ...headers },
+        body: JSON.stringify(body),
+      });
+
+    expect((await postConfig({ field: "temperature", value: 0.5 }, { "x-aiworker-token": "" })).status).toBe(401);
+    expect((await postConfig({ field: "temperature", value: 0.5 }, { "sec-fetch-site": "cross-site" })).status).toBe(403);
+
+    const post = await postConfig({ field: "temperature", value: 0.5 });
     expect(post.status).toBe(200);
     const after = (await post.json()) as { state: { runtimeConfig: { temperature: number } } };
     expect(after.state.runtimeConfig.temperature).toBe(0.5);
 
-    const bad = await fetch(`${base5}${API}/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ field: "temperature", value: 9 }),
-    });
+    const bad = await postConfig({ field: "temperature", value: 9 });
     expect(bad.status).toBe(400);
     local.close();
   });
@@ -1883,7 +2043,7 @@ describe("HTTP Server — 后台任务与定时调度", () => {
 
     const ok = await fetch(`${base6}${API}/config`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-aiworker-token": readFileSync(join(testDir, "server-token"), "utf-8") },
       body: JSON.stringify({ field: "addModel", value: { key: "my-gpt", model: "gpt-4o-mini", baseURL: "https://api.example.com/v1", provider: "openai", apiKey: "${MY_KEY}" } }),
     });
     expect(ok.status).toBe(200);

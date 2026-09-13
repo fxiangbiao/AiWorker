@@ -7,7 +7,9 @@
 import { eventBus } from "../server/event-bus.js";
 import type { BaseAgent } from "../agents/base-agent.js";
 import type { SessionStore } from "../memory/session-store.js";
-import type { StreamCallbacks, PermissionMode } from "../types.js";
+import type { StreamCallbacks, PermissionMode, AgentRunResult } from "../types.js";
+import { setConfirmProvider } from "../hooks/confirm-channel.js";
+import { setAskProvider } from "../tools/ask-channel.js";
 import { auditLogger } from "./audit-logger.js";
 import { processManager } from "./process-manager.js";
 
@@ -111,18 +113,29 @@ export class JobRunner {
       const sessionId = deps.sessionStore.createSession(job.agentId).id;
       job.sessionId = sessionId;
 
-      // 仅收集文本摘要；不注册 ask/confirm 通道（fail-closed 自动拒高危）
+      // 后台任务**显式**安装"立即拒绝"通道：此前只是"不注册"，实际会回落到 stdin 交互提示，
+      // 让任务白等 30 秒，且用户可能在提示里选择持久化授权（审计 session 为空）
+      const previousConfirm = setConfirmProvider(async () => null);
+      const previousAsk = setAskProvider(async () => null);
+
+      // 仅收集文本摘要；确认/提问一律自动拒绝（fail-closed）
       const callbacks: StreamCallbacks = {
         onTextDelta: (text) => {
           job.summary = (job.summary + text).slice(-2000);
         },
       };
 
-      const result = await agent.runStream(
-        { instruction: job.prompt, sessionId, mode: deps.mode ?? "auto" },
-        deps.workingDir,
-        callbacks,
-      );
+      let result: AgentRunResult;
+      try {
+        result = await agent.runStream(
+          { instruction: job.prompt, sessionId, mode: deps.mode ?? "auto" },
+          deps.workingDir,
+          callbacks,
+        );
+      } finally {
+        setConfirmProvider(previousConfirm);
+        setAskProvider(previousAsk);
+      }
 
       if (!job.summary && result.text) job.summary = result.text.slice(-2000);
       job.status = result.truncated ? "failed" : "done";

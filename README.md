@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.6.0-blue)
+![version](https://img.shields.io/badge/version-1.8.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -154,7 +154,7 @@ headless 一次性运行（1.6.0，可被脚本/CI 编排）：
       --output-format <格式>   text（默认，只输出回答）| json（单个结果对象）| stream-json（NDJSON 事件流）
       --session <id>           续接既有会话（缺省新建）
       --agent <id>             直接指定智能体（缺省按提示词路由）
-      --yes                    本次运行放行需确认的工具（不覆盖 deny 规则、never_auto_approve 与受保护路径）
+      --yes                    本次运行放行需确认的工具（进程内开关，不落盘；不覆盖 deny 规则、never_auto_approve 与受保护路径）
       --max-iterations <n>     覆盖本次运行的迭代上限
 ```
 
@@ -205,7 +205,7 @@ headless 的执行语义：不初始化 TUI、不打印 banner 与状态区、�
 | `rules[].match` | 目标串（glob） | 缺省 = 该工具全命中；目标串见下表 |
 | `rules[].action` | — | `deny` 任何模式直接拒绝；`ask` 强制确认（无确认通道即拒绝）；`allow` 仅 auto 免确认，不绕过只读模式，也不能覆盖下方 `never_auto_approve` 与 `protected_paths` |
 | `never_auto_approve` | 工具名（glob） | 任何模式都必须确认，无通道即拒绝 |
-| `protected_paths` | 路径段 | 命中即对写入类工具强制确认；按路径段匹配（`.git` 命中 `.git/config`，不命中 `.gitignore`/`.github/**`；`.env` 命中 `.env.local`） |
+| `protected_paths` | 路径段 | 命中即对**读与写**工具强制确认；按路径段匹配（`.git` 命中 `.git/config`，不命中 `.gitignore`/`.github/**`；`.env` 命中 `.env.local`） |
 
 | 工具类别 | 目标串（`match` 的匹配对象） |
 |---------|----------------------------|
@@ -219,17 +219,62 @@ headless 的执行语义：不初始化 TUI、不打印 banner 与状态区、�
 | plan 模式 | 保持"全确认"语义，规则不改变它 |
 | 规则写错 | `action` 拼写错误等在启动时告警并忽略，不会静默变成"没有规则" |
 
-#### 命令沙箱边界
+#### 权限记忆（`/permissions`）
 
-`config/sandbox.json` 是**策略级**防线（非 OS 级隔离）：
+规则分两级来源，确认弹窗里的「始终允许」与命令写入的是同一张表：
+
+| 来源 | 存放位置 | 生命周期 | 撤销方式 |
+|------|---------|---------|---------|
+| 项目级 | `<--dir>/config/permissions.json` 的 `rules`（不存在时回落启动目录的同名文件；原子替换：临时文件 + `fsync` + `rename`，保留 BOM、行尾风格、权限位与其他字段） | 跨进程 | `/permissions revoke <序号>` 或删文件条目 |
+| 会话级 | 进程内存 | 重启即失效 | `/permissions clear-session` |
+
+| 用法 | 行为 |
+|------|------|
+| `/permissions` | 列出生效规则：动作 / 工具 / 目标 / **来源**（会话级在前、项目级在后，即规则表实际顺序） |
+| `/permissions allow\|ask\|deny <Tool>[(<glob>)]` | 写入项目级规则（如 `/permissions allow terminal_exec(npm install)`） |
+| `/permissions revoke <序号> [--project\|--session]` | 按列表序号撤销；来源限定不符时拒绝，而不是撤错 |
+| `/permissions reset` / `clear-session` | 清空项目级 / 会话级规则（reset 清空整个 `rules` 数组，含无法识别的条目） |
+
+| 约束 | 说明 |
+|------|------|
+| 确认弹窗的「始终允许」 | 只出现在 **auto 模式的高危确认**上（规则 `ask`、`never_auto_approve`、受保护路径按设计每次都问，不提供记忆）。选项固定为 `1 允许 / 2 拒绝 / 3 始终允许（写入项目配置） / 4 本会话始终允许`；生成的规则带 `exact: true`，按**字面精确匹配**（命令里的 `*` 不当通配），撤销后立即恢复询问 |
+| allow 规则与危险检测 | 显式 allow 规则**不再短路危险检测**：`terminal_exec` / `terminal_session` / `fs_write` 的高危输入仍要确认，只有交互产生的 `exact` 规则与 `--yes`（进程内、不落盘）可豁免；`tool: "*"` 且无 `match` 的全局 allow 拒绝写入 |
+| 撤销的语义 | 撤销 / 重置**先改内存再落盘**：即使配置文件损坏或缺失，规则在当前进程也立即失效，并以 warning 说明"重启后会重新生效" |
+| 跨进程一致性 | 按文件 `mtime`/`size` 懒重载：CLI 或另一个进程改过规则后，运行中的 server 在下一次权限判定时生效；文件不可读时保留当前规则并告警（不静默丢 deny） |
+| 保护清单兜底 | 配置缺失或损坏时，受保护路径回落到**内置清单**（`.git`/`.ssh`/`.env`/`id_rsa` 等），不会因为"读不到配置"而静默失去保护 |
+| 审计归属 | 规则变更写审计并带 `agentId` / `sessionId`（确认弹窗触发的记在该会话上，CLI 记为用户操作），审计 Tab 可见 |
+| 拒绝写入的情形 | 配置损坏（不是合法 JSON / 顶层非对象）→ 一律拒绝且不新建；格式非法、`never_auto_approve` 清单内工具写成 `allow`、`allow` 目标触及受保护路径（按路径段判定，`.gitignore` / `.github/*` 不误伤）、通配工具无目标 → 拒绝并回显原因，文件原样不动 |
+| 首次写入 | 项目配置不存在时**按需创建**（以启动目录配置为模板，含受保护路径等基础策略）；`<--dir>/config/permissions.json` 若是别的工具的同名文件（不含权限键）则拒绝覆盖。因此启动目录/安装目录的配置不会被 Agent 授权动作改写 |
+| fail-closed | 无确认通道（headless、后台任务）不会产生任何规则 |
+| Web 端 | 右侧栏「权限」Tab：规则表 + 来源徽标 + warning 提示 + 新增/撤销/清空 |
+
+写接口（`POST /api/v1/permissions`）有三道门：**跨站校验**（`Sec-Fetch-Site: cross-site`，或缺失时 `Origin` 与 `Host` 不一致 → 403）、**进程 token**（请求头 `X-AiWorker-Token`，启动日志与 `<dataDir>/server-token` 可查，缺/错 → 401）、参数校验（非法 `scope` → 400）。token 由服务端注入 `index.html`，该响应**不带** `Access-Control-Allow-Origin`，跨源页面读不到；`GET` 只读接口保持开放，与 `/audit`、`/status` 一致。其余既有写接口（`/config`、`/pkg/import` 等）沿用原有信任模型，未在本轮收紧。
+
+#### 路径与命令边界
+
+读根 / 写根由 `config/sandbox.json` 定义，**命令层与 fs 工具共用同一套判定**（`src/security/path-policy.ts`）：
+
+| 维度 | 内容 |
+|------|------|
+| 读根 | `allowReadDirs`，留空回退工作目录；`fs_read` / `fs_list` 越界直接拒绝（拒绝原因是策略，不是"文件不存在"） |
+| 写根 | `allowWriteDirs`，留空回退工作目录；`fs_write` / `fs_edit` 与命令层写入目标使用同一写根 |
+| 符号链接 | 按**真实路径**判定：从盘根**逐组件**解析（每个存在的组件都 `realpath`，`..` 在解析之后才弹出，与内核"先跟随链接再弹一层"一致），链接指向根外会被拦截 |
+| 解析失败 | 悬空符号链接、链接环、权限不足、组件数超限 → **一律拒绝**（fail-closed，不退化成词法判定），提示"路径无法解析为真实路径" |
+| 开关语义 | 路径边界**始终生效**；`sandbox.enabled: false` 只关闭命令层约束，不会静默关掉文件读写边界 |
+| 空路径 | 空 / 纯空白 / 非字符串入参 → 拒绝 |
+| 保留设备名 | Windows 下 `NUL` / `CON` / `COM1` 等保留设备名与 NTFS 备用数据流（`a.txt:stream`）→ 拒绝，不再"写入成功但内容被丢弃" |
+| 配置位置 | 与权限配置同样**跟随 `--dir`**：优先 `<--dir>/config/sandbox.json`，其次启动目录，最后回落到包内 `config/sandbox.json`；目录下的同名文件若不含任何沙箱键则忽略 |
+
+`config/sandbox.json` 的命令层约束（**策略级**防线，非 OS 级隔离；配置位置同样跟随 `--dir`）：
 
 | 维度 | 内容 |
 |------|------|
 | 生效约束 | 工作目录越界拒绝（fail-closed）· 命令黑名单 · 敏感环境变量剥离 · **`allowWriteDirs` 写入根约束** |
 | 覆盖范围 | `terminal_exec` / `terminal_session` 的重定向（`>` / `>>`，非包裹命令做引号感知，引号内的 `>` 不算重定向）与写入类命令/程序的**所有像路径参数**（源与目标都查） |
 | 已列举的写入形态 | `Set-Content` / `Out-File` / `del` / `copy` / `mkdir`；PowerShell 别名 `rm` / `ri` / `ni` / `sc` / `cp` / `mv`；`curl -o` / `Invoke-WebRequest -OutFile` / `robocopy` / `xcopy` / `tar -C` / `Expand-Archive` / `git clone` / `npm install --prefix` |
-| 无法静态解析的目标 | 含变量 / 通配（`$`、`%`）→ 直接拒绝，提示改用 `fs_write` |
-| **不覆盖**（诚实说明） | 解释器脚本体内部的写入（`python -c`、`node -e`、脚本文件）· 未列举的第三方程序 · 管道下游程序的写入 · `cd` 之后相对路径的真实归属（`terminal_session` 按会话工作目录判定）· 命令位置之外的写入（如 `cmd /c del x` 的子命令参数） |
+| 无法静态解析的目标 | 含变量 / 通配 / 主目录（`$`、`%`、`~`）→ 直接拒绝，提示改用 `fs_write` |
+| 相对路径与 `..` | 按命令**原文**逐组件解析（`link\..\x` 先跟随 `link` 再弹一层），不做词法折叠 |
+| **不覆盖**（诚实说明） | 解释器脚本体内部的写入（`python -c`、`node -e`、脚本文件）· 未列举的第三方程序 · 管道下游程序的写入 · `cd` 之后相对路径的真实归属（`terminal_session` 按会话工作目录判定）· 命令位置之外的写入（如 `cmd /c del x` 的子命令参数）· 未被 `looksLikePath` 识别为路径的 token · MCP 工具与插件工具的文件写入 |
 | 定位 | 与 danger-detector、路径校验、工具超时、输出截断共同构成多层防御，**不是沙箱替代品** |
 
 #### 检查点与回滚
@@ -273,6 +318,7 @@ headless 的执行语义：不初始化 TUI、不打印 banner 与状态区、�
 | `/new` | 开启新会话（清空上下文） |
 | `/log` | 监控日志（轮次/耗时/输入输出 token） |
 | `/rewind [轮次] [--code\|--chat\|--all] [--dry-run] [--force]` | 检查点回滚：无参数列出回合，带轮次交互三选（代码+对话/仅对话/仅代码），先预览再执行 |
+| `/permissions [allow\|ask\|deny <Tool>[(<glob>)] \| revoke <序号> \| reset \| clear-session]` | 权限规则：列出（含来源）/ 写项目级规则 / 撤销 / 清空项目级或会话级 |
 | `/context [查询]` | 上下文分层 token 占比 + MCP 工具列表 |
 | `/trace [序号]` | 会话轨迹时间线（--json 输出） |
 | `/status` | 运行状态（版本/模式/模型/专家/token） |
@@ -334,9 +380,57 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | 对话模式 | 对话 / 多专家协作 / 双专家辩论（顶部切换） |
 | 权限联动 | 权限模式实时生效：Ask 只读；Plan / Auto 走确认卡片 |
 | 流式与中断 | 流式输出，发送后可随时中断 |
-| 系统面板（⚙） | 上下文 / 日志 / 技能 / MCP / 插件 / 调度 / 轨迹 / 审计 / 设备 / 进化 |
-| 右侧栏 | 文件变更 / 文档预览 / 回滚 / 应用预览 四个 Tab |
+| 系统面板（⚙） | **控制台**（观测：上下文 / 轨迹 / 审计 / 进化；资源：智能体 / 技能 / MCP / 插件 / 应用 / 进程 / 调度；系统：设备与运行时）与 **设置**（模型 / 安全 / 工作区 / 交互 / 关于）两个独立入口 |
+| 右侧栏 | 产物（文件改动 + 文档 + 图片/媒体/链接 + 检查点时间线）/ 应用 两个 Tab（权限已迁至 设置 → 安全；底部状态栏有权限徽章可一点直达） |
 | 多标签同步 | 会话列表跨标签页实时同步（WebSocket） |
+
+### 设置 / 控制台（1.8.0）
+
+**分工一句话**：**设置 = 我改它**（会写配置、改变行为）；**控制台 = 我看它**（观测系统、以只读为主）。
+
+| 设置 tab | 能改什么 | 写到哪里 / 何时生效 |
+|---|---|---|
+| 模型 | 模型选择、温度、max-tokens、添加模型 / Provider；模型能力卡与【检测图片能力】实测 | `data/runtime-config.json` + `config/models.json`，立即生效 |
+| 安全 | 权限规则（增 / 撤 / 清空，带项目级与会话级来源）、受保护路径、永不自动批准、命令黑名单、敏感环境变量清理 | `config/permissions.json` + `<--dir>/config/sandbox.json`，**立即生效**（清单改动同步更新运行中的判定） |
+| 工作区 | 工作目录（只读展示）+ 沙箱三个根：工作目录根 / 可写根 / 可读根（带目录选择器） | `<--dir>/config/sandbox.json`，**立即生效**（每次工具调用现读磁盘） |
+| 交互 | 思考展示、技能自动沉淀、主题 | `data/runtime-config.json` / 浏览器本地 |
+| 关于 | 版本、数据目录、存储（SQLite + FTS5）、运行时 | 只读 |
+
+**两个安全细节（刻意的，不是顺手写的）**：
+
+1. **受保护路径用生效清单回填**：配置文件里的 `protected_paths` 是**整体替换**语义，所以"少写一条"就等于静默丢掉一层保护。设置页因此用**当前生效清单**回填草稿，并且**移除内置基线项必须显式勾选确认**——这道确认由**服务端强制**（缺 `acknowledge` 直接 400 并列出将被移除的项），不只是前端弹窗。
+2. **沙箱写入永远跟随 `--dir`**：读取允许回落到安装目录的配置，但写入绝不落到安装包（否则一次 UI 保存就改写安装文件，升级即丢失）。三个根"留空 = 回退工作目录"，所以页面同时显示"配置里写了什么"和"**真正生效什么**"，避免把"空着"误读成"不限制"。
+
+
+### 设备面板（动态探测）
+
+**设置 → 模型**（能力卡）与**控制台 → 设备与运行时**（只读快照）里的每一项都是**实时探测**结果，不是写死的清单：
+
+| 卡片 | 探测方式 |
+|------|----------|
+| 语音输入（ASR）/ 语音输出（TTS） | 逐个校验模型文件（缺哪个列哪个）+ provider 解析（sherpa 本地就绪优先，否则 edge-tts 在线降级） |
+| 媒体服务器 | WS 音频通道实际状态与连接数 |
+| 模型能力 | 图片能力按「**实测 → 配置声明 → 未声明**」三级判定。点【检测图片能力】会真实发一次 1×1 PNG 请求（约几十 token）验证端点是否接受图片；结论按**模型名**缓存到 `<dataDir>/device-probe.json`，换模型自动失效（面板标"此结果失效"）。未实测且 `config/models.json` 的当前 profile 未声明 `vision` 时，图片提问会被明确拒绝并提示如何检测 |
+| 运行时 | Node / 平台 / 架构 / CPU / 内存 / PID / 运行时长、数据目录可写性（真实写文件探测，非 `accessSync`） |
+| 存储（记忆库） | 真实建库并验证 SQLite 版本与 FTS5 可用性 + 记忆库路径与体积 |
+
+模型能力判定与 `/api/v1/chat` 的图片输入**同源**：实测通过后即可发送图片，不必改配置；`vision:true` 只是省掉一次实测的声明。
+
+### 产物工作台（右侧栏「产物」）
+
+一次会话**产出了什么**集中在一处，不必在三个 Tab 之间找同一个文件：
+
+| 区域 | 内容 |
+|------|------|
+| 顶部分组/过滤 | 按类型（文档/代码/图片/媒体/链接）· 按目录 · 按回合 三种分组；范围可切「本会话 / 所有会话」；路径搜索 |
+| 左侧列表 | 每个产物带 `新增/修改/删除`、`+n −n`、回合号、大小与**来源徽标**（工具产物 / 文件系统快照 / 文档索引 / 回合检查点）；**左列表与右详情的分界可拖拽调宽**（双击或 `Home` 复位，`←/→` 微调，宽度记忆在本地） |
+| 右侧查看器 | `.md` 复用文档渲染；文本/代码原文；图片内联；diff 行级高亮；链接卡；视频/音频/PDF/Office 走独立预览窗口（含 Office 前端转换） |
+| 动作 | 打开预览 / 下载 / 复制路径 / 在对话中查看（滚到产生它的工具卡片并**持久高亮**；同一产物命中多处时可 ↑更早 / ↓更近 逐处走查，`Esc` 或「清除高亮」结束定位） |
+| 底部时间线 | 检查点按回合排列；点选 → **高亮**该回合产物（不隐藏其他）；`回滚代码` / `回滚代码 + 对话` 均先出 `dry-run` 预览再二次确认 |
+
+**诚实标注**：来源为「文件系统快照」的改动可能不是本会话 Agent 写的（工作目录快照的语义如此）；老会话（Sprint 45 之前）事件里没有产物字段，面板会明确提示"仅显示文件改动与文档"，不假装没有产出。
+
+「仅对话回滚」不在产物面板：它是聊天语义，放在**对话流里用户消息的「从这里重新开始」**（hover 显示，先 `dry-run` 再确认）。
 
 ### HTTP API（`--server` 模式）
 
@@ -357,6 +451,10 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/sessions/:id/export` | GET | 导出会话为 Markdown |
 | `/api/v1/sessions/:id/checkpoints` | GET | 检查点列表（回合/时间/输入摘要/文件与可恢复数） |
 | `/api/v1/sessions/:id/rewind` | POST | 回滚（`{toTurn, scope: all\|chat\|code, dryRun?, force?}`；dryRun 返回预览） |
+| `/api/v1/permissions` | GET/POST | 权限规则：GET 列出（规则/来源/配置文件路径）；POST `{action: add\|revoke\|reset\|clear-session, tool, match?, ruleAction?, scope?}`（写操作需 `X-AiWorker-Token` 且非跨站） |
+| `/api/v1/devices` | GET | 设备与能力状态（实时探测：运行时/存储/语音模型/媒体通道/模型能力与实测缓存） |
+| `/api/v1/artifacts` | GET | 产物工作台（`?sessionId=&scope=session\|all`）：合并 工具产物事件 + 工作目录快照 + 文档索引 + 回合检查点，去重后返回统一产物项与时间线 |
+| `/api/v1/devices/probe` | POST | 实测模型图片能力（`{kind:"model-vision"}`；需 `X-AiWorker-Token` 且非跨站，结果写入 `<dataDir>/device-probe.json`） |
 | `/api/v1/mcp` | GET | MCP 服务器状态 + 工具列表 |
 | `/api/v1/context` | GET | 上下文分层 token 占比 |
 | `/api/v1/logs` | GET | 最近轮次日志 |

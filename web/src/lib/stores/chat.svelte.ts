@@ -1,3 +1,4 @@
+import { writable } from "svelte/store";
 import type { ToolArtifact } from "$lib/artifacts";
 
 export interface ChatItem {
@@ -15,11 +16,19 @@ export const API = "/api/v1";
 /** 消息缓存 key 前缀（版本化：消息结构变化时递增，强制下次重新拉取服务器） */
 const MSGS_PREFIX = "aiworker_msgs_v2_";
 
+/**
+ * 待定位的工具调用 id（Sprint 50）：产物面板「在对话中查看」会设置它，
+ * 折叠的工具分组据此自动展开——否则目标卡片根本不在 DOM 里，定位会退化成"框住整条消息"。
+ */
+export const focusToolCallId = writable<string>("");
+
 export interface UIMessage {
   role: "user" | "assistant" | "agent";
   content: string;
   agentId?: string;
   timeline?: TimelineItem[];
+  /** 服务端消息投影的序号（Sprint 50：用户消息据此映射到回合，做「从这里重新开始」；仅 reload 时可得） */
+  seq?: number;
   /** 多模态图片（data URL；Sprint 36）：用户消息附带的图片缩略图 */
   images?: string[];
   _thinkingActive?: boolean;
@@ -261,7 +270,8 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
     for (const m of data.messages || []) {
       const role = m.role as string;
       if (role === "user") {
-        msgs.push({ role: "user", content: m.content || "" });
+        const seq = typeof m.seq === "number" ? m.seq : undefined;
+        msgs.push({ role: "user", content: m.content || "", ...(seq !== undefined ? { seq } : {}) });
       } else if (role === "assistant") {
         const um: UIMessage = { role: "assistant", content: m.content || "", timeline: [] };
         const tcs = m.tool_calls as
@@ -300,6 +310,8 @@ export async function loadRemoteMessages(id: string): Promise<UIMessage[]> {
             item.result = !failed;
             item.error = failed ? content.slice(6, 300) : undefined;
             item.resultPreview = failed ? undefined : content.slice(0, 300);
+            // 工具产物随回载写入时间线（Sprint 50）：产物面板「在对话中查看」依赖它定位卡片
+            if (Array.isArray(m.artifacts) && m.artifacts.length > 0) item.artifacts = m.artifacts as ToolArtifact[];
             item.pending = false;
             pendingTools.splice(pendingTools.indexOf(target), 1);
           } else {

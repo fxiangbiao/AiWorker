@@ -94,12 +94,13 @@ export function projectTrace(events: SessionEvent[]): TraceItem[] {
         break;
       }
       case "tool/result": {
-        const d = ev.data as { callId: string; success: boolean; content: string; error?: string; durationMs?: number };
+        const d = ev.data as { callId: string; success: boolean; content: string; error?: string; durationMs?: number; artifacts?: TraceItem["artifacts"] };
         const item = toolItems.get(d.callId);
         if (item) {
           item.status = d.success ? "ok" : "fail";
           if (d.durationMs !== undefined) item.durationMs = d.durationMs;
           if (!d.success && d.error) item.detail = summarize(d.error, 80);
+          if (Array.isArray(d.artifacts) && d.artifacts.length > 0) item.artifacts = d.artifacts;
           item.full = `${item.full ?? "参数: -"}\n结果: ${d.success ? d.content : `错误: ${d.error ?? d.content}`}`;
         }
         break;

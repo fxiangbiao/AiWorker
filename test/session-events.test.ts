@@ -84,7 +84,19 @@ describe("事件溯源", () => {
     // 助手消息的 tool_calls 后紧跟对应 tool 结果（消息语义顺序）
     expect(replayed[2]).toMatchObject({ role: "tool", tool_call_id: "t1", content: "file content" });
     // 投影表不含 tool 消息（持久化语义），回放含完整序列 → 仅比较 user/assistant 骨架
-    expect(replayed.filter((m) => m.role !== "tool")).toEqual(stored);
+    // （回放额外带 seq：Sprint 50 起供 Web 把用户消息映射到回合，投影表无此字段，故比较前剥离）
+    const stripSeq = (m: Record<string, unknown>) => {
+      const { seq: _seq, ...rest } = m;
+      return rest;
+    };
+    expect(replayed.filter((m) => m.role !== "tool").map((m) => stripSeq(m as unknown as Record<string, unknown>))).toEqual(
+      stored,
+    );
+    // 新保证：回放消息带 seq 且单调不减（P1.3「从这里重新开始」的定位依据）
+    const userSeq = replayed[0]!.seq;
+    expect(typeof userSeq).toBe("number");
+    expect(replayed.every((m) => typeof m.seq === "number")).toBe(true);
+    expect(replayed[1]!.seq!).toBeGreaterThanOrEqual(userSeq!);
 
     const v = store.verifyProjection(sessionId);
     expect(v.ok).toBe(true);

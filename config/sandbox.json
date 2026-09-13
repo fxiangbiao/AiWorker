@@ -2,6 +2,7 @@
   "enabled": true,
   "allowDirs": [],
   "allowWriteDirs": [],
+  "allowReadDirs": [],
   "denyCommands": [],
   "stripSecretEnv": true
 }

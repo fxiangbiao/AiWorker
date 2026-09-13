@@ -63,6 +63,95 @@ export type ToolArtifact =
   | { type: "link"; url: string; title?: string; site?: string; snippet?: string }
   | { type: "diff"; path: string; patch?: string };
 
+// ===== 产物工作台（Artifacts Workspace：快照 diff / 文档 / 工具产物 的统一视图） =====
+
+/** 快照 diff 的单行 */
+export interface DiffLine {
+  type: "add" | "del" | "ctx";
+  text: string;
+}
+
+/** 快照 diff 的单个文件 */
+export interface DiffFile {
+  path: string;
+  added: number;
+  removed: number;
+  lines: DiffLine[];
+  /** 无行级 diff（指纹监控）时附带的当前内容全文 */
+  currentContent?: string;
+  /** 二进制/不可展示内容文件（指纹监控降级快照，仅元信息） */
+  binary?: boolean;
+  /** 变更前文件已存在但无旧内容（指纹监控），行级 diff 不可得 */
+  modified?: boolean;
+  /** 文件被删除（指纹反向对比发现） */
+  deleted?: boolean;
+}
+
+/** 一个会话的快照 diff 集合 */
+export interface DiffSession {
+  sessionId: string;
+  /** 会话摘要（标题），无则 undefined */
+  summary?: string | null;
+  files: DiffFile[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 文档索引项（会话资产 data/docs 与工作目录项目文档） */
+export interface DocEntry {
+  root: "session" | "project";
+  path: string;
+  title: string;
+  size: number;
+  mtime: number;
+}
+
+/** 产物来源：工具产物事件 / 工作目录快照 / 文档索引 / 回合检查点 */
+export type ArtifactSource = "tool" | "snapshot" | "docs" | "checkpoint";
+
+/** 统一产物项（产物面板列表与详情的数据单元；字段按来源取权威值） */
+export interface ArtifactItem {
+  /** 去重键：`root:rel`（link 用 url） */
+  id: string;
+  sources: ArtifactSource[];
+  type: "file" | "link" | "diff";
+  kind: ArtifactKind;
+  root?: "session" | "project";
+  rel?: string;
+  path?: string;
+  url?: string;
+  title?: string;
+  site?: string;
+  snippet?: string;
+  mime?: string;
+  size?: number;
+  /** 产生它的回合（有检查点或工具事件时可得） */
+  turn?: number;
+  /** 产生它的工具名 */
+  tool?: string;
+  change?: "added" | "modified" | "deleted";
+  added?: number;
+  removed?: number;
+  /** 检查点权威：能否恢复到变更前 */
+  restorable?: boolean;
+  hasDiff?: boolean;
+  /** 首次出现时间（排序用） */
+  at: number;
+  /** 该条目的已知限制（如"老会话无产物记录"） */
+  degraded?: string;
+}
+
+/** 产物聚合结果 */
+export interface ArtifactWorkspace {
+  sessionId: string;
+  scope: "session" | "all";
+  items: ArtifactItem[];
+  timeline: CheckpointManifest[];
+  counts: { total: number; byKind: Record<string, number>; byChange: { added: number; modified: number; deleted: number } };
+  /** 降级原因：老会话无产物事件 / 无回滚服务 / 无会话存储 / 跨会话工具产物被截断 */
+  degraded: string[];
+}
+
 // ===== 工具定义 =====
 
 export interface ToolParameter {
@@ -172,11 +261,32 @@ export type PermissionRuleAction = "deny" | "ask" | "allow";
  * - `tool`：工具名，支持通配（`fs_*`、`mcp_*`、`*`）
  * - `match`：对"目标串"的 glob；fs 类工具为目标绝对路径，terminal_exec 为命令文本，其余为参数 JSON
  * - `action`：命中后的动作（同类多条时 deny 优先于 ask 优先于 allow）
+ * - `exact`：true 时 `match` 为**字面精确匹配**（交互确认产生的"始终允许"用），并且只有它能豁免危险检测
  */
 export interface PermissionRule {
   tool: string;
   match?: string;
   action: PermissionRuleAction;
+  exact?: boolean;
+}
+
+/** 规则来源：项目（config/permissions.json，跨进程）/ 会话（内存，进程结束即失效） */
+export type PermissionRuleSource = "project" | "session";
+
+/** 带来源的生效规则（列表展示与撤销用；求值只看 action） */
+export interface SourcedPermissionRule extends PermissionRule {
+  source: PermissionRuleSource;
+}
+
+/** 规则写入范围（session 只进内存，project 落盘到 config/permissions.json） */
+export type PermissionRuleScope = PermissionRuleSource;
+
+/** 规则变更结果（ok=false 时 reason 说明拒绝原因，调用方原样展示；warning 为"已生效但需知会"的情形） */
+export interface PermissionRuleChange {
+  ok: boolean;
+  reason?: string;
+  warning?: string;
+  rule?: SourcedPermissionRule;
 }
 
 export interface PermissionConfig {
@@ -549,6 +659,8 @@ export interface TraceItem {
   durationMs?: number;
   status?: "ok" | "fail" | "running";
   tokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  /** 该工具调用产出的结构化产物（Sprint 50：此前投影时被丢弃，导致事后取不到图片/媒体/链接产物） */
+  artifacts?: ToolArtifact[];
 }
 
 export interface SessionStats {

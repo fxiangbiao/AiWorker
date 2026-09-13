@@ -27,6 +27,8 @@ export function setConfirmProvider(fn: ConfirmProvider | null): ConfirmProvider 
 interface PendingConfirm {
   resolve: (value: string | null) => void;
   timer: NodeJS.Timeout;
+  /** 该次请求实际提供的选项值：客户端回传未提供的值一律拒绝（防伪造 allow_project 之类） */
+  values: Set<string>;
 }
 
 const pending = new Map<string, PendingConfirm>();
@@ -39,16 +41,17 @@ export function createHttpConfirmProvider(send: (req: ConfirmRequest) => void, t
         pending.delete(req.id);
         resolve(null);
       }, timeoutMs);
-      pending.set(req.id, { resolve, timer });
+      pending.set(req.id, { resolve, timer, values: new Set(req.options.map((o) => o.value)) });
       send(req);
     });
   };
 }
 
-/** 前端提交确认结果 */
+/** 前端提交确认结果；值必须是该次请求提供过的选项，否则按无效处理（不改动挂起状态） */
 export function confirmResponse(id: string, value: string | null): boolean {
   const item = pending.get(id);
   if (!item) return false;
+  if (value !== null && !item.values.has(value)) return false;
   clearTimeout(item.timer);
   pending.delete(id);
   item.resolve(value);

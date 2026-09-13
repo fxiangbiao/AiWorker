@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { Settings, PanelLeftOpen, PanelRightOpen, Moon, Sun } from "lucide-svelte";
+  import { Settings, PanelLeftOpen, PanelRightOpen, Moon, Sun, LayoutDashboard } from "lucide-svelte";
   import { theme, toggleTheme } from "$lib/stores/theme.svelte";
 
-  let { onOpenSystem, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
+  let { onOpenSystem, onOpenSettings, onExpandLeft, onExpandRight, leftHidden, rightHidden } = $props<{
     onOpenSystem: () => void;
+    onOpenSettings: () => void;
     onExpandLeft: () => void;
     onExpandRight: () => void;
     leftHidden: boolean;
@@ -20,7 +21,8 @@
   <button class="side-btn" title={$theme === "dark" ? "切换到浅色模式" : "切换到暗色模式"} onclick={toggleTheme}>
     {#if $theme === "dark"}<Sun size={15} />{:else}<Moon size={15} />{/if}
   </button>
-  <button class="side-btn" title="系统设置" onclick={onOpenSystem}><Settings size={15} /></button>
+  <button class="side-btn" title="控制台（观测 / 资源 / 系统）" onclick={onOpenSystem}><LayoutDashboard size={15} /></button>
+  <button class="side-btn" title="设置（模型 / 安全 / 工作区 / 交互 / 关于）" onclick={onOpenSettings}><Settings size={15} /></button>
   {#if rightHidden}
     <button class="side-btn" title="展开右侧栏" onclick={onExpandRight}><PanelRightOpen size={15} /></button>
   {/if}
