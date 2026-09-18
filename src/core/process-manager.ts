@@ -60,16 +60,18 @@ export class ProcessManager {
   }
 
   /** 按 kind 统计（状态栏/控制台展示） */
-  stats(): { agent: number; app: number; job: number } {
+  stats(): { agent: number; app: number; job: number; subagent: number } {
     let agent = 0;
     let app = 0;
     let job = 0;
+    let subagent = 0;
     for (const p of this.processes.values()) {
       if (p.kind === "agent") agent++;
       else if (p.kind === "app") app++;
+      else if (p.kind === "subagent") subagent++;
       else job++;
     }
-    return { agent, app, job };
+    return { agent, app, job, subagent };
   }
 
   private broadcast(data: object): void {

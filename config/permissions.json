@@ -30,7 +30,10 @@
     "reboot"
   ],
   "rules": [],
-  "never_auto_approve": [],
+  "never_auto_approve": [
+    "spawn_agent",
+    "send_message"
+  ],
   "protected_paths": [
     ".git",
     ".ssh",

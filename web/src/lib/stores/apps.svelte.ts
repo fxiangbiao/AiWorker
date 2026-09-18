@@ -28,7 +28,7 @@ export interface AppInfo {
 }
 
 export type OsProcess = {
-  kind: "agent" | "app" | "job";
+  kind: "agent" | "app" | "job" | "subagent";
   pid: string;
   status: string;
   startedAt?: number;
@@ -39,6 +39,8 @@ export type OsProcess = {
   appId?: string;
   /** kind === "job"：后台任务 id */
   jobId?: string;
+  /** kind === "subagent"：子智能体 id（Sprint 52） */
+  subagentId?: string;
 } & Record<string, unknown>;
 
 export interface AppWinState {
@@ -52,7 +54,7 @@ export interface AppWinState {
 
 export const apps = writable<AppInfo[]>([]);
 export const processes = writable<OsProcess[]>([]);
-export const processStats = writable<{ agent: number; app: number; job: number }>({ agent: 0, app: 0, job: 0 });
+export const processStats = writable<{ agent: number; app: number; job: number; subagent: number }>({ agent: 0, app: 0, job: 0, subagent: 0 });
 /** 资源仪表（Sprint 42 A3）：全局 token 占用（/processes 附带） */
 export const processResources = writable<{ tokens: { total: number; prompt: number; completion: number } } | null>(null);
 
@@ -174,11 +176,11 @@ export async function loadProcesses(): Promise<void> {
     if (!r.ok) return;
     const d = (await r.json()) as {
       processes?: OsProcess[];
-      stats?: { agent: number; app: number; job: number };
+      stats?: { agent: number; app: number; job: number; subagent?: number };
       resources?: { tokens: { total: number; prompt: number; completion: number } };
     };
     processes.set(d.processes ?? []);
-    if (d.stats) processStats.set(d.stats);
+    if (d.stats) processStats.set({ subagent: 0, ...d.stats });
     if (d.resources) processResources.set(d.resources);
   } catch {
     /* 忽略 */

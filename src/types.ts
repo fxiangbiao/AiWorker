@@ -180,6 +180,8 @@ export interface ToolContext {
   permissions: PermissionMode;
   /** 数据目录（spill 落盘用：<dataDir>/spills/，缺省则不落盘） */
   dataDir?: string;
+  /** AbortSignal：子智能体中断时透传到工具层（Sprint 52 T1b） */
+  signal?: AbortSignal;
 }
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
@@ -328,6 +330,8 @@ export interface AgentConfig {
   plugins?: string[];
   /** 严格工具模式：关闭 mcp_/插件工具的全局豁免，仅白名单可见（默认 false 宽松） */
   strictTools?: boolean;
+  /** 只读模式（Sprint 52 子智能体）：仅允许只读闭集工具，MCP/插件豁免一律失效 */
+  readOnly?: boolean;
   permissions: {
     defaultMode: PermissionMode;
     allowedTools: string[];
@@ -824,7 +828,15 @@ export type OsProcess =
       kind: "job";
       pid: string;
       jobId: string;
-      status: "queued" | "running" | "done" | "failed";
+      status: "queued" | "running" | "done" | "failed" | "idle";
+      startedAt?: number;
+      endedAt?: number;
+    }
+  | {
+      kind: "subagent";
+      pid: string;
+      subagentId: string;
+      status: "queued" | "running" | "idle" | "failed";
       startedAt?: number;
       endedAt?: number;
     };

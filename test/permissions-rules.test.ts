@@ -181,7 +181,8 @@ describe("ApprovalService 规则接入", () => {
     const svc = new ApprovalService({ permissionModel: makeModel({ never: ["terminal_exec"] }), workingDir: BASE });
     const r = await svc.checkConfirmation("terminal_exec", { command: "echo hi" }, "auto");
     expect(r.proceed).toBe(false);
-    expect(r.message).toBe("用户取消操作");
+    expect(r.reason).toBe("no-channel");
+    expect(r.message).toBe("无确认通道，已自动拒绝（fail-closed）");
   });
 
   it("受保护路径（.env）在 auto 模式下强制确认，普通路径不确认", async () => {

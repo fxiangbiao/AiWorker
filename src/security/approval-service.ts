@@ -23,6 +23,15 @@ export type ConfirmFn = (req: ConfirmRequestLike) => Promise<string | null>;
 export interface ApprovalDecision {
   proceed: boolean;
   message?: string;
+  /** 可判别原因：no-channel = 无确认通道（fail-closed 自动拒），user-denied = 用户点了拒绝 */
+  reason?: "no-channel" | "user-denied" | string;
+}
+
+/** 拒绝文案区分"无通道自动拒绝"与"用户点拒绝"（Sprint 52 §2.3-2 可判别性） */
+function denyMessage(reason?: string): string {
+  return reason === "no-channel"
+    ? "无确认通道，已自动拒绝（fail-closed）"
+    : "用户取消操作";
 }
 
 export interface ApprovalServiceDeps {
@@ -122,7 +131,7 @@ export class ApprovalService {
     if (mode === "plan") {
       const detail = toolName === "fs_write" || toolName === "fs_edit" ? (target ? `：${target}` : "") : "";
       const ok = await this.confirm(`${toolName} 调用确认`, `执行工具 ${toolName}${detail}？`);
-      return ok.proceed ? { proceed: true } : { proceed: false, message: "用户取消操作" };
+      return ok.proceed ? { proceed: true } : { proceed: false, message: denyMessage(ok.reason), reason: ok.reason };
     }
 
     const never = model?.isNeverAutoApprove(toolName) ?? false;
@@ -150,19 +159,20 @@ export class ApprovalService {
     if (mode !== "auto") {
       if (!reason) return { proceed: true };
       const ok = await this.confirm(`${toolName} 操作确认`, `${reason}${target ? `：${target}` : ""}。是否继续？`);
-      return ok.proceed ? { proceed: true } : { proceed: false, message: "用户取消操作" };
+      return ok.proceed ? { proceed: true } : { proceed: false, message: denyMessage(ok.reason), reason: ok.reason };
     }
 
     // auto 模式：强制类规则（ask / never / 受保护路径）→ 确认（按设计始终要问，不提供"记住"）
     if (reason) {
       const ok = await this.confirm(`${toolName} 操作确认`, `${reason}${target ? `：${target}` : ""}。是否继续？`);
-      return ok.proceed ? { proceed: true } : { proceed: false, message: "用户取消操作" };
+      return ok.proceed ? { proceed: true } : { proceed: false, message: denyMessage(ok.reason), reason: ok.reason };
     }
 
     if (!dangerTool) return { proceed: true };
 
-    // fs_write 只检测目标路径（正则匹配的是命令文本，不能套用在 content 上）
-    const input = toolName === "fs_write" ? extractFilePath(args, projectBase) ?? "" : commandText(args);
+    // fs_write / fs_edit 只检测目标路径（正则匹配的是命令文本，套在 content 上会把
+    // "编辑一个含 rm -rf 字样的文档"误判为高危，且普通编辑反而永远 safe）
+    const input = toolName === "fs_write" || toolName === "fs_edit" ? extractFilePath(args, projectBase) ?? "" : commandText(args);
     const check = this.dangerDetector.check(input);
     if (check.level === "safe") return { proceed: true };
 
@@ -172,7 +182,7 @@ export class ApprovalService {
       `${check.isDangerous ? "高危" : "注意"}: ${check.message ?? toolName}。是否继续？`,
       { tool: toolName, target: rememberTarget(toolName, matchTarget) },
     );
-    if (!ok.proceed) return { proceed: false, message: "用户取消操作" };
+    if (!ok.proceed) return { proceed: false, message: denyMessage(ok.reason), reason: ok.reason };
     return ok.note ? { proceed: true, message: ok.note } : { proceed: true };
   }
 
@@ -186,8 +196,8 @@ export class ApprovalService {
     title: string,
     message: string,
     remember?: { tool: string; target?: string },
-  ): Promise<{ proceed: boolean; note?: string }> {
-    if (!this.confirmFn) return { proceed: false };
+  ): Promise<{ proceed: boolean; note?: string; reason?: "no-channel" | "user-denied" }> {
+    if (!this.confirmFn) return { proceed: false, reason: "no-channel" };
     const allowMemory = Boolean(remember && this.memory);
     const options = [
       { value: "allow", label: "允许" },
@@ -200,9 +210,10 @@ export class ApprovalService {
         : []),
     ];
     const result = await this.confirmFn({ title, message, options });
+    if (result === null) return { proceed: false, reason: "no-channel" };
     if (result === "allow_project" || result === "allow_session") {
       // 未提供记忆选项却收到该值（伪造/陈旧客户端）→ fail-closed
-      if (!allowMemory || !remember) return { proceed: false };
+      if (!allowMemory || !remember) return { proceed: false, reason: "user-denied" };
       const scope: PermissionRuleScope = result === "allow_project" ? "project" : "session";
       const rule: PermissionRule = {
         tool: remember.tool,
@@ -216,7 +227,7 @@ export class ApprovalService {
       this.logMemoryFailure(remember.tool, scope, added.reason ?? "未知原因");
       return { proceed: true, note: `本次已放行，但记住规则失败：${added.reason}` };
     }
-    return { proceed: result === "allow" };
+    return result === "allow" ? { proceed: true } : { proceed: false, reason: "user-denied" };
   }
 
   /** 记忆失败要留痕：hook 层会丢弃 proceed=true 的 message，审计是唯一可靠通道 */
@@ -254,7 +265,7 @@ function realTarget(toolName: string, target: string): string {
 const PROTECTED_TOOLS = new Set(["fs_write", "fs_edit", "fs_read", "fs_list", "terminal_exec", "terminal_session"]);
 
 /** 需要跑危险检测（danger-detector）的工具 */
-const DANGER_TOOLS = new Set(["terminal_exec", "terminal_session", "fs_write"]);
+const DANGER_TOOLS = new Set(["terminal_exec", "terminal_session", "fs_write", "fs_edit"]);
 
 /** 提取命令文本（terminal_exec / terminal_session 的 args） */
 function commandText(args: unknown): string {

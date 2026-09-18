@@ -17,6 +17,8 @@ export interface AuditEntry {
   target?: string;
   result: "success" | "blocked" | "error";
   detail?: string;
+  /** 触发者会话 id（子智能体操作时指向父会话；Sprint 52 T6a） */
+  actorSessionId?: string;
 }
 
 /** SQLite 行 → AuditEntry：列名是 snake_case，直接用会把 agentId/sessionId 读成 undefined（审计面板会话列恒空） */
@@ -31,6 +33,7 @@ function toEntry(row: unknown): AuditEntry {
     target: r.target === null || r.target === undefined ? undefined : String(r.target),
     result: (r.result as AuditEntry["result"]) ?? "success",
     detail: r.detail === null || r.detail === undefined ? undefined : String(r.detail),
+    actorSessionId: r.actor_session_id === null || r.actor_session_id === undefined ? undefined : String(r.actor_session_id),
   };
 }
 
@@ -61,12 +64,17 @@ export class AuditLog {
       CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id);
       CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
     `);
+    const cols = this.db.prepare("PRAGMA table_info(audit_log)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "actor_session_id")) {
+      this.db.exec(`ALTER TABLE audit_log ADD COLUMN actor_session_id TEXT`);
+    }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_session_id)`);
   }
 
   log(entry: Omit<AuditEntry, "id">): void {
     const stmt = this.db.prepare(
-      `INSERT INTO audit_log (timestamp, agent_id, session_id, action, target, result, detail)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO audit_log (timestamp, agent_id, session_id, action, target, result, detail, actor_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     stmt.run(
       entry.timestamp,
@@ -76,6 +84,7 @@ export class AuditLog {
       entry.target ?? null,
       entry.result,
       entry.detail ?? null,
+      entry.actorSessionId ?? null,
     );
   }
 

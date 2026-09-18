@@ -24,11 +24,13 @@ import { buildArtifactWorkspace } from "./core/artifacts.js";
 import { getAppVersion } from "./core/version.js";
 import { readTelemetryFile } from "./memory/telemetry.js";
 import { setConfirmProvider, createHttpConfirmProvider, confirmResponse } from "./hooks/confirm-channel.js";
+import { resetTurns } from "./hooks/turn-registry.js";
 import { setAskProvider, createHttpAskProvider, askResponse } from "./tools/ask-channel.js";
 import { eventBus } from "./server/event-bus.js";
 import { mimeFromPath } from "./core/preview.js";
 import { auditLogger } from "./core/audit-logger.js";
 import { jobRunner } from "./core/job-runner.js";
+import { subagentRunner } from "./core/subagent-runner.js";
 import { scheduler } from "./core/scheduler.js";
 import { parseNaturalSchedule } from "./core/nl-schedule.js";
 import { packageInstaller, parseSkillMeta } from "./core/package-installer.js";
@@ -718,6 +720,15 @@ export function startServer(deps: ServerDeps, port: number) {
     }
 
     if (url.startsWith(apiUrl("/agents/")) && req.method === "POST") {
+      // 写面三件套优先于依赖可用性：智能体配置的增删改都会改变工具白名单/权限模式，先过门
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
       if (!deps.saveAgentConfig || !deps.deleteAgentConfig || !deps.isBuiltinAgent) {
         sendJSON(res, 503, { error: "Agent config not available" });
         return;
@@ -876,6 +887,8 @@ export function startServer(deps: ServerDeps, port: number) {
       const ok = deps.sessionStore.deleteSession(sessionId);
       if (ok) {
         deps.modelRouter.deleteScope(sessionId);
+        resetTurns(sessionId);
+        subagentRunner.interruptByParent(sessionId);
         eventBus.broadcast({ type: "session/update", sessionId, kind: "delete" });
       }
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "Session not found" });
@@ -1895,6 +1908,117 @@ export function startServer(deps: ServerDeps, port: number) {
       const jobId = url.slice(apiUrl("/jobs/").length);
       const ok = jobRunner.cancel(jobId);
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "无法取消（仅排队中任务可取消）" });
+      return;
+    }
+
+    // ─── 子智能体（Sprint 52 T5）───
+    if (new URL(url, "http://localhost").pathname === apiUrl("/subagents") && req.method === "GET") {
+      const parentSessionId = new URL(url, "http://localhost").searchParams.get("parentSessionId") ?? undefined;
+      sendJSON(res, 200, { subagents: subagentRunner.isInitialized() ? subagentRunner.list(parentSessionId) : [] });
+      return;
+    }
+    if (new URL(url, "http://localhost").pathname === apiUrl("/subagents") && req.method === "POST") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let req2: { agentId?: string; task?: string; readOnly?: boolean; parentSessionId?: string };
+      try {
+        req2 = JSON.parse(body) as typeof req2;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!req2.agentId || !req2.task) {
+        sendJSON(res, 400, { error: "Missing 'agentId' or 'task'" });
+        return;
+      }
+      if (!subagentRunner.isInitialized()) {
+        sendJSON(res, 503, { error: "Subagent runner not initialized" });
+        return;
+      }
+      // 归属校验：拒绝指向不存在会话的脏 ownership 记录
+      if (req2.parentSessionId && !deps.sessionStore?.getSession(req2.parentSessionId)) {
+        sendJSON(res, 400, { error: `父会话不存在: ${req2.parentSessionId}` });
+        return;
+      }
+      try {
+        const id = subagentRunner.spawn(req2.agentId, req2.task, {
+          readOnly: req2.readOnly !== false,
+          parentSessionId: req2.parentSessionId,
+        });
+        sendJSON(res, 200, { id });
+      } catch (err) {
+        sendJSON(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+    if (url.startsWith(apiUrl("/subagents/")) && url.includes("/messages") && req.method === "POST") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
+      const id = url.slice(apiUrl("/subagents/").length).replace(/\/messages(\?.*)?$/, "");
+      let body: string;
+      try {
+        body = await parseBody(req);
+      } catch {
+        sendJSON(res, 413, { error: "Body too large" });
+        return;
+      }
+      let req2: { message?: string };
+      try {
+        req2 = JSON.parse(body) as typeof req2;
+      } catch {
+        sendJSON(res, 400, { error: "Invalid JSON" });
+        return;
+      }
+      if (!req2.message) {
+        sendJSON(res, 400, { error: "Missing 'message'" });
+        return;
+      }
+      if (!subagentRunner.isInitialized()) {
+        sendJSON(res, 503, { error: "Subagent runner not initialized" });
+        return;
+      }
+      const ok = subagentRunner.send(id, req2.message);
+      sendJSON(res, ok ? 200 : 400, ok ? { ok: true } : { error: "发送失败" });
+      return;
+    }
+    if (url.startsWith(apiUrl("/subagents/")) && req.method === "DELETE") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
+      const u = new URL(req.url ?? "", "http://localhost");
+      const id = u.pathname.slice(apiUrl("/subagents/").length);
+      if (!subagentRunner.isInitialized()) {
+        sendJSON(res, 503, { error: "Subagent runner not initialized" });
+        return;
+      }
+      // ?purge=1 → 彻底关闭并释放槽位；缺省为 interrupt（保留会话可续接）
+      const purge = u.searchParams.get("purge") === "1";
+      const ok = purge ? subagentRunner.close(id) : subagentRunner.interrupt(id);
+      sendJSON(res, ok ? 200 : 404, ok ? { ok: true, purged: purge } : { error: purge ? "关闭失败" : "中断失败" });
       return;
     }
 

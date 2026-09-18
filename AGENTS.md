@@ -23,7 +23,7 @@
 ## 关键约束（违反会直接出错）
 
 - **ESM**：相对导入必须带 `.js` 扩展名（tsx 宽容，dist/ 报错）
-- **单例**：ToolRegistry / HookManager / McpManager / SkillRegistry / pluginManager / jobRunner / scheduler / packageInstaller 经 `.getInstance()` 或导出常量访问，不要 `new`
+- **单例**：ToolRegistry / HookManager / McpManager / SkillRegistry / pluginManager / jobRunner / subagentRunner / scheduler / packageInstaller 经 `.getInstance()` 或导出常量访问，不要 `new`
 - **kebab-case** 文件名；领域类型集中 `src/types.ts`（`import type`）
 - **不添加注释**，除非绝对必要
 - `ToolResult` = `{ success, content, error? }`；`HookResult` = `{ proceed, modifiedData?, message? }`
@@ -34,9 +34,10 @@
 
 ## 架构速览
 
-- **后端** `src/`：核心 `core/`（agent-loop / model-router / context-manager / app-factory 应用即时生成 / tool-registry / event-bus）；设计文档见 `docs/`（个人AI-Agent助手设计方案.md、AIOS-架构升级方案.md），sprint 计划在 `plans/`
-- **智能体** `src/agents/`：7 内置专家（TS 默认 + YAML 覆盖）+ 自定义（GenericAgent）；`reloadAgent(id)` 热重载免重启；工具白名单 `filterVisibleTools`（mcp 前缀匹配 + strictTools 关豁免）
-- **工具** `src/tools/` + `src/mcp/`：9 内置（fs 四件套 / terminal_exec / web / ask_user）；MCP 工具 `mcp_{server}_{tool}`；插件 `setup(ctx)` fail-soft；.aw 资产包（zip+manifest）
+- **后端** `src/`：核心 `core/`（agent-loop / model-router / context-manager / app-factory 应用即时生成 / tool-registry / event-bus）；唯一正式架构文档 `docs/AiWorker架构.md`，逐期演进见 `plans/sprint-history.md`，活计划在 `plans/`（roadmap-next + 当前 sprint）
+- **智能体** `src/agents/`：7 内置专家（TS 默认 + YAML 覆盖）+ 自定义（GenericAgent）；`reloadAgent(id)` 热重载免重启；工具白名单 `filterVisibleTools`（mcp 前缀匹配 + strictTools 关豁免；受限工具需显式列出；`readOnly` 走闭集）
+- **子智能体** `src/core/subagent-runner.ts`（Sprint 52）：`queued→running→idle|failed`，可续接/中断/观测；控制面 4 工具（`spawn_agent`/`send_message`/`list_agents`/`interrupt_agent`，受限工具+深度 1 双层校验）；`subagent-rules.ts` 放常量（**无依赖模块**，避免 runner↔tools 循环导入）；`subagent-ownership.ts` 记归属供父 `/rewind` 连带回滚；执行层硬校验见 `agent-loop.ts` 的 `executeToolInner`（可见集合不匹配即拒绝）
+- **工具** `src/tools/` + `src/mcp/`：9 内置（fs 四件套 / terminal_exec / web / ask_user）；MCP 工具 `mcp_{server}_{tool}`；插件 `setup(ctx)` fail-soft；.aw 资产包（zip+manifest）；`ToolContext.signal` 供工具响应中断（`terminal_exec` 按进程树杀：win32 `taskkill /T /F`、posix 进程组）
 - **记忆** `src/memory/`：SQLite(WAL)+FTS5；事件溯源 `session_events` 仅追加；三层记忆（工作/情景/语义）
 - **安全** `src/security/` + `hooks/`：ask/plan/auto 权限矩阵（**无确认通道 fail-closed**）；沙箱策略 `config/sandbox.json`；应用能力强制层（**无 terminal**）
 - **Web** `web/`：Svelte 5 + Vite；API 前缀 `/api/v1`；WS 总线 `/api/v1/ws`（chat SSE + eventBus 双写）；store 在 `lib/stores/`

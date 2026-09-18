@@ -9,6 +9,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { ModelRouter } from "./model-router.js";
 import { ContextManager } from "./context-manager.js";
 import { jobRunner } from "./job-runner.js";
+import { subagentRunner } from "./subagent-runner.js";
+import { registerSubagentTools } from "./subagent-tools.js";
 import { scheduler } from "./scheduler.js";
 import { ProjectProfiler } from "./project-profiler.js";
 import { SessionStore } from "../memory/session-store.js";
@@ -24,6 +26,7 @@ import { DEFAULT_PROTECTED_PATHS } from "../security/permission-model.js";
 import { requestConfirm } from "../hooks/confirm-channel.js";
 import { loadHooksFromConfig } from "../hooks/hook-config-loader.js";
 import { hookManager } from "../hooks/hook-manager.js";
+import { setCompletedTurnsResolver } from "../hooks/turn-registry.js";
 import { createEvaluateSkillCreation } from "../hooks/handlers.js";
 import { DefaultAgent } from "../agents/default-agent.js";
 import { ResearchAgent } from "../agents/research-agent.js";
@@ -144,6 +147,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
   mkdirSync(resolve(dataDir, "audit"), { recursive: true });
 
   registerBuiltinTools();
+  registerSubagentTools();
 
   const skillsDir = resolve(process.cwd(), "skills");
   const skillCount = skillRegistry.loadFromDir(skillsDir);
@@ -237,6 +241,9 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
 
   const telemetry = new TelemetryCoordinator(dataDir);
   const checkpointStore = new CheckpointStore(dataDir);
+  // 回合号回填：口径取 turn_logs（onTaskComplete 与 commitTurn 同批写入 = 已提交回合）。
+  // 不用检查点 manifest：它在回合**开始**时创建，未提交的回合也有目录，用它回填会跳号并破坏"异常回合复用同一号"
+  setCompletedTurnsResolver((sessionId) => sessionStore.getLastTurnSeq(sessionId));
   const hooksCount = loadHooksFromConfig(resolve(process.cwd(), "config", "hooks.json"), {
     dangerDetector,
     permissionModel,
@@ -355,11 +362,17 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
   const applyConfigField = (field: string, value: unknown): { ok: boolean; error?: string } => {
     try {
       switch (field) {
-        case "model": {
+        // "model" 是文档化的规范字段名；"profileKey" 是 GET /config 的读侧字段名，
+        // 前端曾按读侧名写回（报「未知配置项: profileKey」）—— 两个名字都收，避免同义字段各写一半
+        case "model":
+        case "profileKey": {
           const v = String(value);
-          const valid = modelRouter.getAvailableModels().find((m) => m.key === v);
+          // 大小写归一：profile key 在 addProfile/setDefaultModel 里都按 lowercase 存，
+          // 校验若用原始串比对就会"能存进去、选不回来"（CLI /config model 已归一，此处对齐）
+          const normalized = v.trim().toLowerCase();
+          const valid = modelRouter.getAvailableModels().find((m) => m.key === normalized);
           if (!valid) return { ok: false, error: `未知模型: ${v}` };
-          modelRouter.setDefaultModel(v);
+          modelRouter.setDefaultModel(valid.key);
           break;
         }
         case "addModel": {
@@ -430,7 +443,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<Runtime> {
           modelRouter.setMaxTokens(null);
           break;
         default:
-          return { ok: false, error: `未知配置项: ${field}` };
+          return { ok: false, error: `未知配置项: ${field}（可用：model/profileKey/addModel/temperature/maxTokens/thinking/skillEvo/reset）` };
       }
       persistRuntimeConfig();
       return { ok: true };
@@ -537,11 +550,18 @@ ${text}
   });
 
   // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───
+  const createAgentFn = (agentId: string) => agents[agentId] ?? agents["default"];
   jobRunner.init({
-    createAgent: (agentId) => agents[agentId] ?? agents["default"],
+    createAgent: createAgentFn,
     workingDir,
     sessionStore,
     mode: defaultMode,
+  });
+  subagentRunner.init({
+    createAgent: createAgentFn,
+    workingDir,
+    sessionStore,
+    getMode: () => permissionModel.getMode(),
   });
   scheduler.init(
     { submit: (agentId, prompt) => jobRunner.submit(agentId, prompt) },
@@ -615,6 +635,7 @@ ${text}
     getMcpStatuses: () => mcpManager.getStatuses(),
     getPlugins: () => pluginManager.getPlugins(),
     shutdown: async () => {
+      await subagentRunner.shutdown();
       if (schedulerStarted) {
         scheduler.stop();
         schedulerStarted = false;

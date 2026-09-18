@@ -5,7 +5,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { exec, type ExecOptions } from "node:child_process";
+import { exec, spawnSync, type ExecOptions } from "node:child_process";
 import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext, ToolResult } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { buildFileArtifact, isTextPath, sniffIsBinary, simpleDiffLines, formatSize } from "../core/preview.js";
@@ -470,22 +470,62 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const finalCommand = process.platform === "win32" ? `chcp 65001 >nul & ${command}` : command;
 
   return new Promise((resolve) => {
-    exec(finalCommand, options, (error, stdout, stderr) => {
+    /** 中断时按进程树杀（Windows 上 exec 的 pid 是 cmd.exe，真实命令是孙进程：
+     *  exec 的 signal 选项只能杀直接子进程，实测不可靠 → 用 taskkill /T /F 杀树） */
+    const killTree = (pid: number): void => {
+      if (process.platform === "win32") {
+        try {
+          spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+        } catch {
+          /* 杀树失败不阻塞返回 */
+        }
+        return;
+      }
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* 进程可能已退出 */
+        }
+      }
+    };
+
+    let settled = false;
+    let onAbort: (() => void) | null = null;
+    const finish = (body: ToolResult): void => {
+      if (settled) return;
+      settled = true;
+      if (onAbort && ctx.signal) ctx.signal.removeEventListener("abort", onAbort);
+      resolve(body);
+    };
+
+    const child = exec(finalCommand, options, (error, stdout, stderr) => {
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
+      if (interrupted) {
+        finish({
+          tool_call_id: "",
+          success: false,
+          content: out,
+          error: `命令已被中断（进程树已终止）: ${command}`,
+        });
+        return;
+      }
       if (error) {
         // 命令 2>&1 时 stderr 已合并进 stdout：真实失败原因在 out 里，
         // 若只回 error.message（笼统的 "Command failed: ..."）会丢失根因。
         // 失败时回传 stdout 尾部作为错误详情，供模型/用户定位（如 'node' is not recognized）。
         const detail = (err || out || error.message).trim().slice(-1500);
-        resolve({
+        finish({
           tool_call_id: "",
           success: false,
           content: out,
           error: detail || error.message,
         });
       } else {
-        resolve({
+        finish({
           tool_call_id: "",
           success: true,
           // 超长输出落盘，避免撑爆上下文
@@ -493,6 +533,16 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
         });
       }
     });
+
+    let interrupted = false;
+    if (ctx.signal) {
+      onAbort = () => {
+        interrupted = true;
+        if (child.pid) killTree(child.pid);
+      };
+      if (ctx.signal.aborted) onAbort();
+      else ctx.signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
 };
 

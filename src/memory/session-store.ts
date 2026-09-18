@@ -229,12 +229,14 @@ export class SessionStore {
     return row?.last_seq ?? 0;
   }
 
-  /** 追加消息（单点入口：同时写事件日志 + messages 投影，同事务；assistant 可携带 usage 供轨迹/遥测） */
+  /** 追加消息（单点入口：同时写事件日志 + messages 投影，同事务；assistant 可携带 usage 供轨迹/遥测）
+   *  @returns 该消息事件日志的 seq（调用方据此界定"当前消息"与历史的分界；非 user/assistant 无事件时为 0） */
   appendMessage(
     sessionId: string,
     message: Message,
     usage?: { promptTokens: number; completionTokens: number; totalTokens: number },
-  ): void {
+  ): number {
+    let eventSeq = 0;
     const tx = this.db.transaction(() => {
       const seqStmt = this.db.prepare(`SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM messages WHERE session_id = ?`);
       const { next_seq } = seqStmt.get(sessionId) as { next_seq: number };
@@ -255,11 +257,11 @@ export class SessionStore {
 
       // 事件日志（user/assistant 消息；assistant 携带 usage 由轨迹/遥测消费）
       if (message.role === "user") {
-        this.appendEvent(sessionId, "user/message", message as unknown as Record<string, unknown>, "session-store");
+        eventSeq = this.appendEvent(sessionId, "user/message", message as unknown as Record<string, unknown>, "session-store");
         // 自动标题：首条用户消息且未设置标题时（模板生成，不调 LLM）
         this.maybeAutoTitle(sessionId, messageText(message));
       } else if (message.role === "assistant") {
-        this.appendEvent(
+        eventSeq = this.appendEvent(
           sessionId,
           "assistant/message",
           { message, ...(usage ? { usage } : {}) } as unknown as Record<string, unknown>,
@@ -271,6 +273,7 @@ export class SessionStore {
       this.db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(Date.now(), sessionId);
     });
     tx();
+    return eventSeq;
   }
 
   /** 自动标题：会话无标题（summary 为空）时用首条用户消息首行截断生成；已重命名/已有标题则不覆盖 */
@@ -728,6 +731,14 @@ export class SessionStore {
       log.resultPreview,
       log.error ?? null,
     );
+  }
+
+  /** 已提交回合的最大序号（0 = 尚无已提交回合）；turn-registry 据此在进程重启后回填回合号 */
+  getLastTurnSeq(sessionId: string): number {
+    const row = this.db
+      .prepare(`SELECT COALESCE(MAX(seq), 0) as last_seq FROM turn_logs WHERE session_id = ?`)
+      .get(sessionId) as { last_seq: number } | undefined;
+    return row?.last_seq ?? 0;
   }
 
   getTurnLogs(sessionId: string): TurnLog[] {
