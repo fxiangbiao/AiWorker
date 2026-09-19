@@ -27,8 +27,8 @@ jobs:
         run: npm run build
       - name: Lint
         run: npm run lint
-      - name: 测试
-        run: npm test
+      - name: 测试（串行 worker：中断杀树/计时类用例在共享 runner 高并发下抖动）
+        run: npx vitest run --pool=forks --poolOptions.forks.minForks=1 --poolOptions.forks.maxForks=1
 
   web:
     name: Web（svelte-check / build）
