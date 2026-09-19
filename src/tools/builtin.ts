@@ -504,7 +504,7 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     const child = exec(finalCommand, options, (error, stdout, stderr) => {
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
-      if (interrupted) {
+      if (interrupted || ctx.signal?.aborted) {
         finish({
           tool_call_id: "",
           success: false,
@@ -539,6 +539,14 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
       onAbort = () => {
         interrupted = true;
         if (child.pid) killTree(child.pid);
+        // exec 回调只在子进程正常收尾时触发；taskkill /F 强杀后 stdout/stderr 管道
+        // 可能长期不关闭，回调迟迟不来 → 主动兜底结算，中断响应不受管道悬挂影响
+        setTimeout(() => finish({
+          tool_call_id: "",
+          success: false,
+          content: "",
+          error: `命令已被中断（进程树已终止）: ${command}`,
+        }), 50).unref?.();
       };
       if (ctx.signal.aborted) onAbort();
       else ctx.signal.addEventListener("abort", onAbort, { once: true });
