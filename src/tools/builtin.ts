@@ -5,7 +5,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { exec, spawnSync, type ExecOptions } from "node:child_process";
+import { exec, spawn, spawnSync, type ExecOptions } from "node:child_process";
 import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext, ToolResult } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { buildFileArtifact, isTextPath, sniffIsBinary, simpleDiffLines, formatSize } from "../core/preview.js";
@@ -470,15 +470,15 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const finalCommand = process.platform === "win32" ? `chcp 65001 >nul & ${command}` : command;
 
   return new Promise((resolve) => {
-    /** 中断时按进程树杀。Windows 上 exec 的 pid 是 cmd.exe，真实命令是其子进程：
-     *  taskkill /T /F 同步硬杀整棵树（实测可靠）；exec 的 signal 选项只杀直接子进程，
-     *  SIGTERM 会让 cmd.exe 立即退出但孙进程存活——绝不能作为第一步 */
+    /** 中断时按进程树杀（posix：进程组 SIGKILL；win32 见 onAbort——exec 的 pid 是 cmd.exe，
+     *  真实命令是其子进程，taskkill /T /F 杀整棵树，且必须异步 spawn） */
     const killTree = (pid: number): void => {
       if (process.platform === "win32") {
         try {
-          spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+          const killer = spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
+          killer.on("error", () => { /* 杀树失败不阻塞返回 */ });
         } catch {
-          /* 杀树失败不阻塞返回 */
+          /* 同上 */
         }
         return;
       }
@@ -546,9 +546,12 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     if (ctx.signal) {
       onAbort = () => {
         interrupted = true;
-        // 同步硬杀整棵树（/F 不给 cmd.exe「体面退出但放过孙进程」的机会）
+        // 杀树必须走异步（killTree 内部 spawn，不阻塞事件循环）：abort 派发栈里同步
+        // 阻塞会让 child "close" 结算饿死 → exec 补发合成 SIGTERM exit（_handle 置 null）
+        // → 孙进程继承的 stdout 管道句柄永不关闭 → 回调不来，兜底结算返回后孙进程仍活到
+        // 自然跑完（CI 实测）。正常路径 close 先到、finish 幂等丢弃兜底单。
         if (child.pid) killTree(child.pid);
-        // 兜底结算：taskkill 后管道可能长期不关、exec 回调不来，最迟 1s 返回中断结果
+        // 兜底结算：exec 回调在管道悬挂等场景可能长期不来，最迟 1s 主动返回中断结果
         settleTimer = setTimeout(() => finish(interruptedResult()), 1000);
         settleTimer.unref?.();
       };
