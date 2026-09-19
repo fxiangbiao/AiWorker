@@ -7,8 +7,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { CheckpointStore } from "../src/core/checkpoint-store.js";
+import { RewindService } from "../src/core/rewind-service.js";
 import { createCaptureDiff, createTurnLogger } from "../src/hooks/handlers.js";
-import { resetTurns, pendingTurn } from "../src/hooks/turn-registry.js";
+import { resetTurns, pendingTurn, setCompletedTurnsResolver } from "../src/hooks/turn-registry.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { makeTestDir, teardownEnv } from "./helpers.js";
 import type { HookContext } from "../src/types.js";
@@ -32,6 +33,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
+  setCompletedTurnsResolver(null);
   resetTurns();
 });
 
@@ -339,5 +341,192 @@ describe("captureDiff 与检查点集成（回合日志 + 写前快照）", () =
     expect(rejected[0]!.result).toBe("blocked");
 
     clearRegistry();
+  });
+});
+
+describe("D4 检查点归属（父会话 /rewind 与子会话改动）", () => {
+  it("D4-a 子会话写入只进子会话检查点，父 /rewind 看不见；turn 号来自进程内计数器", async () => {
+    sessionStore = new SessionStore(resolve(testDir, "data", "d4a.db"));
+    const projDir = resolve(testDir, "proj");
+    mkdirSync(projDir, { recursive: true });
+    const parentSid = sessionStore.createSession("probe").id;
+    const childSid = sessionStore.createSession("probe").id;
+    const turnLogger = createTurnLogger({ sessionStore, checkpointStore: store });
+    const capture = createCaptureDiff({
+      workingDir: projDir,
+      dataDir: resolve(testDir, "data"),
+      checkpointStore: store,
+      scanThrottleMs: 0,
+    });
+
+    // 真实钩子路径：父会话与子会话各自触发 onMessage
+    await turnLogger({
+      event: "onMessage",
+      agentId: "probe",
+      sessionId: parentSid,
+      data: { instruction: "父问题" },
+    });
+    await turnLogger({
+      event: "onMessage",
+      agentId: "probe",
+      sessionId: childSid,
+      data: { instruction: "子任务" },
+    });
+
+    expect(store.getManifest(parentSid, 1)?.userInput).toBe("父问题");
+    expect(store.getManifest(parentSid, 1)?.messageSeqBefore).toBe(1);
+    // 两个会话各自从 turn-1 开始 → 计数器按会话独立，与 getLastMessageSeq 无关
+    expect(store.getManifest(childSid, 1)?.userInput).toBe("子任务");
+
+    const write = async (sid: string, file: string, content: string) => {
+      const args = JSON.stringify({ path: file, content });
+      await capture({ event: "onToolCallPre", agentId: "probe", sessionId: sid, data: { toolName: "fs_write", args } });
+      writeFileSync(file, content);
+      await capture({
+        event: "onToolCallPost",
+        agentId: "probe",
+        sessionId: sid,
+        data: { toolName: "fs_write", args, result: { success: true, content: "写入完成" } },
+      });
+    };
+
+    const parentFile = resolve(projDir, "parent.txt");
+    const childFile = resolve(projDir, "child.txt");
+    await write(parentSid, parentFile, "P");
+    await write(childSid, childFile, "C");
+
+    const preview = new RewindService({ sessionStore, checkpointStore: store }).preview(
+      parentSid,
+      1,
+      "all",
+    );
+    const paths = preview.files.map((f) => f.path);
+    expect(paths).toContain(parentFile);
+    expect(paths).not.toContain(childFile);
+    expect(store.getManifest(childSid, 1)!.files.map((f) => f.path)).toEqual([childFile]);
+  });
+
+  it("D4-b 进程重启后 pendingTurn 从已提交回合回填：新回合落到 turn-N+1，不并入旧 manifest（T0.5 修复后）", async () => {
+    sessionStore = new SessionStore(resolve(testDir, "data", "d4b.db"));
+    const projDir = resolve(testDir, "proj2");
+    mkdirSync(projDir, { recursive: true });
+    const sid = sessionStore.createSession("probe").id;
+    const turnLogger = createTurnLogger({ sessionStore, checkpointStore: store });
+    const capture = createCaptureDiff({
+      workingDir: projDir,
+      dataDir: resolve(testDir, "data"),
+      checkpointStore: store,
+      scanThrottleMs: 0,
+    });
+
+    // 第 1 回合（真实顺序：onMessage → 落库 user → 工具写入 → onTaskComplete 提交）
+    await turnLogger({ event: "onMessage", agentId: "probe", sessionId: sid, data: { instruction: "老问题" } });
+    sessionStore.appendMessage(sid, { role: "user", content: "老问题" });
+    const first = resolve(projDir, "first.txt");
+    await capture({
+      event: "onToolCallPre",
+      agentId: "probe",
+      sessionId: sid,
+      data: { toolName: "fs_write", args: JSON.stringify({ path: first }) },
+    });
+    await turnLogger({
+      event: "onTaskComplete",
+      agentId: "probe",
+      sessionId: sid,
+      data: { messages: [], truncated: false, toolCallsExecuted: 1, iterations: 1 },
+    });
+    // 「已提交回合」的真源：turn_logs.seq（onTaskComplete 与 commitTurn 同批写入）
+    expect(sessionStore.getTurnLogs(sid).map((t) => t.seq)).toEqual([1]);
+
+    // 与 bootstrap 一致的回填接线（生产在 bootstrap 注入；测试里按同一口径接线）
+    setCompletedTurnsResolver((session) => sessionStore.getLastTurnSeq(session));
+
+    resetTurns(sid); // 模拟进程重启：内存计数清空，DB 保留
+
+    // 修复后：pendingTurn 从已提交回合回填 → 2（修复前恒为 1，新回合会并入旧 turn-1）
+    expect(pendingTurn(sid)).toBe(2);
+
+    await turnLogger({ event: "onMessage", agentId: "probe", sessionId: sid, data: { instruction: "重启后的问题" } });
+    sessionStore.appendMessage(sid, { role: "user", content: "重启后的问题" });
+    const second = resolve(projDir, "second.txt");
+    await capture({
+      event: "onToolCallPre",
+      agentId: "probe",
+      sessionId: sid,
+      data: { toolName: "fs_write", args: JSON.stringify({ path: second }) },
+    });
+
+    expect(store.listTurns(sid).map((m) => m.turn)).toEqual([1, 2]);
+    const oldTurn = store.getManifest(sid, 1)!;
+    expect(oldTurn.userInput).toBe("老问题");
+    expect(oldTurn.files.map((f) => f.path)).toEqual([first]);
+    const newTurn = store.getManifest(sid, 2)!;
+    expect(newTurn.userInput).toBe("重启后的问题");
+    expect(newTurn.files.map((f) => f.path)).toEqual([second]);
+    // 元数据是新回合的值，不是旧回合的（messageSeqBefore: turn1=1, turn2=2）
+    expect(oldTurn.messageSeqBefore).toBe(1);
+    expect(newTurn.messageSeqBefore).toBe(2);
+  });
+});
+
+describe("T0.5 缺陷② 重启后回合号从已提交回合回填", () => {
+  it("未注入解析器时行为与修复前完全一致：重启后 pendingTurn 回到 1（无回填）", async () => {
+    sessionStore = new SessionStore(resolve(testDir, "data", "t05a.db"));
+    const sid = sessionStore.createSession("probe").id;
+    const turnLogger = createTurnLogger({ sessionStore, checkpointStore: store });
+
+    await turnLogger({ event: "onMessage", agentId: "probe", sessionId: sid, data: { instruction: "Q1" } });
+    sessionStore.appendMessage(sid, { role: "user", content: "Q1" });
+    await turnLogger({
+      event: "onTaskComplete",
+      agentId: "probe",
+      sessionId: sid,
+      data: { messages: [], truncated: false, toolCallsExecuted: 0, iterations: 1 },
+    });
+    expect(sessionStore.getLastTurnSeq(sid)).toBe(1);
+
+    resetTurns(sid);
+    expect(pendingTurn(sid)).toBe(1);
+  });
+
+  it("解析器抛错时不把异常抛给工具调用路径（按无回填处理）", () => {
+    setCompletedTurnsResolver(() => {
+      throw new Error("模拟 DB 不可读");
+    });
+    expect(() => pendingTurn("sess-resolver-throw")).not.toThrow();
+    expect(pendingTurn("sess-resolver-throw")).toBe(1);
+  });
+
+  it("口径实测：回合已开始未提交 → manifest 已建而 turn_logs 为空；用 turn_logs 回填不跳号", async () => {
+    sessionStore = new SessionStore(resolve(testDir, "data", "t05c.db"));
+    const projDir = resolve(testDir, "proj3");
+    mkdirSync(projDir, { recursive: true });
+    const sid = sessionStore.createSession("probe").id;
+    const turnLogger = createTurnLogger({ sessionStore, checkpointStore: store });
+    const capture = createCaptureDiff({
+      workingDir: projDir,
+      dataDir: resolve(testDir, "data"),
+      checkpointStore: store,
+      scanThrottleMs: 0,
+    });
+
+    // 回合开始（beginTurn 建 manifest）→ 写了文件 → **未提交**（没有 onTaskComplete）
+    await turnLogger({ event: "onMessage", agentId: "probe", sessionId: sid, data: { instruction: "未提交的问题" } });
+    sessionStore.appendMessage(sid, { role: "user", content: "未提交的问题" });
+    await capture({
+      event: "onToolCallPre",
+      agentId: "probe",
+      sessionId: sid,
+      data: { toolName: "fs_write", args: JSON.stringify({ path: resolve(projDir, "orphan.txt") }) },
+    });
+
+    // 两个候选数据源在此分叉：manifest 口径 = 1，turn_logs 口径 = 0
+    expect(store.listTurns(sid).map((m) => m.turn)).toEqual([1]);
+    expect(sessionStore.getLastTurnSeq(sid)).toBe(0);
+
+    setCompletedTurnsResolver((session) => sessionStore.getLastTurnSeq(session));
+    resetTurns(sid);
+    // 选 turn_logs：异常回合的号被复用（不跳号、不把号推高）
+    expect(pendingTurn(sid)).toBe(1);
   });
 });

@@ -6,6 +6,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { join, resolve } from "node:path";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { toolRegistry } from "../src/core/tool-registry.js";
+import { terminalSessionPool } from "../src/tools/terminal-session.js";
 import type { ToolContext } from "../src/types.js";
 import { buildPathPolicy, setPathPolicyOverride } from "../src/security/path-policy.js";
 import {
@@ -345,5 +346,34 @@ describe("20. fs 四件套路径边界（Sprint 49）", () => {
       expect((await toolRegistry.getHandler("fs_read")!({ path: join(outside, "cfg-read.txt") }, ctx(wd))).success).toBe(false);
       expect((await toolRegistry.getHandler("fs_write")!({ path: join(outside, "x.txt"), content: "x" }, ctx(wd))).success).toBe(false);
     });
+  });
+});
+
+// ── terminal_session 池与 terminal_exec 的会话归属（Sprint 52 D2-d） ──
+
+describe("terminal_session 池可回收 / terminal_exec 不使用池", () => {
+  afterEach(() => {
+    terminalSessionPool.clear();
+  });
+
+  it("terminal_session 池按 sessionId 可回收；terminal_exec 完全不使用池", async () => {
+    const sid = "probe-pool-d2";
+    terminalSessionPool.start(sid);
+    expect(terminalSessionPool.get(sid)).toBeDefined();
+    terminalSessionPool.end(sid);
+    expect(terminalSessionPool.get(sid)).toBeUndefined();
+
+    const handler = toolRegistry.getHandler("terminal_exec");
+    expect(handler).toBeTruthy();
+    const ctx: ToolContext = {
+      agentId: "probe",
+      sessionId: sid,
+      workingDir: testDir,
+      permissions: "auto",
+      dataDir: testDir,
+    };
+    const res = await handler!({ command: "echo pool-probe", timeout: 20000 }, ctx);
+    expect(res.success).toBe(true);
+    expect(terminalSessionPool.get(sid)).toBeUndefined();
   });
 });
