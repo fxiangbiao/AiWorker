@@ -303,6 +303,7 @@ describe("D2 AbortSignal 真实语义", () => {
     expect(elapsed).toBeLessThan(2000);
 
     // 等待原本的完成时刻已过：进程树确已被杀，命令体没能跑完写文件
+    // （兜底结算最迟 1s 返回，elapsed≈1000 → 此处再等约 1600ms，总时长越过 2500ms 定时器）
     await sleep(2600 - elapsed);
     expect(existsSync(doneFile)).toBe(false);
     expect(processManager.list().length).toBe(procsBefore);
