@@ -56,7 +56,7 @@
 
 ### 1.3–1.5 诊断结论
 
-> 详见 `test/sprint-52-diagnosis.test.ts`（16 例）+ 附录 A。关键结论：
+> 详见按模块并入的 T0 诊断用例（`agent-loop` / `checkpoint` / `tools` / `process-tree` / `llm-adapter` / `memory` / `trace`）+ 附录 A。关键结论：
 > - D2：abort 后 `runStream` 返回不抛（`truncated:true`），但**轮边界中断**；`ToolContext` 无 signal 字段
 > - D3：续接成立；既有缺陷"用户消息注入两次"已由 T0.5 修复
 > - D4：B 可行（注册表路线 3 处）；`pendingTurn` 回填已由 T0.5 修复
@@ -276,7 +276,8 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 
 ## 附录 A：T0 诊断证据摘要
 
-> 完整探针：`test/sprint-52-diagnosis.test.ts`（16 例）。复现：`npx vitest run test/sprint-52-diagnosis.test.ts`
+> 完整探针已按模块并入：`agent-loop`（D2/D3/T0.5①）、`checkpoint`（D4/T0.5②）、`tools`（D2-d）、`process-tree`（Q6）、`llm-adapter`（D5-a 去重并入）、`memory` + `trace`（D5-b 拆分）。
+> 复现：`npx vitest run test/agent-loop.test.ts test/checkpoint.test.ts test/tools.test.ts test/process-tree.test.ts test/llm-adapter.test.ts test/memory.test.ts test/trace.test.ts`
 
 | 项 | 结论 | 关键证据 |
 |---|---|---|

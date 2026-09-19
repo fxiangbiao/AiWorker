@@ -146,6 +146,8 @@ describe("TelemetryCoordinator", () => {
     // JSONL 文件逐行 JSON
     const raw = readFileSync(resolve(dir, "telemetry", "s1.jsonl"), "utf-8");
     expect(raw.split("\n").filter(Boolean)).toHaveLength(2);
+    // 遥测按会话分文件：另一个会话读回 0 条（不跨会话聚合）
+    expect(readTelemetryFile(dir, "s2")).toHaveLength(0);
 
     await telemetry.shutdown();
   });

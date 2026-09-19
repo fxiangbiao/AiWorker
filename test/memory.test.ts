@@ -78,6 +78,46 @@ describe("4. 会话存储 (SQLite + FTS5)", () => {
     expect(recent.length).toBeGreaterThanOrEqual(1);
     expect(recent[0].sessionId).toBe(session.id);
   });
+  it("TurnLog 口径：getRecentTurnLogs 不是跨会话聚合；getTurnLogsByAgent 不存在", () => {
+    const parentSid = sessionStore.createSession("probe").id;
+    const childSid = sessionStore.createSession("probe").id;
+    // 现有回落用例的 turn log 用的是挂钟时刻，这里取更晚的基准，保证"最新会话"是本用例的子会话
+    const now = Date.now();
+    const base = {
+      seq: 1,
+      iterations: 1,
+      toolCallsTotal: 0,
+      toolCallsSuccess: 0,
+      toolCallsFailed: 0,
+      finishReason: "stop",
+    };
+    sessionStore.createTurnLog({
+      ...base,
+      id: "tl-parent",
+      sessionId: parentSid,
+      agentId: "default",
+      userInput: "父问题",
+      startedAt: now,
+      finishedAt: now + 100,
+      tokensPrompt: 100,
+      tokensCompletion: 50,
+    });
+    sessionStore.createTurnLog({
+      ...base,
+      id: "tl-child",
+      sessionId: childSid,
+      agentId: "researcher",
+      userInput: "子任务",
+      startedAt: now + 1000,
+      finishedAt: now + 1100,
+      tokensPrompt: 7,
+      tokensCompletion: 3,
+    });
+
+    // 名字像"最近的跨会话轮次"，实际只返回 started_at 最新的那一个会话
+    expect(sessionStore.getRecentTurnLogs(50).map((t) => t.sessionId)).toEqual([childSid]);
+    expect((sessionStore as unknown as Record<string, unknown>).getTurnLogsByAgent).toBeUndefined();
+  });
 });
 
 describe("5. 上下文压缩", () => {

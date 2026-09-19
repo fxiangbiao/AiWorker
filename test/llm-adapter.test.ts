@@ -401,7 +401,7 @@ describe("ModelRouter 门面", () => {
     expect(coding?.contextWindow).toBe(8192);
   });
 
-  it("会话账本 scope：按 sessionId 累计、差分、deleteScope/reset（Sprint 44）", async () => {
+  it("会话账本 scope：按 sessionId 累计、差分、deleteScope/reset，父会话/按 agent 的聚合入口不存在（Sprint 44）", async () => {
     const dir = makeTestDir("llm-router-scope");
     const cfgPath = resolve(dir, "models.json");
     writeFileSync(
@@ -428,6 +428,11 @@ describe("ModelRouter 门面", () => {
     expect(router.getSessionTokens("nonexistent")).toEqual({ prompt: 0, completion: 0 });
     // 全局含全部 4 次请求（15 × 4 = 60）
     expect(router.getTokenUsage()).toBe(60);
+
+    // 父会话/按 agent 的聚合入口不存在
+    expect(
+      (router as unknown as Record<string, unknown>).getParentTokens,
+    ).toBeUndefined();
 
     // deleteScope 清理单会话
     router.deleteScope("sess-b");
