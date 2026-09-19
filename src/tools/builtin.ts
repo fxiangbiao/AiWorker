@@ -470,8 +470,9 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const finalCommand = process.platform === "win32" ? `chcp 65001 >nul & ${command}` : command;
 
   return new Promise((resolve) => {
-    /** 中断时按进程树杀（Windows 上 exec 的 pid 是 cmd.exe，真实命令是孙进程：
-     *  exec 的 signal 选项只能杀直接子进程，实测不可靠 → 用 taskkill /T /F 杀树） */
+    /** 中断时按进程树杀。Windows 上 exec 的 pid 是 cmd.exe，真实命令是其子进程：
+     *  taskkill /T /F 同步硬杀整棵树（实测可靠）；exec 的 signal 选项只杀直接子进程，
+     *  SIGTERM 会让 cmd.exe 立即退出但孙进程存活——绝不能作为第一步 */
     const killTree = (pid: number): void => {
       if (process.platform === "win32") {
         try {
@@ -501,16 +502,23 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
       resolve(body);
     };
 
+    const interruptedResult = (): ToolResult => ({
+      tool_call_id: "",
+      success: false,
+      content: "",
+      error: `命令已被中断（进程树已终止）: ${command}`,
+    });
+
+    // abort 兜底结算定时器：exec 回调在管道句柄被子进程继承等场景下可能长期不来，
+    // 到点主动结算；正常路径回调先到则此单被 finish 幂等丢弃
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
     const child = exec(finalCommand, options, (error, stdout, stderr) => {
       const out = String(stdout ?? "");
       const err = String(stderr ?? "");
-      if (interrupted) {
-        finish({
-          tool_call_id: "",
-          success: false,
-          content: out,
-          error: `命令已被中断（进程树已终止）: ${command}`,
-        });
+      if (interrupted || ctx.signal?.aborted) {
+        if (settleTimer) clearTimeout(settleTimer);
+        finish(interruptedResult());
         return;
       }
       if (error) {
@@ -538,7 +546,11 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     if (ctx.signal) {
       onAbort = () => {
         interrupted = true;
+        // 同步硬杀整棵树（/F 不给 cmd.exe「体面退出但放过孙进程」的机会）
         if (child.pid) killTree(child.pid);
+        // 兜底结算：taskkill 后管道可能长期不关、exec 回调不来，最迟 1s 返回中断结果
+        settleTimer = setTimeout(() => finish(interruptedResult()), 1000);
+        settleTimer.unref?.();
       };
       if (ctx.signal.aborted) onAbort();
       else ctx.signal.addEventListener("abort", onAbort, { once: true });

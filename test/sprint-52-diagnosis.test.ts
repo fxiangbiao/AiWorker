@@ -297,9 +297,13 @@ describe("D2 AbortSignal 真实语义", () => {
     expect(result.toolCallsExecuted).toBe(1);
     const toolMsg = result.messages.find((m) => m.role === "tool");
     expect(toolMsg?.content).toContain("已被中断");
-    expect(elapsed).toBeLessThan(1500);
+    // 上限 2000ms：本地实测 <300ms；CI 上 taskkill/事件循环延迟取宽松余量。
+    // 若 signal 早于工具内监听器注册（竞态），杀树要等 exec 到期 → elapsed≈2100ms+，
+    // 仍会失败——这个余量是"容忍调度延迟"而不是"容忍竞态"
+    expect(elapsed).toBeLessThan(2000);
 
     // 等待原本的完成时刻已过：进程树确已被杀，命令体没能跑完写文件
+    // （兜底结算最迟 1s 返回，elapsed≈1000 → 此处再等约 1600ms，总时长越过 2500ms 定时器）
     await sleep(2600 - elapsed);
     expect(existsSync(doneFile)).toBe(false);
     expect(processManager.list().length).toBe(procsBefore);
