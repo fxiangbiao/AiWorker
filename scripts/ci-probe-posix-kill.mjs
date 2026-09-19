@@ -1,11 +1,12 @@
 /**
  * 临时 CI 诊断（看完结论即删）：在 ubuntu runner 上确定
- *   A) exec 的直接子进程是否就是命令本体（/bin/sh 会不会 fork 出孙进程）
+ *   A) exec 的直接子进程身份（comm=node → shell 用 exec 顶替自身；comm=sh 且带 node 子进程 → shell fork）
  *   B) 旧杀树逻辑 kill(-pid)+kill(pid) 在该环境是否真能杀掉命令进程
  *   C) 旧逻辑复现 D2-c 场景（2500ms 写文件）后文件是否出现
  *   D) detached:true + 组杀 是否更可靠
  *   E) 新逻辑（ps 子树逐个 SIGKILL）是否可靠
- * 输出以 ::error:: 前缀 → 落到 GitHub annotations，可用公开 API 无 token 回读
+ * 输出以 ::error:: 前缀 → 落到 GitHub annotations，可用公开 API 无 token 回读；
+ * 末尾硬退出：遗留子进程会持有管道句柄让 node 事件循环不退出（上一版就是这样卡住 CI 的）
  */
 
 import { exec, execFileSync } from "node:child_process";
@@ -15,10 +16,11 @@ import { join } from "node:path";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (tag, data) => console.log(`::error::KILLDIAG ${tag} ${JSON.stringify(data)}`);
+const PS_OPTS = { encoding: "utf8", timeout: 5000 };
 
 function psRow(pid) {
   try {
-    return execFileSync("ps", ["-o", "pid=,ppid=,pgid=,sid=,stat=,comm=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    return execFileSync("ps", ["-o", "pid=,ppid=,pgid=,sid=,stat=,comm=", "-p", String(pid)], PS_OPTS).trim();
   } catch {
     return "GONE";
   }
@@ -26,7 +28,7 @@ function psRow(pid) {
 
 function childRows(pid) {
   try {
-    const rows = execFileSync("ps", ["-eo", "pid=,ppid=,pgid=,comm="], { encoding: "utf8" })
+    const rows = execFileSync("ps", ["-eo", "pid=,ppid=,pgid=,comm="], PS_OPTS)
       .split("\n")
       .map((l) => l.trim().split(/\s+/))
       .filter((c) => c.length >= 4 && c[1] === String(pid));
@@ -51,7 +53,7 @@ const oldKill = (pid) => {
 const sweepKill = (pid) => {
   let table = "";
   try {
-    table = execFileSync("ps", ["-Ao", "pid=,ppid="], { encoding: "utf8" });
+    table = execFileSync("ps", ["-Ao", "pid=,ppid="], PS_OPTS);
   } catch {
     /* ps 不可用 */
   }
@@ -85,10 +87,10 @@ const sweepKill = (pid) => {
   }
 };
 
-async function probeEnv() {
+function probeEnv() {
   let sh = "?";
   try {
-    sh = execFileSync("bash", ["-c", "ls -l /bin/sh"], { encoding: "utf8" }).trim();
+    sh = String(execFileSync("ls", ["-l", "/bin/sh"], PS_OPTS)).trim();
   } catch {
     /* ignore */
   }
@@ -96,16 +98,19 @@ async function probeEnv() {
 }
 
 async function probeDirectChild() {
-  const child = exec(`node -e "console.log('CHILDPID='+process.pid)"`);
+  const child = exec(`node -e "console.log('CHILDPID='+process.pid); setTimeout(()=>{},1200)"`);
   let out = "";
   child.stdout.on("data", (d) => (out += d));
+  await sleep(400);
+  const row = psRow(child.pid);
+  const kids = childRows(child.pid);
   await new Promise((r) => child.on("close", r));
   const reported = (out.match(/CHILDPID=(\d+)/) || [])[1];
-  log("A-direct-child", { childPid: child.pid, reportedPid: reported ?? null, samePid: reported === String(child.pid) });
+  log("A-direct-child", { childPid: child.pid, reportedPid: reported ?? null, samePid: reported === String(child.pid), row, kids });
 }
 
 async function probeOldKill() {
-  const child = exec(`node -e "setInterval(()=>{},1000)"`);
+  const child = exec(`node -e "setTimeout(()=>{},10000)"`);
   await sleep(250);
   const row = psRow(child.pid);
   const kids = childRows(child.pid);
@@ -124,7 +129,7 @@ async function probeOldKill() {
     singleErr = e.code ?? String(e.message);
   }
   await sleep(200);
-  log("B-old-kill", { row, kids, groupErr, afterGroup, singleErr, afterSingle: psRow(child.pid) });
+  log("B-old-kill", { row, kids, groupErr, afterGroup, singleErr, afterSingle: psRow(child.pid), survivorsAfterKill: childRows(child.pid) });
 }
 
 async function probeScenario(tag, killFn, options) {
@@ -146,10 +151,12 @@ async function probeScenario(tag, killFn, options) {
   rmSync(file, { force: true });
 }
 
-await probeEnv().catch((e) => log("0-env-err", { message: e.message }));
+probeEnv();
 await probeDirectChild().catch((e) => log("A-err", { message: e.message }));
 await probeOldKill().catch((e) => log("B-err", { message: e.message }));
 await probeScenario("C-old-kill-scenario", oldKill).catch((e) => log("C-err", { message: e.message }));
 await probeScenario("D-detached-group", oldKill, { detached: true }).catch((e) => log("D-err", { message: e.message }));
 await probeScenario("E-sweep-kill", sweepKill).catch((e) => log("E-err", { message: e.message }));
 log("Z-done", { ok: true });
+await sleep(300);
+process.exit(0);
