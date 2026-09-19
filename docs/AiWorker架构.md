@@ -50,22 +50,9 @@
 
 ## 二、总体架构
 
-```
-┌─────────────────────────────────────────────┐
-│ 交互层：TUI（自研帧缓冲） · Web UI · CLI      │
-├─────────────────────────────────────────────┤
-│ 认知内核（大脑）：agent-loop · model-router · │
-│   专家路由 · team-coordinator · 上下文管理    │
-├─────────────────────────────────────────────┤
-│ 执行层（手脚）：工具（fs/terminal/web/ask）·  │
-│   MCP · Skills · Hooks · 子智能体 · 能力桥    │
-├─────────────────────────────────────────────┤
-│ 进程层：Agent 进程 · App 进程 · Job/定时任务  │
-├─────────────────────────────────────────────┤
-│ 系统服务：event-bus(IPC) · audit 审计 ·       │
-│   权限/沙箱 · 检查点回滚 · 设备（语音/视觉）  │
-└─────────────────────────────────────────────┘
-```
+![AiWorker 总体架构：用户 → 交互层 → 认知内核（大脑）→ 权限裁决 → 执行层（手脚）→ 进程层；左侧为记忆与审计、进化闭环、AppFactory；右侧为模型路由、LLM Provider、子智能体](diagrams/aiworker-architecture.svg)
+
+> 交互式版本（可搜索、聚焦链路、明暗主题、导出 PNG/SVG/WebM）：[aiworker-architecture.html](diagrams/aiworker-architecture.html) · 图规格与源码证据索引：[aiworker-architecture.json](diagrams/aiworker-architecture.json)
 
 关键决策：认知内核不直接感知"应用"，只通过工具/事件与进程层交互——应用是"会自己干活、有生命周期、可被销毁的工具集合"。
 
