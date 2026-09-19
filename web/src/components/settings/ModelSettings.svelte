@@ -57,7 +57,7 @@
     <div class="note">{$configError || "正在读取配置…"}</div>
   {:else}
     <label class="row">模型
-      <select class="input" value={cfgModel} onchange={(e) => void applyConfigField("profileKey", (e.currentTarget as HTMLSelectElement).value)}>
+      <select class="input" value={cfgModel} onchange={(e) => void applyConfigField("model", (e.currentTarget as HTMLSelectElement).value)}>
         {#each $configState.availableModels as m (m.key)}
           <option value={m.key}>{m.key}（{m.model}{m.provider ? ` · ${m.provider}` : ""}）</option>
         {/each}

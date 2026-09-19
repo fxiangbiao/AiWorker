@@ -105,6 +105,29 @@ export abstract class BaseAgent {
   }
 
   /**
+   * 派生一个独立实例（Sprint 52）：per-spawn 副本，避免同名并发共享实例导致
+   * setMode/tools 互踩；patch 用于注入只读闭集等 per-spawn 覆盖。
+   */
+  fork(patch: Partial<AgentConfig> = {}): BaseAgent {
+    const copy = Object.create(Object.getPrototypeOf(this)) as BaseAgent;
+    Object.assign(copy, this);
+    copy.config = {
+      ...this.config,
+      ...patch,
+      tools: patch.tools ? [...patch.tools] : [...this.config.tools],
+      mcpServers: patch.mcpServers ? [...patch.mcpServers] : [...this.config.mcpServers],
+      skills: [...(patch.skills ?? this.config.skills ?? [])],
+      plugins: [...(patch.plugins ?? this.config.plugins ?? [])],
+      permissions: {
+        defaultMode: patch.permissions?.defaultMode ?? this.config.permissions.defaultMode,
+        allowedTools: [...(patch.permissions?.allowedTools ?? this.config.permissions.allowedTools)],
+        deniedTools: [...(patch.permissions?.deniedTools ?? this.config.permissions.deniedTools)],
+      },
+    };
+    return copy;
+  }
+
+  /**
    * 执行任务
    */
   async run(task: Task, workingDir: string): Promise<AgentRunResult> {
@@ -128,7 +151,7 @@ export abstract class BaseAgent {
     }
 
     // 持久化用户消息（图片仅当轮上下文，历史存文本）
-    this.sessionStore.appendMessage(sessionId, { role: "user", content: task.instruction });
+    const userEventSeq = this.sessionStore.appendMessage(sessionId, { role: "user", content: task.instruction });
 
     // 运行循环
     const result = await runAgentLoop(this.config, task.instruction, {
@@ -142,6 +165,7 @@ export abstract class BaseAgent {
       processManager: this.processManager,
       images: task.images,
       explicitSkill: task.explicitSkill,
+      historyBeforeEventSeq: userEventSeq || undefined,
     });
 
     // 持久化助手回复（携带本轮主请求 usage，供轨迹/遥测；来自 loop 显式返回，避免被压缩请求覆盖）
@@ -208,7 +232,11 @@ export abstract class BaseAgent {
       this.setMode(task.mode);
     }
 
-    this.sessionStore.appendMessage(sessionId, { role: "user", content: task.instruction });
+    // 持久化用户消息（图片仅当轮上下文，历史存文本）
+    const userEventSeq = this.sessionStore.appendMessage(sessionId, {
+      role: "user",
+      content: task.instruction,
+    });
 
     const result = await runAgentLoopStream(
       this.config,
@@ -224,6 +252,7 @@ export abstract class BaseAgent {
         processManager: this.processManager,
         images: task.images,
         explicitSkill: task.explicitSkill,
+        historyBeforeEventSeq: userEventSeq || undefined,
       },
       callbacks,
       signal,

@@ -10,6 +10,7 @@ systemPrompt: |-
   - terminal_exec: 执行终端命令（编译、测试、包管理等）；写文件用 fs_write
   - web_search / web_fetch: 搜索和抓取网页
   - mcp:builtin:math_eval / uuid_gen / json_format / timestamp_convert: 通用工具
+  - spawn_agent / send_message / list_agents / interrupt_agent: 后台子智能体（并行调研/分析；默认只读，可续接、可中断、可观测）
 
   工具调用规则：
   1. 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟工具调用
@@ -32,6 +33,11 @@ tools:
   - web_search
   - web_fetch
   - fs_edit
+  # 子智能体控制面（受限工具，仅主智能体可用；子智能体侧被执行层硬校验拒绝）
+  - spawn_agent
+  - send_message
+  - list_agents
+  - interrupt_agent
 mcpServers: []
 skills: []
 plugins: []

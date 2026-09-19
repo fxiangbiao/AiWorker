@@ -90,9 +90,13 @@ export class CheckpointStore {
     return manifest;
   }
 
-  /** 写入变更前内容（同一回合同一路径只记首次，保证"回到回合前"的基准是回合起点） */
-  capture(sessionId: string, turn: number, absPath: string, oldContent: string | null, info: CaptureInfo): CheckpointFileEntry {
-    const manifest = this.ensureManifest(sessionId, turn);
+  /** 写入变更前内容（同一回合同一路径只记首次，保证"回到回合前"的基准是回合起点）
+   *  manifest 必须已由 beginTurn 建立；不存在则拒绝登记（禁隐式建盘）：
+   *  prune 后 callback 落到旧 turn 时，隐式建盘会复活已删除的回合（缺 messageSeqBefore → /rewind blocker），
+   *  且 `beginTurn` 的 prune 会把一个合法回合多删一个。返回 null 表示拒绝。 */
+  capture(sessionId: string, turn: number, absPath: string, oldContent: string | null, info: CaptureInfo): CheckpointFileEntry | null {
+    const manifest = this.readManifest(sessionId, turn);
+    if (!manifest) return null;
     const existing = manifest.files.find((f) => f.path === absPath);
     if (existing) return existing;
 
@@ -144,9 +148,11 @@ export class CheckpointStore {
     this.writeManifest(manifest);
   }
 
-  /** terminal_exec 等无法取得变更前内容的写入：仅记录，不可回滚 */
+  /** terminal_exec 等无法取得变更前内容的写入：仅记录，不可回滚
+   *  与 capture 同规则：manifest 不存在则拒绝（禁隐式建盘） */
   markUnrestorable(sessionId: string, turn: number, absPath: string, reason: "terminal_exec", tool: string): void {
-    const manifest = this.ensureManifest(sessionId, turn);
+    const manifest = this.readManifest(sessionId, turn);
+    if (!manifest) return;
     if (manifest.files.some((f) => f.path === absPath)) return;
     manifest.files.push({ path: absPath, existedBefore: true, restorable: false, reason, tool });
     this.writeManifest(manifest);
@@ -260,13 +266,6 @@ export class CheckpointStore {
     } catch {
       return null;
     }
-  }
-
-  private ensureManifest(sessionId: string, turn: number): CheckpointManifest {
-    const manifest = this.readManifest(sessionId, turn);
-    if (manifest) return manifest;
-    const created: CheckpointManifest = { sessionId, turn, createdAt: Date.now(), files: [] };
-    return created;
   }
 
   private readManifest(sessionId: string, turn: number): CheckpointManifest | null {

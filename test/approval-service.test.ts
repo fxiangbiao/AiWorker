@@ -121,7 +121,9 @@ describe("ApprovalService.checkConfirmation", () => {
     const svc = new ApprovalService({ permissionModel: makeModel("plan") });
     const r = await svc.checkConfirmation("web_search", "{}", "plan");
     expect(r.proceed).toBe(false);
-    expect(r.message).toBe("用户取消操作");
+    // Sprint 52 §2.3-2：文案与 reason 可判别 —— 用户从未点"取消"，不能说"用户取消操作"
+    expect(r.message).toBe("无确认通道，已自动拒绝（fail-closed）");
+    expect(r.reason).toBe("no-channel");
   });
 
   it("auto 模式非高危工具不触发确认（fs_read 等）", async () => {

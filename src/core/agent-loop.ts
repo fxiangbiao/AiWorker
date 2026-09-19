@@ -23,6 +23,8 @@ import { CONTEXT_WINDOW_FALLBACK } from "./model-router.js";
 import type { ContextManager } from "./context-manager.js";
 import type { SessionStore } from "../memory/session-store.js";
 import { toolRegistry, type ToolScopeView } from "./tool-registry.js";
+import { isRestrictedTool, READ_ONLY_TOOLS } from "./subagent-rules.js";
+export { READ_ONLY_TOOLS };
 import { hookManager } from "../hooks/hook-manager.js";
 import { auditLogger } from "./audit-logger.js";
 import type { ProcessManager } from "./process-manager.js";
@@ -45,6 +47,10 @@ export interface AgentLoopDeps {
   images?: string[];
   /** 技能模式：/技能名 显式激活的技能（透传 assembleContext 注入系统提示） */
   explicitSkill?: { name: string; body: string };
+  /** 当前用户消息已落库时其事件 seq：历史只回放到该 seq 之前，避免同一条 user 注入两次 */
+  historyBeforeEventSeq?: number;
+  /** AbortSignal：透传到 ToolContext.signal，供工具层响应中断（Sprint 52 T1b） */
+  signal?: AbortSignal;
 }
 
 async function runAgentLoopInner(
@@ -62,7 +68,7 @@ async function runAgentLoopInner(
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill);
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill, deps.historyBeforeEventSeq);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -84,6 +90,7 @@ async function runAgentLoopInner(
     workingDir,
     permissions: mode,
     dataDir,
+    signal: deps.signal,
   };
 
   while (iterations < MAX_ITER) {
@@ -117,6 +124,7 @@ async function runAgentLoopInner(
         : await toolRegistry.getAvailableDefinitions(toolCtx);
       const isPluginRegistered = (name: string) => (toolView ? toolView.isPluginTool(name) : toolRegistry.isPluginTool(name));
       const tools = filterVisibleTools(availableTools, config, isPluginRegistered);
+      const visibleSet = new Set(tools.map((t) => t.function.name));
 
       const response = await modelRouter.completeWithProfile(config.modelPreference, messages, tools, {
         scope: sessionId,
@@ -188,7 +196,7 @@ async function runAgentLoopInner(
       );
 
       const toolResults = await Promise.all(
-        response.toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs, toolView)),
+        response.toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs, toolView, visibleSet)),
       );
 
       toolCallsExecuted += toolResults.length;
@@ -295,7 +303,7 @@ async function runAgentLoopStreamInner(
 
   contextManager.freezeSnapshot();
 
-  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill);
+  let messages = await contextManager.assembleContext(config.systemPrompt, sessionId, userMessage, config.id, images, explicitSkill, deps.historyBeforeEventSeq);
 
   let iterations = 0;
   const MAX_ITER = config.maxIterations ?? 50;
@@ -319,6 +327,7 @@ async function runAgentLoopStreamInner(
     workingDir,
     permissions: mode,
     dataDir,
+    signal,
   };
 
   while (iterations < MAX_ITER) {
@@ -361,12 +370,13 @@ async function runAgentLoopStreamInner(
         ? await toolView.getAvailableDefinitions(toolCtx)
         : await toolRegistry.getAvailableDefinitions(toolCtx);
       const isPluginRegistered = (name: string) => (toolView ? toolView.isPluginTool(name) : toolRegistry.isPluginTool(name));
-      const tools = filterVisibleTools(availableTools, config, isPluginRegistered);
+      const visibleTools = filterVisibleTools(availableTools, config, isPluginRegistered);
+      const visibleSetStream = new Set(visibleTools.map((t) => t.function.name));
 
       // 流式调用
       callbacks.onIterationStart?.(iterations);
       callbacks.onThinkingStart?.();
-      const stream = modelRouter.completeStream(config.modelPreference, messages, tools, {
+      const stream = modelRouter.completeStream(config.modelPreference, messages, visibleTools, {
         signal,
         scope: sessionId,
         onUsage: (usage) => {
@@ -453,7 +463,7 @@ async function runAgentLoopStreamInner(
           );
 
           const toolResults = await Promise.all(
-            toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs, toolView)),
+            toolCalls.map((tc) => executeTool(tc, toolCtx, config, sessionStore, toolTimeoutMs, toolView, visibleSetStream)),
           );
 
           toolCallsExecuted += toolResults.length;
@@ -690,6 +700,7 @@ async function executeTool(
   sessionStore: SessionStore,
   timeoutMs: number,
   toolView: ToolScopeView | null,
+  visibleSet?: Set<string>,
 ): Promise<ToolResult> {
   const startedAt = Date.now();
   sessionStore.appendEvent(
@@ -698,7 +709,7 @@ async function executeTool(
     { callId: toolCall.id, name: toolCall.function.name, arguments: toolCall.function.arguments },
     "agent-loop",
   );
-  const result = await executeToolInner(toolCall, ctx, config, timeoutMs, toolView);
+  const result = await executeToolInner(toolCall, ctx, config, timeoutMs, toolView, visibleSet);
   sessionStore.appendEvent(
     ctx.sessionId,
     "tool/result",
@@ -721,8 +732,27 @@ async function executeToolInner(
   config: AgentConfig,
   timeoutMs: number,
   toolView: ToolScopeView | null,
+  visibleSet?: Set<string>,
 ): Promise<ToolResult> {
   const toolName = toolCall.function.name;
+
+  if (visibleSet && !visibleSet.has(toolName)) {
+    auditLogger.log({
+      timestamp: Date.now(),
+      agentId: ctx.agentId,
+      sessionId: ctx.sessionId,
+      action: `tool:${toolName}`,
+      target: toolCall.function.arguments.slice(0, 200),
+      result: "blocked",
+      detail: "执行层可见性校验：工具不在本轮可见集合",
+    });
+    return {
+      tool_call_id: toolCall.id,
+      success: false,
+      content: "",
+      error: `工具 ${toolName} 不可见（执行层校验）`,
+    };
+  }
 
   const preHookResult = await hookManager.trigger("onToolCallPre", {
     agentId: ctx.agentId,
@@ -829,20 +859,28 @@ async function executeToolInner(
 /**
  * agent 工具可见性白名单：config.tools 非空时仅保留白名单工具；
  * 默认宽松：MCP 工具（mcp_ 前缀）与插件注册的工具豁免（即插即用，专家默认可见）；
- * strictTools 开启后关闭豁免，仅白名单可见（白名单支持 "mcp_<server>_" 前缀条目）
+ * strictTools 开启后关闭豁免，仅白名单可见（白名单支持 "mcp_<server>_" 前缀条目）；
+ * 受限工具（restricted）不参与空白名单全放行，必须显式列出才可见（Sprint 52 T2）；
+ * readOnly 为闭集模式：只保留只读工具，MCP/插件豁免一律失效（Sprint 52 §2.3-7）
  */
-function filterVisibleTools(
+export function filterVisibleTools(
   available: ToolDefinition[],
   config: AgentConfig,
   isPluginRegistered: (name: string) => boolean,
 ): ToolDefinition[] {
-  if (config.tools.length === 0) return available;
+  const restricted = (name: string) => isRestrictedTool(name);
+  if (config.readOnly === true) {
+    return available.filter((t) => READ_ONLY_TOOLS.has(t.function.name));
+  }
+  if (config.tools.length === 0) {
+    return available.filter((t) => !restricted(t.function.name));
+  }
   const strict = config.strictTools === true;
   return available.filter(
     (t) =>
       config.tools.includes(t.function.name) ||
       config.tools.some((x) => x.endsWith("_") && t.function.name.startsWith(x)) ||
-      (!strict && (t.function.name.startsWith("mcp_") || isPluginRegistered(t.function.name))),
+      (!strict && !restricted(t.function.name) && (t.function.name.startsWith("mcp_") || isPluginRegistered(t.function.name))),
   );
 }
 
@@ -920,7 +958,8 @@ export function runAgentLoopStream(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<AgentRunResult> {
+  const mergedSignal = deps.signal ?? signal;
   return trackAgentProcess(config, deps, () =>
-    runAgentLoopStreamInner(config, userMessage, deps, callbacks, signal),
+    runAgentLoopStreamInner(config, userMessage, deps, callbacks, mergedSignal),
   );
 }

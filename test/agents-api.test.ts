@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { startServer } from "../src/server.js";
+import { startServer, createServerToken } from "../src/server.js";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let server: Server | undefined;
 let base: string;
+let token: string;
 const testDir = mkdtempSync(join(tmpdir(), "agents-api-"));
 
 const saved: Record<string, unknown> = {};
@@ -56,10 +57,13 @@ const deps = {
   dataDir: testDir,
 };
 
-async function post(url: string, body?: unknown): Promise<{ status: number; data: { ok?: boolean; error?: string } }> {
+async function post(url: string, body?: unknown, withToken = false): Promise<{ status: number; data: { ok?: boolean; error?: string } }> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (withToken) headers["X-AiWorker-Token"] = token;
   const r = await fetch(base + url, {
     method: "POST",
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    headers: Object.keys(headers).length > 0 ? headers : undefined,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: r.status, data: (await r.json()) as { ok?: boolean; error?: string } };
@@ -70,6 +74,7 @@ describe("Agents API", () => {
     server = startServer(deps as never, 0);
     await new Promise<void>((resolve) => server!.once("listening", () => resolve()));
     base = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
+    token = readFileSync(join(testDir, "server-token"), "utf-8").trim();
   });
 
   afterAll(() => {
@@ -109,7 +114,7 @@ describe("Agents API", () => {
       plugins: ["my-plugin"],
       strictTools: true,
       permissions: { defaultMode: "plan" },
-    });
+    }, true);
     expect(status).toBe(200);
     expect(saved["my-agent"]).toBeTruthy();
     const cfg = saved["my-agent"] as {
@@ -129,31 +134,43 @@ describe("Agents API", () => {
   });
 
   it("POST config 校验失败返回 400", async () => {
-    const bad1 = await post("/api/v1/agents/bad-agent/config", { displayName: "", systemPrompt: "x" });
+    const bad1 = await post("/api/v1/agents/bad-agent/config", { displayName: "", systemPrompt: "x" }, true);
     expect(bad1.status).toBe(400);
-    const bad2 = await post("/api/v1/agents/bad-agent/config", { displayName: "x", systemPrompt: "y", modelPreference: "nope" });
+    const bad2 = await post("/api/v1/agents/bad-agent/config", { displayName: "x", systemPrompt: "y", modelPreference: "nope" }, true);
     expect(bad2.status).toBe(400);
-    const bad3 = await post("/api/v1/agents/Upper-Case/config", { displayName: "x", systemPrompt: "y" });
+    const bad3 = await post("/api/v1/agents/Upper-Case/config", { displayName: "x", systemPrompt: "y" }, true);
     expect(bad3.status).toBe(400);
   });
 
+  it("POST /agents/<id>/config 无 token 返回 401", async () => {
+    const r = await post("/api/v1/agents/my-agent/config", { displayName: "x", systemPrompt: "y" }, false);
+    expect(r.status).toBe(401);
+  });
+
   it("内置智能体 reset 恢复默认；自定义不可 reset（无 body 也应 200/400，不报 Invalid JSON）", async () => {
-    const ok = await post("/api/v1/agents/default/reset");
+    const ok = await post("/api/v1/agents/default/reset", undefined, true);
     expect(ok.status).toBe(200);
     expect(ok.data.ok).toBe(true);
     expect(deleted).toContain("default");
-    const bad = await post("/api/v1/agents/my-agent/reset");
+    const bad = await post("/api/v1/agents/my-agent/reset", undefined, true);
     expect(bad.status).toBe(400);
     expect(bad.data.error).not.toContain("Invalid JSON");
   });
 
   it("自定义智能体可删除；内置不可删除（无 body 形态）", async () => {
-    const bad = await post("/api/v1/agents/default/delete");
+    const bad = await post("/api/v1/agents/default/delete", undefined, true);
     expect(bad.status).toBe(400);
-    const ok = await post("/api/v1/agents/my-agent/delete");
+    const ok = await post("/api/v1/agents/my-agent/delete", undefined, true);
     expect(ok.status).toBe(200);
     expect(ok.data.ok).toBe(true);
     expect(deleted).toContain("my-agent");
+  });
+
+  it("agents 写面三件套：reset / delete / config 三条路径都需 token", async () => {
+    for (const path of ["/api/v1/agents/my-agent/reset", "/api/v1/agents/my-agent/delete", "/api/v1/agents/my-agent/config"]) {
+      const r = await post(path, { displayName: "x", systemPrompt: "y" }, false);
+      expect(r.status, `${path} 应 401`).toBe(401);
+    }
   });
 
   it("POST /agents/<id>/config 保存 permissions.allowedTools/deniedTools（嵌套内层，Bug 修复）", async () => {
@@ -169,7 +186,7 @@ describe("Agents API", () => {
       plugins: [],
       strictTools: false,
       permissions: { defaultMode: "ask", allowedTools: ["fs_read", "fs_write"], deniedTools: ["terminal_exec"] },
-    });
+    }, true);
     expect(status).toBe(200);
     const cfg = saved["perm-agent"] as {
       permissions?: { defaultMode?: string; allowedTools?: string[]; deniedTools?: string[] };

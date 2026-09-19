@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.8.0-blue)
+![version](https://img.shields.io/badge/version-1.9.0-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -11,7 +11,7 @@
 
 一套运行在本地的个人 AI Agent 助手：多专家智能体按任务自动路由，支持工具调用、MCP、技能库、生命周期 Hook、三层记忆与上下文压缩。提供 **TUI 终端** 与 **Web UI** 两种界面。
 
-已升级为 **AI OS**（个人 AI 操作系统）**1.0**：AI 是大脑、Harness 是手脚、应用是进程、自进化引擎闭环、每会话项目目录——正式架构见 [docs/ai-os-architecture.md](docs/ai-os-architecture.md)，演进规划见 [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md)。
+已升级为 **AI OS**（个人 AI 操作系统）**1.0**：AI 是大脑、Harness 是手脚、应用是进程、自进化引擎闭环、每会话项目目录——正式架构见 [docs/AiWorker架构.md](docs/AiWorker架构.md)，逐期演进见 [plans/sprint-history.md](plans/sprint-history.md)。
 
 ## 目录
 
@@ -294,6 +294,43 @@ headless 的执行语义：不初始化 TUI、不打印 banner 与状态区、�
 | 保留策略 | 每会话最近 20 轮，`AIWORKER_CHECKPOINT_KEEP` 可覆盖 |
 | 边界（诚实说明） | 仅 `fs_write` / `fs_edit` 可精确回滚；`terminal_exec` 等改动只记录条目（`restorable: false`），回滚时列入"跳过"；单文件 > 2MB 或二进制不入快照；回滚是**文件级整体还原**，不能只撤销部分行 |
 | Web 端 | 右侧栏「回滚」Tab 提供同一能力（需重启后端以加载新端点） |
+| 子智能体改动归属（1.9.0） | 子智能体（`wk-` 会话）的写操作登记到**父会话 spawn 时所在回合**，父 `/rewind <n>` 一次回滚父子全部改动。若 spawn 时父回合没有检查点（父空闲期间 spawn），该写入**拒绝登记**并写审计 `checkpoint:rejected`——它不参与回滚，且不会隐式建盘复活已 prune 的回合 |
+
+
+## 后台子智能体（1.9.0）
+
+主智能体可以起**后台子智能体**做并行调研/分析：可续接、可控制、可观测、可撤销。
+
+| 工具 | 语义 |
+|------|------|
+| `spawn_agent` | 起一个后台子智能体（`agentId` / `task` / `readOnly`）；返回 `sub-xxx` |
+| `send_message` | 追问：运行中入 pending 队列（上限 5），空闲时起新一轮 |
+| `list_agents` | 列出本父会话下的子智能体（状态 / 轮次 / token / 摘要） |
+| `interrupt_agent` | 中断当前轮并保留会话（转 `idle`，可继续追问） |
+
+```bash
+# CLI：主智能体侧直接对话即可（默认智能体已显式启用这四个工具）
+> 帮我并行调研 A、B、C 三个方案的优缺点
+
+# HTTP（写面三件套：跨站 403 → 缺 token 401 → 参数 400）
+GET    /api/v1/subagents?parentSessionId=<父会话>
+POST   /api/v1/subagents                  { agentId, task, readOnly?, parentSessionId? }
+POST   /api/v1/subagents/:id/messages     { message }
+DELETE /api/v1/subagents/:id              # interrupt（保留会话）
+DELETE /api/v1/subagents/:id?purge=1      # 彻底关闭并释放并发槽位
+```
+
+| 维度 | 说明 |
+|------|------|
+| 状态机 | `queued → running → idle`（可续接）\| `failed`；`idle` 不占并发配额 |
+| 默认只读 | `readOnly` 缺省 `true`：工具面收窄为闭集 `fs_read / fs_list / web_search / web_fetch`，且权限模式收窄为 `ask` |
+| 并发 | 默认并发 4、每父会话 4、全局 8（超限返回错误而非排队）；`MAX_PENDING=5` |
+| 深度 1 | 子智能体的工具面**不含**四个控制类工具，执行层再按 `wk-` 前缀硬校验一次（双层） |
+| 安全边界 | 子智能体无确认通道（fail-closed 立即拒绝）；`spawn_agent` / `send_message` 在 `never_auto_approve` 清单内，**每次都需人工确认**，headless 下不可用 |
+| 只读 ≠ 零磁盘写入 | 只读指**不改用户工作目录内容**；输出溢出落盘（`<data>/spills/`）、检查点、遥测仍会写入数据目录 |
+| 中断分层承诺 | 轮边界中断**必达**；工具级真中断已实现：`terminal_exec` 消费 `ToolContext.signal`，abort 时按进程树终止（Windows `taskkill /T /F`，POSIX 进程组 `SIGKILL`） |
+| 可观测 | WS 事件 `subagent/spawned\|done\|failed`；审计 `subagent:*` 带 `actor_session_id`；进程面板独立「子智能体」类型 |
+| 诚实边界 | 无 worktree/副本隔离——多个子智能体同写一个文件会互相覆盖；运行中插话仅在**轮边界**注入；`wk-` 会话不在会话列表展示 |
 
 
 ## 交互界面
@@ -466,9 +503,12 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/plugins` | GET | 插件列表 |
 | `/api/v1/apps` | GET/POST | 应用列表 / 安装（body: path） |
 | `/api/v1/apps/:id/start\|stop\|destroy` | POST | 应用生命周期操作 |
-| `/api/v1/processes` | GET | 进程列表（Agent/App/Job）+ 统计 |
+| `/api/v1/processes` | GET | 进程列表（Agent/App/Job/子智能体）+ 统计 |
 | `/api/v1/packages/export\|peek\|import\|list` | GET/POST | .aw 资产包导出/预览/导入/列表（支持裸格式） |
 | `/api/v1/jobs` | GET/POST/DELETE | 后台任务列表/提交/取消 |
+| `/api/v1/subagents` | GET/POST | 子智能体列表（`?parentSessionId=`）/ 起一个（`{agentId, task, readOnly?, parentSessionId?}`；写操作需 `X-AiWorker-Token` 且非跨站） |
+| `/api/v1/subagents/:id/messages` | POST | 向子智能体追加一轮（需 token 且非跨站） |
+| `/api/v1/subagents/:id` | DELETE | 中断（保留会话）；`?purge=1` 彻底关闭并释放槽位（需 token 且非跨站） |
 | `/api/v1/schedule` | GET/POST/DELETE | 定时任务（支持自然语言） |
 | `/api/v1/confirm` / `/api/v1/ask` | POST | 确认卡片 / 提问卡片响应 |
 | `/api/v1/ws` | WS | WebSocket 实时事件总线 |
@@ -479,8 +519,8 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 aiworker/
 ├── config/               # 配置文件（models/agents/mcp/permissions/hooks/plugins/schedule/sandbox）
 ├── skills/               # 技能库（SKILL.md，7 领域）
-├── docs/                 # 设计文档（基础方案 + AI OS 架构升级方案 + 截图/演示）
-├── plans/                # Sprint 实施计划
+├── docs/                 # 架构文档（AiWorker架构.md + 竞品对比报告 + 截图/演示）
+├── plans/                # 活文档：路线图 / 最近一期计划 / sprint-history 演进史
 ├── src/
 │   ├── core/             # agent-loop / model-router / context-manager / team-coordinator /
 │   │                     # tool-registry（作用域）/ plugin-manager / job-runner / scheduler /
@@ -565,15 +605,16 @@ CI（`.github/workflows/ci.yml`）在 push / PR 上跑同样的门禁：后端 j
 - **CLI/TUI**: Commander.js + 自研帧缓冲渲染引擎（零依赖）
 - **Web UI**: Svelte 5 + Vite 6 + lucide-svelte + marked + highlight.js + DOMPurify
 - **搜索**: Bing HTML 抓取（零 API key）
-- **设计依据**: 《docs/个人AI-Agent助手设计方案.md》《docs/AIOS-架构升级方案.md》
+- **设计依据**: 《docs/AiWorker架构.md》（由基础设计方案与 AI OS 架构规划合并定稿）
 
 ## 相关文档
 
 - [AGENTS.md](AGENTS.md) — AI 辅助开发指南（模块速览 / 关键约定 / 测试）
 - [CHANGELOG.md](CHANGELOG.md) — 版本变更记录
-- [docs/个人AI-Agent助手设计方案.md](docs/个人AI-Agent助手设计方案.md) — 设计文档（基础架构）
-- [docs/AIOS-架构升级方案.md](docs/AIOS-架构升级方案.md) — AI OS 架构规划（应用模型 / 进程 / 即时生成 / 语音视频 / 进化引擎）
-- [docs/comparison-report.md](docs/comparison-report.md) — 与 DeepSeek Harness 的源码对比报告
+- [docs/AiWorker架构.md](docs/AiWorker架构.md) — 唯一正式架构文档（理念 / 分层 / 内核 / 执行层 / 子智能体 / 应用与安全 / 记忆 / 进化 / 界面）
+- [docs/主流Agent产品对比分析报告.md](docs/主流Agent产品对比分析报告.md) — 竞品对比与差距分析（Claude Code / Codex / DSH / QwenWork / WorkBuddy / 字节系等）
+- [plans/sprint-history.md](plans/sprint-history.md) — Sprint 演进史（Sprint 1~52 逐期浓缩，原计划文档已精简归档于此）
+- [plans/roadmap-next.md](plans/roadmap-next.md) — 后续发展路线图（P0/P1/P2）
 
 ## 许可证
 

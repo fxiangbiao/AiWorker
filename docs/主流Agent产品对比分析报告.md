@@ -8,7 +8,7 @@
 
 ---
 
-## 摘要（TL;DR）
+## 摘要
 
 1. **AiWorker 与上述竞品都不是同一物种**：它是「本地优先的个人 AI OS」——终端 TUI 与本地 Web 双界面、7 专家角色化多智能体、三层记忆、应用即时生成、纯自研零框架。它既不是 Claude Code/Codex 那样的**专业编码 Agent**，也不是千问办公/WorkBuddy/豆包工作那样的**企业办公交付平台**，更不是 DSH 那样的**可插拔 Agent 运行时平台**。
 2. **做得好的**（相对同类个人助手）：自研闭环与极低依赖（9 个运行时依赖）、TUI 打磨深度（帧缓冲/CJK/OSC 8/块式回合）、角色化多智能体 + 零成本模板计划、事件溯源会话 + 三层记忆 + 上下文工程、安全默认 fail-closed、**自进化 Skills**（竞品均无沉淀闭环）、应用即时生成、中文与离线本地化（ASR/TTS）、工程质量纪律（0 `any`/0 TODO、824 测试全绿）。
@@ -63,7 +63,7 @@
 | 代码量 | 23.7k（src）+ 10.0k（web）+ 12.6k（test） | 单人可完整理解 |
 | 测试 | 57 文件 / 824 用例，全绿 | 含端点、WS、TUI 渲染、会话事件、进化引擎、应用生命周期 |
 | 静态质量 | `TODO/FIXME` 0、`as any`/`: any` 0、`@ts-ignore` 0、`eslint-disable` 12 | 严格 TS 无逃逸 |
-| 文档 | `docs/` 4 篇 + `plans/` 46 份 Sprint 计划 | 设计-实现可追溯 |
+| 文档 | `docs/` 设计文档 + `plans/` 46 份 Sprint 计划（报告时点；现已精简为唯一架构文档 + 演进史） | 设计-实现可追溯 |
 | 版本节奏 | 27 个版本（0.1.0 → 1.4.0），CHANGELOG 日期集中在 2026-08-15～09-10 | 迭代极快，实测驱动修补（45.1/45.2/45.3） |
 | 工程化缺口 | 无 `.github/`、无 Dockerfile、无 coverage、lint 仅覆盖 `src/`、Web 无 svelte-check | 见第四章 |
 
@@ -329,7 +329,7 @@
 
 ## 附录：主要来源
 
-**AiWorker 自身**：仓库源码逐模块审读 + 量化统计（`src/` / `web/src/` / `test/` / `docs/` / `plans/`）；`CHANGELOG.md`（1.4.0，2026-09-10）；本次提交前实测 `tsc` / `eslint` / `vitest` 824 / `vite build` 全绿；既存 `docs/comparison-report.md`（DSH vs AiWorker 源码对比，Sprint 26 期）。
+**AiWorker 自身**：仓库源码逐模块审读 + 量化统计（`src/` / `web/src/` / `test/` / `docs/` / `plans/`）；`CHANGELOG.md`（1.4.0，2026-09-10）；本次提交前实测 `tsc` / `eslint` / `vitest` 824 / `vite build` 全绿；既存 DSH vs AiWorker 源码对比报告（Sprint 26 期，原 `docs/comparison-report.md`，其结论已并入本报告，文件后经文档精简删除）。
 
 **Claude Code**（信息时点 2026-09-10，v2.1.267）：
 [平台与集成](https://code.claude.com/docs/en/platforms)｜[Web 版](https://code.claude.com/docs/en/claude-code-on-the-web)｜[模型配置](https://code.claude.com/docs/en/model-config)｜[fast mode](https://code.claude.com/docs/en/fast-mode)｜[并行 agent](https://code.claude.com/docs/en/agents)｜[subagents](https://code.claude.com/docs/en/sub-agents)｜[agent view](https://code.claude.com/docs/en/agent-view)｜[workflows](https://code.claude.com/docs/en/workflows)｜[checkpointing](https://code.claude.com/docs/en/checkpointing)｜[记忆机制](https://code.claude.com/docs/en/memory)｜[skills](https://code.claude.com/docs/en/skills)｜[插件发现](https://code.claude.com/docs/en/discover-plugins)｜[headless/Agent SDK](https://code.claude.com/docs/en/headless)｜[工具参考](https://code.claude.com/docs/en/tools-reference)｜[权限](https://code.claude.com/docs/en/permissions)｜[权限模式](https://code.claude.com/docs/en/permission-modes)｜[沙箱](https://code.claude.com/docs/en/sandboxing)｜[成本](https://code.claude.com/docs/en/costs)｜[功能可用性矩阵](https://code.claude.com/docs/en/feature-availability)｜[v2.1.267 release](https://github.com/anthropics/claude-code/releases/tag/v2.1.267)｜[CloudZero 定价综述](https://www.cloudzero.com/blog/claude-code-pricing/)｜社区 issues [#46998](https://github.com/anthropics/claude-code/issues/46998)、[#47049](https://github.com/anthropics/claude-code/issues/47049)、[#35296](https://github.com/anthropics/claude-code/issues/35296)、[#71618](https://github.com/anthropics/claude-code/issues/71618)

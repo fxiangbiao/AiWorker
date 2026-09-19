@@ -34,6 +34,7 @@ import type { TelemetryCoordinator } from "../memory/telemetry.js";
 import type { CheckpointStore } from "../core/checkpoint-store.js";
 import type { PermissionMemory } from "../security/permission-memory.js";
 import { pendingTurn, commitTurn } from "./turn-registry.js";
+import { getOwner } from "../core/subagent-ownership.js";
 
 export interface HandlerDependencies {
   dangerDetector?: DangerDetector;
@@ -354,6 +355,16 @@ export function createConfirmHighRisk(deps: HandlerDependencies): HookHandler {
 }
 
 /**
+ * 检查点归属（Sprint 52 §2.4 路线 B）：子智能体（wk- 会话）的写操作登记到**父会话的 spawn 回合**，
+ * 使父 `/rewind N` 一次回滚父子全部改动。无归属记录时沿用自身会话 + 当前回合（行为与改前一致）。
+ */
+function checkpointTarget(ctx: { sessionId: string }): { sessionId: string; turn: number } {
+  const owner = getOwner(ctx.sessionId);
+  if (owner) return { sessionId: owner.parentSessionId, turn: owner.parentTurnAtSpawn };
+  return { sessionId: ctx.sessionId, turn: pendingTurn(ctx.sessionId) };
+}
+
+/**
  * captureDiff — 文件变更快照
  * 写文件前保存旧内容，写完成后计算并记录 diff
  * 用于审计和潜在的回滚
@@ -366,6 +377,8 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
   const dirSnapshots = new Map<string, Map<string, { mtimeMs: number; size: number }>>();
   // session -> Set<filePath> 已由 fs_write 精确逻辑处理的路径（目录指纹对比时跳过，防重复）
   const fsWritePaths = new Map<string, Set<string>>();
+  /** capture 被拒绝的路径（turn 已 prune）：onToolCallPost 据此跳过 recordAfter，避免"登记一半" */
+  const captureRejected = new Map<string, Set<string>>();
   // session -> 上次实际扫描时间戳（节流：避免一轮内多次写工具调用反复全量扫描）
   const lastScanAt = new Map<string, number>();
   const scanThrottleMs = deps.scanThrottleMs ?? SCAN_THROTTLE_MS;
@@ -377,6 +390,7 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
       snapshots.delete(ctx.sessionId);
       dirSnapshots.delete(ctx.sessionId);
       fsWritePaths.delete(ctx.sessionId);
+      captureRejected.delete(ctx.sessionId);
       lastScanAt.delete(ctx.sessionId);
       // TTL 清理: 超过 30 分钟未使用的快照
       return;
@@ -407,10 +421,29 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
         oldContent = null;
       }
       // 检查点：写前落盘"变更前内容"（回滚基准 = 回合起点，同路径只记首次）
-      deps.checkpointStore?.capture(ctx.sessionId, pendingTurn(ctx.sessionId), filePath, oldContent, {
+      // 子智能体写入登记到父会话的 spawn 回合（路线 B）；父回合 manifest 不存在则拒绝登记（禁隐式建盘）
+      const target = checkpointTarget(ctx);
+      const captured = deps.checkpointStore?.capture(target.sessionId, target.turn, filePath, oldContent, {
         existedBefore,
         tool: toolName,
       });
+      if (captured === null) {
+        let rejected = captureRejected.get(ctx.sessionId);
+        if (!rejected) {
+          rejected = new Set();
+          captureRejected.set(ctx.sessionId, rejected);
+        }
+        rejected.add(filePath);
+        auditLogger.log({
+          timestamp: Date.now(),
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          action: `checkpoint:rejected`,
+          target: filePath.slice(0, 200),
+          result: "blocked",
+          detail: `目标 ${target.sessionId}/turn-${target.turn} 无 manifest（未 beginTurn 或已 prune），拒绝登记（该写入不参与回滚）`,
+        });
+      }
     }
 
     if (ctx.event === "onToolCallPost") {
@@ -520,10 +553,18 @@ export function createCaptureDiff(deps: HandlerDependencies): HookHandler {
 
       writeDiffSnapshot(dataBase, ctx.sessionId, filePath, diffText, oldContent, newContent);
       // 检查点：补充变更后哈希与行数（冲突检测 + 回滚预览）
-      deps.checkpointStore?.recordAfter(ctx.sessionId, pendingTurn(ctx.sessionId), filePath, newContent, {
-        added,
-        removed,
-      });
+      // capture 已被拒绝的路径跳过 recordAfter（否则会隐式建盘，复活已 prune 的回合）
+      const rejectedHere = captureRejected.get(ctx.sessionId);
+      if (rejectedHere?.has(filePath)) {
+        rejectedHere.delete(filePath);
+        if (rejectedHere.size === 0) captureRejected.delete(ctx.sessionId);
+      } else {
+        const target = checkpointTarget(ctx);
+        deps.checkpointStore?.recordAfter(target.sessionId, target.turn, filePath, newContent, {
+          added,
+          removed,
+        });
+      }
     }
   };
 }
@@ -561,9 +602,10 @@ function recordDirDiff(
   deps.onFileDiff?.(filePath, added, removed, diffText);
 
   // 检查点：指纹扫描发现的写入（terminal_exec/MCP/插件）无法取得变更前内容 → 仅记录，不可回滚
+  const dirDiffTarget = checkpointTarget(ctx);
   deps.checkpointStore?.markUnrestorable(
-    ctx.sessionId,
-    pendingTurn(ctx.sessionId),
+    dirDiffTarget.sessionId,
+    dirDiffTarget.turn,
     filePath,
     "terminal_exec",
     (ctx.data.toolName as string) ?? "unknown",

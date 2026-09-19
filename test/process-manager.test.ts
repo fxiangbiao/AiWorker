@@ -19,7 +19,13 @@ describe("process-manager", () => {
 
     expect(pm.list()).toHaveLength(3);
     expect(pm.get("agent-1")?.kind).toBe("agent");
-    expect(pm.stats()).toEqual({ agent: 1, app: 1, job: 1 });
+    expect(pm.stats()).toEqual({ agent: 1, app: 1, job: 1, subagent: 0 });
+  });
+
+  it("Sprint 52：子智能体独立计数（不再并入 job）", () => {
+    pm.register({ kind: "job", pid: "job-1", jobId: "j1", status: "queued" });
+    pm.register({ kind: "subagent", pid: "subagent-1", subagentId: "sub-1", status: "running" });
+    expect(pm.stats()).toEqual({ agent: 0, app: 0, job: 1, subagent: 1 });
   });
 
   it("update 存在才生效；unregister 幂等", () => {

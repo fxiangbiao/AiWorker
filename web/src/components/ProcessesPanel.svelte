@@ -5,7 +5,7 @@
    */
   import { onMount } from "svelte";
   import { processes, processStats, processResources, loadProcesses, apps } from "$lib/stores/apps.svelte";
-  import { Brain, Box, ListChecks, RefreshCw, Gauge } from "lucide-svelte";
+  import { Brain, Box, ListChecks, RefreshCw, Gauge, Bot } from "lucide-svelte";
 
   function fmtTime(ts: number): string {
     const d = new Date(ts);
@@ -30,8 +30,8 @@
     return `${m}m${r > 0 ? `${r}s` : ""}`;
   }
 
-  const KIND_LABEL = { agent: "Agent", app: "应用", job: "任务" } as const;
-  const KIND_ICON = { agent: Brain, app: Box, job: ListChecks } as const;
+  const KIND_LABEL = { agent: "Agent", app: "应用", job: "任务", subagent: "子智能体" } as const;
+  const KIND_ICON = { agent: Brain, app: Box, job: ListChecks, subagent: Bot } as const;
 
   function statusColor(status: string): string {
     switch (status) {
@@ -75,6 +75,9 @@
     <span class="pp-stat"><Brain size={12} /> {$processStats.agent}</span>
     <span class="pp-stat"><Box size={12} /> {$processStats.app}</span>
     <span class="pp-stat"><ListChecks size={12} /> {$processStats.job}</span>
+    {#if $processStats.subagent > 0}
+      <span class="pp-stat" title="后台子智能体"><Bot size={12} /> {$processStats.subagent}</span>
+    {/if}
     {#if $processResources}
       <span class="pp-stat pp-res" title="本次运行累计 token（全局）"><Gauge size={12} /> tok {fmtNum($processResources.tokens.total)} <span class="pp-res-sub">入 {fmtNum($processResources.tokens.prompt)} · 出 {fmtNum($processResources.tokens.completion)}</span></span>
     {/if}
@@ -94,6 +97,7 @@
               {#if p.kind === "agent" && p.agentId}<span class="pp-sub">{p.agentId}</span>{/if}
               {#if p.kind === "app" && p.appId}<span class="pp-sub app-name">{appLabel(p.appId)}</span>{/if}
               {#if p.kind === "job" && p.jobId}<span class="pp-sub">{String(p.jobId).slice(0, 18)}</span>{/if}
+              {#if p.kind === "subagent" && p.subagentId}<span class="pp-sub">{String(p.subagentId).slice(0, 18)}</span>{/if}
             </div>
             <div class="pp-meta">
               <span style:color={statusColor(p.status)}>{p.status}</span>

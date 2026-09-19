@@ -101,7 +101,8 @@ export async function loadConfigState(): Promise<void> {
   }
 }
 
-/** 单项写入（temperature / maxTokens / thinking / skillEvo / profileKey / addModel / reset …） */
+/** 单项写入（写侧字段名为规范名：model / temperature / maxTokens / thinking / skillEvo / addModel / reset …）
+ *  注意与读侧 `runtimeConfig.profileKey` 区分：写侧用 "model"，后端两个名字都收（别名兼容） */
 export async function applyConfigField(field: string, value: unknown): Promise<boolean> {
   configError.set("");
   configNotice.set("");

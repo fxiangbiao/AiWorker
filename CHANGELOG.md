@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.9.0 (2026-09-12)
+
+### 后台子智能体（Sprint 52：P1-1 / 报告差距 4.3-#9）
+
+**一句话**：把"一次协作一条链"变成"**可续接、可控制、可观测、可撤销**的后台子智能体"——主业是调研与并行分析。
+
+- **新增控制面 4 个工具 + 4 个端点**：`spawn_agent`（起子智能体，返回 `sub-xxx`）、`send_message`（追问：运行中入 pending 队列，空闲起新一轮）、`list_agents`（列状态/轮次/token/摘要）、`interrupt_agent`（中断当前轮并保留会话）。HTTP 侧 `GET/POST /api/v1/subagents`、`POST /api/v1/subagents/:id/messages`、`DELETE /api/v1/subagents/:id`（`?purge=1` 彻底关闭并释放槽位），全部走写面三件套（跨站 403 → 缺 token 401 → 参数 400）
+- **状态机 `queued → running → idle | failed`**（`src/core/subagent-runner.ts`，从 `job-runner.ts` 演进，保留 `jobRunner` 兼容 `scheduler`）：`done` 改为 `idle` 表示"可续接"；新增 `abortRequested` 区分"用户中断"与"迭代用尽"，避免二者都落成 `failed`。`idle` **不占并发配额**（否则同一父会话累计 spawn 到上限后无任何 API 能释放，只能删父会话或重启）
+- **执行层可见性硬校验（本轮最关键的安全修复）**：`filterVisibleTools` 此前**只影响发给模型的数组**，`agent-loop.ts` 的 `executeToolInner` 直接 `getHandler(toolName)`——手工构造一个越权 `tool_call` 就能执行白名单外的工具。现在把本轮可见集合传进执行层，未命中即拒绝并写审计（`result:"blocked"`）。这使「只读」「深度 1」「受限工具」从**劝告**变成**边界**
+- **受限工具标记 + 只读闭集**：`spawn_agent/send_message/list_agents/interrupt_agent` 为受限工具，不参与"空白名单全放行"，必须显式列入 `tools` 才可见（`config/agents/default.yaml` 已显式启用，否则智能体侧完全不可达）。`readOnly` 子智能体走闭集 `{fs_read, fs_list, web_search, web_fetch}` 且 `strictTools`，**MCP / 插件豁免一律失效**（无元数据可判只读，不做"只读 MCP"推断），权限模式同时收窄为 `ask`——只允许收窄，不允许放宽
+- **深度 1（双层防御）**：子智能体 fork 出的工具面先剔除四个控制类工具；执行层再按 `wk-` 会话前缀硬校验一次，四个 handler 全拒 + 审计
+- **per-spawn 实例（修同名并发 mode 互踩）**：`BaseAgent.fork()` 派生独立副本（config / tools / permissions / skills / plugins 全部深拷贝），`bootstrap.ts` 按 agentId 复用单例导致 `setMode` 写回实例的问题消除
+- **模式动态读取（修静默降级）**：`getMode: () => permissionModel.getMode()` 每轮现读，而非启动时钉死 `defaultMode`
+- **工具级真中断（T1b）**：`ToolContext.signal` 从 `agent-loop` 贯通到工具层，`terminal_exec` 首次真正消费它——abort 时按**进程树**终止（Windows `taskkill /T /F`，POSIX 进程组 `SIGKILL`；Windows 上 `exec` 的 pid 是 `cmd.exe`，真实命令是孙进程，`exec` 自带的 `signal` 选项实测不可靠）。分层承诺：轮边界中断**必达**，工具级中断已实现并有端到端副作用探针（abort 后原命令的完成标记文件确实未被写出）
+- **回滚归属（Q2 路线 B）**：新增 `src/core/subagent-ownership.ts` 记录 `childSessionId → { parentSessionId, parentTurnAtSpawn }`；`captureDiff` 三处登记点改问 `owner(ctx.sessionId)`，**子智能体的写操作登记到父会话 spawn 时所在回合**，所以父 `/rewind <n>` 天然一次回滚父子全部改动（`rewind-service` 无需改动）。`parentTurnAtSpawn` 在 spawn 时钉住、口径复用 `pendingTurn`（不读 checkpoint 目录——两口径已实测分叉）
+- **拒绝隐式建盘（T7 前提 4）**：`checkpoint-store.capture` / `markUnrestorable` 与 `recordAfter` 改为**要求 manifest 已由 `beginTurn` 建立**，不存在即拒绝并写审计 `checkpoint:rejected`。此前 `ensureManifest` 会为已 prune 的回合重建目录（缺 `messageSeqBefore` → `/rewind` blocker → `ok:false`，且 `beginTurn` 的 prune 会连坐删掉一个合法回合）。父空闲期间 spawn 的子智能体改动因此**不参与回滚**——这是路线 B 的固有代价，已写进 README 与审计
+- **并发/资源护栏**：并发 4（可注入）、每父会话 4、全局 8，超限**返回错误而非排队**；`MAX_PENDING=5`；已完成条目保留 50 条；deny-provider 改**引用计数**（并发下 save/restore 单例会失效）；新增 run **看门狗**（默认 10 分钟）——挂死的 run 会永久持有 deny 通道，使整个进程的 confirm/ask 静默拒绝（功能性 DoS），超时强制释放；`shutdown` 带 5s 宽限上限并接线到 `runtime.shutdown` 首位
+- **审计与可观测**：`audit_log` 新增 `actor_session_id` 列 + 索引（老库自动 `ALTER TABLE` 迁移）；`subagent:*` 事件带父会话归属；WS 广播 `subagent/spawned|done|failed`，`job/done` 兼容事件带 `resumable` 标记；进程注册新增 `kind:"subagent"`（此前误标为"后台任务"）
+- **安全接线（同批）**：`/agents/:id/config`、`/reset`、`/delete` **三条路径统一写面三件套**（此前只有 `/config` 有门，跨站可删自定义智能体、可把内置智能体 reset 回默认从而放宽白名单）；`fs_edit` 补进 `DANGER_TOOLS`，且危险检测输入与 `fs_write` 对齐改为**只检测路径**（原先把 `JSON.stringify(args)` 喂给命令文本型正则：普通编辑永远 `safe`，而"编辑一个含 `rm -rf` 字样的文档"反而被判高危）；`spawn_agent` / `send_message` 列入 `never_auto_approve`（每次都确认，headless 下不可用，不存在"始终允许"路径）
+- **测试**：新增 `subagent-runner`（18 例）/ `subagent-tools`（7 例）/ `subagent-security`（11 例：执行层越权拒绝 + 只读闭集 + 写型 MCP 不可见 + 深度 1 四工具全拒 + fork 隔离 + `fs_edit` 误伤回归）/ `subagent-fork`（10 例）/ `subagents-api`（11 例：三件套 + purge + 父会话校验），`checkpoint.test.ts` 补回滚 B 端到端与 prune 时序；`sprint-52-diagnosis` 的 D2-c 从"signal 不传递"改写为"abort 立即杀进程树"断言。全量 **1117 例 / 74 文件**全绿，`npm run verify` exit 0，`svelte-check` 0 错 58 warnings（与基线持平）
+- **明确不做**（写进 `plans/sprint-52-background-subagents.md` §七）：不做嵌套（深度 1）、不做进程池 / worker_threads、不做 worktree 隔离、不做动态 workflow 编排、不做运行中步边界注入、不做目标驱动（P1-2 → S53）、不做 fork（拆到 S53）、不做"只读 MCP"推断、不做 `never_auto_approve` 的始终允许路径
+- **诚实边界**：无 worktree/副本隔离，多子智能体同写一个文件会互相覆盖；运行中插话仅在**轮边界**注入（`pending` 在下一轮开始前消费）；父空闲 spawn 的子改动不参与回滚（上面已述）；只读 ≠ 零磁盘写入（输出溢出落盘 / 检查点 / 遥测仍写数据目录），只读指"不改用户工作目录内容"；`terminal_session` 未接中断（长驻 shell 的进程树归属不同）；工具级中断的进程树终止用 `taskkill` / 进程组，本机实测可靠但未覆盖解释器脚本内部的自行派生
+
+### 代码审查修复（两轮 CR + 两轮验证）
+
+> 功能代码经两轮独立对抗式 CR（安全面 / 可行性 / 诚实性 + 复审），以下为发现并修复的缺陷，每条都补了可复现用例。
+
+- **执行层可见性缺失（高，安全轮）**：见上「执行层可见性硬校验」
+- **受限工具对任何智能体都不可见（高，复审）**：`filterVisibleTools` 对受限工具三条路径（空白名单 / 非空白名单 / MCP 与插件豁免）全部排除，而 `config/agents/*.yaml` 一条都没列 → 模型侧**完全不可达**，"智能体可调用"的核心承诺落空。现已在默认智能体显式启用并补用例断言
+- **`spawn_agent` 零确认自动放行（高，复审）**：四个控制类工具既不在 `DANGER_TOOLS` 也不在受保护路径，`auto` 模式直接 `return { proceed: true }`；且模型可自行指定 `readOnly:false` 把子智能体升级为可写。现把 `spawn_agent`/`send_message` 列入 `never_auto_approve`（逐次确认 + headless 不可用 + 无始终允许路径），并对"无确认通道必须拒绝"补反例
+- **配额永久卡死（高，复审）**：`activeCount` 把 `idle` 计入，而 `pruneDone` 只在 >50 时清理、`DELETE` 只 interrupt、无任何释放 API → 同一父会话累计 4 次 spawn 后第 5 次永久报"上限已达"，与本 Sprint 的主力用法（反复并行调研）直接冲突。现配额只计 `queued`/`running`，并新增 `close()` 与 `DELETE ?purge=1`
+- **`/agents/:id/delete` 与 `/reset` 无写入门（高，复审）**：第一轮只堵了同处理器里的 `/config`，另两条路径仍可跨站删除配置、把内置智能体 reset 回默认。现三条路径统一过门，且门**先于**依赖可用性检查（避免 503 抢先）
+- **回滚 B 是只写死代码（高，复审）**：`getOwner` 全仓无调用方，`captureDiff` 仍用子会话自己的 id 与回合号 → 父 `/rewind` **静默漏掉**子智能体写入（比退回方案 A 更糟：A 至少会明示"子改动不在回滚范围"）。现已接线并补端到端用例（父子两文件同时还原）
+- **`capture` 拒绝条件不可达（中，复审）**：原判据 `!manifest && turn > keepTurns` 与目标场景不匹配——prune 保留**最大**的 N 个回合，被 prune 的是**小号**，而路线 B 要写的正是小号，条件永假；同一改动里 `capture` 内补 `prune()` 还会把刚补建的低位回合立刻删掉。现改为"manifest 不存在即拒绝"（与 `beginTurn` 唯一建盘口径一致）
+- **`fs_edit` 进 DANGER_TOOLS 是表面修复（中，复审）**：目标没达到（普通编辑仍 `safe` 放行）还引入新误伤（编辑含 `rm -rf` 字样的文件被判高危）。现检测输入与 `fs_write` 对齐为路径，并补误伤回归用例
+- **`interrupt` 后紧随的 `send_message` 静默搁置（中，复审）**：`send` 对 `running` 入 pending 并回报成功，但 run 因 `abortRequested` 直接 break、不再消费也不重新入队 → 消息要等"下一次 send"才被处理。现 run 退出前把中断窗口内新到的 pending 重新入队
+- **deny-provider 无看门狗（中，复审）**：一次挂死的 run 让引用计数永不为 0 → 整个进程的 confirm/ask 永久静默拒绝。现加 run 看门狗强制释放，`shutdown` 也带上限等待
+- **HTTP spawn 丢弃 `mode` / 不校验父会话（中，复审）**：类型里声明了 `mode` 却从未传递（文档与实现不一致），伪造 `parentSessionId` 会写入指向不存在会话的脏归属记录。现从类型移除 `mode`（模式由父会话当前模式决定），并对父会话存在性校验
+- **子智能体路由硬编码 `/api/v1` 前缀 + 带 query 时匹配失败（中，复审）**：`/subagents` 的 messages / DELETE 路由违反 `apiUrl` 唯一前缀约定；且 GET 用 `url === apiUrl(...)` 比较，带 `?parentSessionId=` 时不匹配而落到 404。现统一走 `apiUrl` 与 pathname 比较
+- **`BaseAgent.fork()` 机制正确但零测试（中，复审）**：确认 `agents/` 全仓无 `#private`、子类无可变状态、`applyDeclaredSkills` 用 marker 替换而非追加（不会重复注入）；但测试里的假 `fork` 忽略 patch，使 runner 层的只读隔离**从未真正被测**。现补真 `BaseAgent` 用例（副本改 mode/tools/mcp/skills/plugins 不影响原实例、同名并发互不干扰、只读闭集恰为四个工具）
+- **死代码 / 清理**：`handle.status = abortRequested ? "idle" : "idle"` 三元两支相同；`pruneDone` 的 `Math.max(DONE_RETAIN, activeCount + DONE_RETAIN)` 恒等；`purgeByParent`/`clearRegistry` 无调用方（后者已用于测试清理）
+
 ## 1.8.0 (2026-09-12)
 
 ### Web 信息架构重构：设置 / 控制台分离（Sprint 50 收尾 + Sprint 51）

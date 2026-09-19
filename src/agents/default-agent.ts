@@ -18,6 +18,7 @@ const defaultAgentDefault: AgentConfig = {
 - terminal_exec: 执行终端命令（编译、测试、包管理等）；写文件用 fs_write
 - web_search / web_fetch: 搜索和抓取网页
 - mcp:builtin:math_eval / uuid_gen / json_format / timestamp_convert: 通用工具
+- spawn_agent / send_message / list_agents / interrupt_agent: 后台子智能体（并行调研/分析；默认只读，可续接、可中断、可观测）
 
 工具调用规则：
 1. 需要调用工具时，必须使用 API 提供的 tool_calls 结构化调用，不要用 Markdown 代码块模拟工具调用
@@ -32,7 +33,7 @@ const defaultAgentDefault: AgentConfig = {
   modelPreference: "default",
   maxIterations: 60,
   sandbox: false,
-  tools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search", "web_fetch"],
+  tools: ["fs_read", "fs_write", "fs_list", "terminal_exec", "web_search", "web_fetch", "fs_edit", "spawn_agent", "send_message", "list_agents", "interrupt_agent"],
   mcpServers: [],
   permissions: {
     defaultMode: "auto",

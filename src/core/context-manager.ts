@@ -237,6 +237,10 @@ export class ContextManager {
     images?: string[],
     /** 技能模式：/技能名 显式激活的技能（注入系统提示，仅当轮上下文，不落历史） */
     explicitSkill?: { name: string; body: string },
+    /** 历史下界：只回放事件 seq 小于该值的历史（当前用户消息已落库时传入其事件 seq，
+     *  否则同一条 user 会被"事件回放 + 参数"注入两次；历史存的是纯文本、当轮参数可能是多模态数组，
+     *  故按边界剔除而不是按内容去重） */
+    historyBeforeEventSeq?: number,
   ): Promise<Message[]> {
     const snapshot = this.frozenSnapshot ?? {
       memory: this.readBounded("MEMORY.md", MEMORY_MAX_CHARS),
@@ -298,7 +302,11 @@ export class ContextManager {
     // 5. 当前会话历史（事件回放：含 tool_calls 与对应 tool 结果，保证 LLM 消息序列完整；
     //    不用 getMessages——投影表不含 tool 消息，assistant(tool_calls) 无 tool 响应会被 API 拒绝）
     const history = this.sessionStore.replayEvents(sessionId);
-    messages.push(...history);
+    const bounded =
+      historyBeforeEventSeq === undefined
+        ? history
+        : history.filter((m) => (m.seq ?? 0) < historyBeforeEventSeq);
+    messages.push(...bounded);
 
     // 6. 当前用户消息（多模态：带图片时组装 content 数组）
     const userContent: Message["content"] =
