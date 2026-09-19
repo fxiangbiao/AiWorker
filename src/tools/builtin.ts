@@ -5,7 +5,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { exec, spawnSync, type ExecOptions } from "node:child_process";
+import { exec, type ExecOptions } from "node:child_process";
 import type { ToolDefinition, ToolHandler, ToolArtifact, ToolContext, ToolResult } from "../types.js";
 import { toolRegistry } from "../core/tool-registry.js";
 import { buildFileArtifact, isTextPath, sniffIsBinary, simpleDiffLines, formatSize } from "../core/preview.js";
@@ -15,6 +15,7 @@ import { evaluatePath, resolvePathPolicy, type PathAccessKind, type PathPolicy }
 import { spillOrTruncate, SPILL_THRESHOLD } from "./spill.js";
 import { requestAsk } from "./ask-channel.js";
 import { terminalSessionPool } from "./terminal-session.js";
+import { killProcessTree } from "./process-tree.js";
 
 const detector = new DangerDetector();
 
@@ -470,32 +471,6 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
   const finalCommand = process.platform === "win32" ? `chcp 65001 >nul & ${command}` : command;
 
   return new Promise((resolve) => {
-    /** 中断时按进程树杀。Windows 上 exec 的 pid 是 cmd.exe，真实命令是其子进程：
-     *  taskkill /T /F 同步硬杀整棵树（实测可靠）；exec 的 signal 选项只杀直接子进程，
-     *  SIGTERM 会让 cmd.exe 立即退出但孙进程存活——绝不能作为第一步 */
-    const killTree = (pid: number): void => {
-      if (process.platform === "win32") {
-        try {
-          spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
-        } catch {
-          /* 杀树失败不阻塞返回 */
-        }
-        return;
-      }
-      // posix：exec 默认 shell 为 /bin/sh，spawn 未 detached → 子进程自成进程组且 pgid===pid，
-      // 负号杀整个进程组（sh + node 孙进程）。兜底链：无权限/ESRCH 时退回单进程 SIGKILL，
-      // 再不行说明已退出
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* 进程可能已退出 */
-        }
-      }
-    };
-
     let settled = false;
     let onAbort: (() => void) | null = null;
     const finish = (body: ToolResult): void => {
@@ -549,9 +524,9 @@ const execCmdHandler: ToolHandler = async (args, ctx) => {
     if (ctx.signal) {
       onAbort = () => {
         interrupted = true;
-        // 同步硬杀整棵树（/F 不给 cmd.exe「体面退出但放过孙进程」的机会）
-        if (child.pid) killTree(child.pid);
-        // 兜底结算：taskkill 后管道可能长期不关、exec 回调不来，最迟 1s 返回中断结果；
+        // 硬杀整棵树（win32 taskkill /T /F；posix ps 子树逐个 SIGKILL）
+        if (child.pid) killProcessTree(child.pid);
+        // 兜底结算：杀树后管道句柄可能仍被子进程持有、exec 回调不来，最迟 1s 返回中断结果；
         // 正常路径 close 先到则此单被 finish 幂等丢弃
         settleTimer = setTimeout(() => finish(interruptedResult()), 1000);
         settleTimer.unref?.();

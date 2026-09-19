@@ -9,7 +9,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { makeTestDir, setupEnv, teardownEnv, clearTools } from "./helpers.js";
 import { SessionStore } from "../src/memory/session-store.js";
@@ -266,6 +267,20 @@ describe("D2 AbortSignal 真实语义", () => {
   });
 
   it("D2-c 真实 terminal_exec 走完整循环：T1b 后 signal 透传到工具，abort 立即杀进程树（不再等命令跑完）", async () => {
+    const testStart = Date.now();
+    // 临时诊断：把 CI 上的失败事实（命令进程的子进程形态 / 杀后是否存活 / 文件写入时刻）带进断言消息
+    const diag: string[] = [];
+    const psHit = (): string => {
+      if (process.platform === "win32") return "win32";
+      try {
+        const rows = execFileSync("ps", ["-eo", "pid=,ppid=,pgid=,stat=,args="], { encoding: "utf8" })
+          .split("\n")
+          .filter((l) => l.includes("d2c-done"));
+        return rows.length ? rows.map((l) => l.trim()).join(" | ") : "-";
+      } catch (e) {
+        return `ps-fail:${(e as Error).message}`;
+      }
+    };
     // 完成标记落到文件（不写进命令文本，避免 error 回显命令时误命中）
     const doneFile = resolve(dir, "d2c-done.txt");
     if (existsSync(doneFile)) rmSync(doneFile, { force: true });
@@ -286,6 +301,7 @@ describe("D2 AbortSignal 真实语义", () => {
       controller.signal,
     );
     await sleep(400);
+    diag.push(`pre(t=${Date.now() - testStart}) ${psHit()}`);
     controller.abort();
     const abortedAt = Date.now();
 
@@ -293,6 +309,11 @@ describe("D2 AbortSignal 真实语义", () => {
     // 不再等 2500ms 自然跑完
     const result = await running;
     const elapsed = Date.now() - abortedAt;
+    diag.push(
+      `settle(t=${Date.now() - testStart},elapsed=${elapsed}) ${psHit()} file=${existsSync(doneFile)}${
+        existsSync(doneFile) ? ` mtimeΔ=${Math.round(statSync(doneFile).mtimeMs - abortedAt)}` : ""
+      }`,
+    );
     expect(result.truncated).toBe(true);
     expect(result.toolCallsExecuted).toBe(1);
     const toolMsg = result.messages.find((m) => m.role === "tool");
@@ -305,7 +326,8 @@ describe("D2 AbortSignal 真实语义", () => {
     // 等待原本的完成时刻已过：进程树确已被杀，命令体没能跑完写文件
     // （兜底结算最迟 1s 返回，elapsed≈1000 → 此处再等约 1600ms，总时长越过 2500ms 定时器）
     await sleep(2600 - elapsed);
-    expect(existsSync(doneFile)).toBe(false);
+    diag.push(`final(t=${Date.now() - testStart}) ${psHit()}`);
+    expect(existsSync(doneFile), diag.join(" ;; ")).toBe(false);
     expect(processManager.list().length).toBe(procsBefore);
   });
 
