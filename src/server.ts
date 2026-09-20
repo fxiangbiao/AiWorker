@@ -76,6 +76,8 @@ export interface ServerDeps {
     mcpServers: string[];
     plugins: string[];
     strictTools: boolean;
+    /** 允许并行调起子智能体（Sprint 52 收尾开关；受限工具需显式列出或由此开关放行） */
+    subagents: boolean;
     permissions: { defaultMode: string; allowedTools: string[]; deniedTools: string[] };
     systemPrompt: string;
     isCustom: boolean;
@@ -344,6 +346,7 @@ function validateAgentPayload(
       skills: strArr(body.skills),
       plugins: strArr(body.plugins),
       strictTools: body.strictTools === true,
+      subagents: body.subagents === true,
       permissions: {
         defaultMode: mode as PermissionMode,
         allowedTools: strArr(perm.allowedTools ?? body.allowedTools),
@@ -1878,6 +1881,14 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
     if (url === apiUrl("/jobs") && req.method === "POST") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
       let body: string;
       try {
         body = await parseBody(req);
@@ -1885,9 +1896,9 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 413, { error: "Body too large" });
         return;
       }
-      let req2: { agentId?: string; prompt?: string };
+      let req2: { agentId?: string; prompt?: string; readOnly?: boolean; parentSessionId?: string };
       try {
-        req2 = JSON.parse(body) as { agentId?: string; prompt?: string };
+        req2 = JSON.parse(body) as typeof req2;
       } catch {
         sendJSON(res, 400, { error: "Invalid JSON" });
         return;
@@ -1900,14 +1911,40 @@ export function startServer(deps: ServerDeps, port: number) {
         sendJSON(res, 503, { error: "Job runner not initialized" });
         return;
       }
-      const id = jobRunner.submit(req2.agentId ?? "default", req2.prompt);
-      sendJSON(res, 200, { id });
+      if (req2.parentSessionId && !deps.sessionStore?.getSession(req2.parentSessionId)) {
+        sendJSON(res, 400, { error: `父会话不存在: ${req2.parentSessionId}` });
+        return;
+      }
+      try {
+        const id = jobRunner.submit(req2.agentId ?? "default", req2.prompt, {
+          parentSessionId: req2.parentSessionId,
+          readOnly: req2.readOnly === true,
+        });
+        sendJSON(res, 200, { id });
+      } catch (err) {
+        sendJSON(res, 400, { error: (err as Error).message });
+      }
       return;
     }
     if (url.startsWith(apiUrl("/jobs/")) && req.method === "DELETE") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
       const jobId = url.slice(apiUrl("/jobs/").length);
+      const exists = jobRunner.get(jobId);
       const ok = jobRunner.cancel(jobId);
-      sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "无法取消（仅排队中任务可取消）" });
+      if (ok) {
+        sendJSON(res, 200, { ok: true });
+      } else if (!exists) {
+        sendJSON(res, 404, { error: "未找到该任务" });
+      } else {
+        sendJSON(res, 409, { error: "任务已结束，无需中断（可在控制台「子智能体」续接）" });
+      }
       return;
     }
 
@@ -2028,6 +2065,14 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
     if (url === apiUrl("/schedule") && req.method === "POST") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
       let body: string;
       try {
         body = await parseBody(req);
@@ -2067,6 +2112,14 @@ export function startServer(deps: ServerDeps, port: number) {
       return;
     }
     if (url.startsWith(apiUrl("/schedule/")) && req.method === "DELETE") {
+      if (isCrossSiteRequest(req.headers)) {
+        sendJSON(res, 403, { error: "跨站请求被拒绝" });
+        return;
+      }
+      if (req.headers["x-aiworker-token"] !== serverToken) {
+        sendJSON(res, 401, { error: "缺少或无效的 X-AiWorker-Token" });
+        return;
+      }
       const schedId = url.slice(apiUrl("/schedule/").length);
       const ok = scheduler.removeJob(schedId);
       sendJSON(res, ok ? 200 : 404, ok ? { ok: true } : { error: "未找到该定时任务" });

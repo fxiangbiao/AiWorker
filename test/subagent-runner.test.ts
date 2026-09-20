@@ -1,6 +1,6 @@
 /**
  * 子智能体运行器测试（Sprint 52 T1a）
- * 覆盖：spawn/send/interrupt/list/状态机/pending上限/deny-provider引用计数/并发配额
+ * 覆盖：spawn/send/interrupt/list/状态机/pending上限/确认通道作用域/并发配额
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { SubagentRunner } from "../src/core/subagent-runner.js";
+import { eventBus } from "../src/server/event-bus.js";
 import type { BaseAgent } from "../src/agents/base-agent.js";
 import type { Task, StreamCallbacks } from "../src/types.js";
 
@@ -91,6 +92,56 @@ describe("Sprint 52 SubagentRunner", () => {
     expect(runner.get(id)!.rounds).toBe(1);
   });
 
+  it("spawn 广播 subagent/spawned 事件（T6b：Web 面板据此即时刷新）", async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const unsub = eventBus.subscribe((d) => {
+      if ((d as { type?: string }).type === "subagent/spawned") events.push(d as Record<string, unknown>);
+    });
+    const id = runner.spawn("default", "广播任务", { parentSessionId: "parent-1", readOnly: true });
+    unsub();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.subagentId).toBe(id);
+    expect(events[0]!.agentId).toBe("default");
+    expect(events[0]!.status).toBe("queued");
+    expect(events[0]!.readOnly).toBe(true);
+    expect(events[0]!.parentSessionId).toBe("parent-1");
+    await waitFor(() => runner.get(id)!.status === "idle");
+  });
+
+  it("子代 fork 恒关掉 subagents 开关（深度 1 不依赖子智能体自身 YAML）", async () => {
+    const patches: Array<Record<string, unknown>> = [];
+    const child = {
+      runStream: async () => ({ text: "ok", truncated: false, iterations: 1, toolCallsExecuted: 0, messages: [] }),
+      getConfig: () => ({
+        tools: ["fs_read", "spawn_agent", "send_message"],
+        mcpServers: [],
+        skills: [],
+        plugins: [],
+        subagents: true,
+        permissions: { defaultMode: "auto", allowedTools: [], deniedTools: [] },
+      }),
+      fork: (p: Record<string, unknown>) => {
+        patches.push(p);
+        return child;
+      },
+    } as unknown as BaseAgent;
+    const mk = new SubagentRunner();
+    mk.init({ createAgent: () => child, workingDir: dir, sessionStore: store, getMode: () => "auto" });
+
+    const writable = mk.spawn("default", "可写子代", { readOnly: false });
+    await waitFor(() => mk.get(writable)?.status === "idle");
+    expect(patches[0]!.subagents).toBe(false);
+    expect(patches[0]!.tools).not.toContain("spawn_agent");
+
+    const readOnly = mk.spawn("default", "只读子代", { readOnly: true });
+    await waitFor(() => mk.get(readOnly)?.status === "idle");
+    expect(patches[1]!.subagents).toBe(false);
+    expect(patches[1]!.readOnly).toBe(true);
+    expect(patches[1]!.tools).toEqual(["fs_read"]);
+
+    mk.clear();
+  });
+
   it("send 到 idle 子智能体起新轮", async () => {
     const id = runner.spawn("default", "首轮");
     await waitFor(() => runner.get(id)?.status === "idle");
@@ -114,6 +165,25 @@ describe("Sprint 52 SubagentRunner", () => {
     }
     expect(slow.send(id, "overflow")).toBe(false);
     slow.clear();
+  });
+
+  it("queued 状态同样受 MAX_PENDING 约束（新入口不再无界堆积）", async () => {
+    const mk = new SubagentRunner();
+    mk.init({
+      createAgent: () => makeAgent("slow"),
+      workingDir: dir,
+      sessionStore: store,
+      getMode: () => "auto",
+      maxConcurrent: 1,
+      maxPending: 2,
+    });
+    const running = mk.spawn("default", "占用并发槽位");
+    await waitFor(() => mk.get(running)!.status === "running");
+    const queued = mk.spawn("default", "排队任务"); // pending 里已有初始任务
+    expect(mk.get(queued)!.status).toBe("queued");
+    expect(mk.send(queued, "第二条")).toBe(true);
+    expect(mk.send(queued, "第三条")).toBe(false);
+    mk.clear();
   });
 
   it("interrupt running → idle，pending 清空", async () => {
@@ -333,7 +403,7 @@ describe("Sprint 52 SubagentRunner", () => {
     mk.clear();
   }, 15000);
 
-  it("F11 回归：看门狗超时强制终止并释放 deny 通道", async () => {
+  it("F11 回归：看门狗超时强制终止并释放并发槽位（不替换全局确认通道）", async () => {
     const { requestConfirm, setConfirmProvider } = await import("../src/hooks/confirm-channel.js");
     const restore = setConfirmProvider(async () => "allow");
     const hung = {
@@ -352,9 +422,33 @@ describe("Sprint 52 SubagentRunner", () => {
     const id = mk.spawn("default", "挂死任务");
     await waitFor(() => mk.get(id)?.status === "failed", 3000);
     expect(mk.get(id)!.lastError).toContain("强制终止");
-    // deny 通道已释放：真实 provider 恢复可用
-    expect(await requestConfirm("恢复了吗？", [{ value: "allow", label: "允许" }])).toBe("allow");
+    // 作用域隔离：跑完一轮子智能体后，全局 provider 仍是调用方装的那个（未被换成 deny 再还原）
+    const displaced = setConfirmProvider(async () => "deny");
+    expect(await requestConfirm("恢复了吗？", [{ value: "allow", label: "允许" }])).toBe("deny");
+    setConfirmProvider(displaced);
+    expect(await requestConfirm("还是原来的 provider 吗？", [{ value: "allow", label: "允许" }])).toBe("allow");
     setConfirmProvider(restore);
+    mk.clear();
+  });
+
+  it("子智能体运行期间，父会话的确认与提问通道不受影响（作用域隔离）", async () => {
+    const { requestConfirm, setConfirmProvider } = await import("../src/hooks/confirm-channel.js");
+    const { requestAsk, setAskProvider } = await import("../src/tools/ask-channel.js");
+    const restoreConfirm = setConfirmProvider(async () => "allow");
+    const restoreAsk = setAskProvider(async () => "父会话回答");
+    const mk = new SubagentRunner();
+    mk.init({ createAgent: () => makeAgent("abortable", 5000), workingDir: dir, sessionStore: store, getMode: () => "auto" });
+    const id = mk.spawn("default", "运行中的子智能体");
+    await waitFor(() => mk.get(id)!.status === "running");
+
+    // 此前实现会在这里被子智能体装的 deny provider 顶掉 → 返回 null（父会话功能级自锁）
+    expect(await requestConfirm("父会话危险操作？", [{ value: "allow", label: "允许" }])).toBe("allow");
+    expect(await requestAsk("父会话提问", [], false)).toBe("父会话回答");
+
+    mk.interrupt(id);
+    await waitFor(() => mk.get(id)!.status === "idle");
+    setConfirmProvider(restoreConfirm);
+    setAskProvider(restoreAsk);
     mk.clear();
   });
 });

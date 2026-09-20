@@ -36,6 +36,7 @@ export function buildServerDeps(runtime: Runtime): ServerDeps {
           mcpServers: cfg.mcpServers,
           plugins: cfg.plugins ?? [],
           strictTools: cfg.strictTools ?? false,
+          subagents: cfg.subagents ?? false,
           permissions: cfg.permissions,
           systemPrompt: cfg.systemPrompt,
           isCustom: !runtime.isBuiltinAgent(id),

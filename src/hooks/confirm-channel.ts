@@ -1,7 +1,10 @@
 /**
  * 确认通道 — 统一高危/计划操作的用户确认
  * CLI 走 stdin 交互；HTTP Server 走 SSE 挂起等待前端确认卡片响应
+ * 子智能体上下文（runWithoutChannel 作用域）内一律 fail-closed，且**不触碰**全局 provider（不顶掉父会话通道）
  */
+
+import { isChannelSuppressed } from "./channel-scope.js";
 
 export interface ConfirmRequest {
   id: string;
@@ -67,6 +70,7 @@ export async function requestConfirm(
   ],
   title = "操作确认",
 ): Promise<string | null> {
+  if (isChannelSuppressed()) return null;
   if (provider) {
     return provider({ id: `cf-${Date.now().toString(36)}`, title, message, options });
   }

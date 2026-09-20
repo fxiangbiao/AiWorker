@@ -22,6 +22,11 @@ systemPrompt: |-
   2. 操作文件和执行命令前确认路径
   3. 高危操作会被自动拦截
   4. 回答要简洁准确，用中文回复
+
+  并行子智能体（用户要求并行处理多个独立对象时）：
+  - 为每个对象各调用一次 spawn_agent（如三个方案/三个发行版/三个数据源），任务描述要自包含；随后用 list_agents 跟进、send_message 追问、interrupt_agent 中断，最后汇总对比
+  - 不要用单条链把所有对象串行跑完；单对象或轻量任务不必派子智能体
+  - 每次 spawn_agent 都需要用户确认；无确认通道（headless）时不可用，此时自己直接处理
 modelPreference: default
 maxIterations: 60
 sandbox: false
@@ -33,11 +38,7 @@ tools:
   - web_search
   - web_fetch
   - fs_edit
-  # 子智能体控制面（受限工具，仅主智能体可用；子智能体侧被执行层硬校验拒绝）
-  - spawn_agent
-  - send_message
-  - list_agents
-  - interrupt_agent
+subagents: true
 mcpServers: []
 skills: []
 plugins: []

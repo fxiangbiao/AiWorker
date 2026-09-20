@@ -45,6 +45,7 @@ tools:
   - fs_read
   - fs_write
 
+subagents: true
 mcpServers: []
 
 permissions:

@@ -1,17 +1,9 @@
 /**
- * 后台任务执行器 — 长任务不阻塞 TUI 交互
- * 状态机 queued → running → done | failed；并发上限；结果写会话 + 审计 + WS 广播
- * 后台任务不注册 ask/confirm 通道（fail-closed 自动拒高危）；不写 TUI 消息区（避免抢渲染）
+ * 后台任务兼容层（Sprint 52 统一）：执行一律落到 `subagentRunner`，本模块只保留旧视图
+ * 状态映射 `idle ↔ done`：/bg、/jobs、POST /jobs、scheduler 等既有消费方零改动
  */
 
-import { eventBus } from "../server/event-bus.js";
-import type { BaseAgent } from "../agents/base-agent.js";
-import type { SessionStore } from "../memory/session-store.js";
-import type { StreamCallbacks, PermissionMode, AgentRunResult } from "../types.js";
-import { setConfirmProvider } from "../hooks/confirm-channel.js";
-import { setAskProvider } from "../tools/ask-channel.js";
-import { auditLogger } from "./audit-logger.js";
-import { processManager } from "./process-manager.js";
+import { subagentRunner, type SubagentHandle } from "./subagent-runner.js";
 
 export interface BackgroundJob {
   id: string;
@@ -23,164 +15,60 @@ export interface BackgroundJob {
   sessionId?: string;
   startedAt?: number;
   finishedAt?: number;
+  /** 被用户中断（而非自然跑完）：状态仍是 idle/可续接，但视图不能显示成"完成" */
+  interrupted?: boolean;
 }
 
-/** 同时运行的后台任务上限，超出排队（FIFO） */
-const MAX_CONCURRENT = 2;
+export interface JobRunnerSubmitOptions {
+  /** 绑定父会话（/bg 传当前 TUI 会话）：子改动随父 /rewind 连带回滚 */
+  parentSessionId?: string;
+  /** 缺省 false（保留 /bg 既有语义：用户显式提交即完整工具面） */
+  readOnly?: boolean;
+}
 
-export interface JobRunnerDeps {
-  createAgent: (agentId: string) => BaseAgent | undefined;
-  workingDir: string;
-  sessionStore: SessionStore;
-  mode?: PermissionMode;
+function toJob(h: SubagentHandle): BackgroundJob {
+  return {
+    id: h.id,
+    agentId: h.agentId,
+    prompt: h.task,
+    status: h.status === "idle" ? "done" : h.status,
+    summary: h.summary,
+    error: h.lastError,
+    sessionId: h.sessionId,
+    startedAt: h.startedAt,
+    finishedAt: h.finishedAt,
+    interrupted: h.status === "idle" && h.abortRequested,
+  };
 }
 
 export class JobRunner {
-  private deps: JobRunnerDeps | null = null;
-  private jobs = new Map<string, BackgroundJob>();
-  private queue: string[] = [];
-  private running = 0;
-  private jobPids = new Map<string, string>();
-
-  init(deps: JobRunnerDeps): void {
-    this.deps = deps;
-  }
-
   isInitialized(): boolean {
-    return this.deps !== null;
+    return subagentRunner.isInitialized();
   }
 
-  submit(agentId: string, prompt: string): string {
-    if (!this.deps) throw new Error("JobRunner 未初始化");
-    const id = `job-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    this.jobs.set(id, { id, agentId, prompt, status: "queued", summary: "" });
-    this.queue.push(id);
-    const pid = processManager.nextPid("job");
-    this.jobPids.set(id, pid);
-    processManager.register({ kind: "job", pid, jobId: id, status: "queued" });
-    this.drain();
-    return id;
+  submit(agentId: string, prompt: string, opts?: JobRunnerSubmitOptions): string {
+    return subagentRunner.spawn(agentId, prompt, {
+      parentSessionId: opts?.parentSessionId,
+      readOnly: opts?.readOnly ?? false,
+    });
   }
 
   list(): BackgroundJob[] {
-    return [...this.jobs.values()];
+    return subagentRunner.list().map(toJob);
   }
 
   get(id: string): BackgroundJob | undefined {
-    return this.jobs.get(id);
+    const h = subagentRunner.get(id);
+    return h ? toJob(h) : undefined;
   }
 
-  /** 仅可取消排队中任务 */
+  /** 旧语义"仅排队中可取消"→ 统一后为 interrupt（中断当前轮并保留会话，可续接） */
   cancel(id: string): boolean {
-    const job = this.jobs.get(id);
-    if (job && job.status === "queued") {
-      job.status = "failed";
-      job.error = "已取消";
-      job.finishedAt = Date.now();
-      this.queue = this.queue.filter((q) => q !== id);
-      return true;
-    }
-    return false;
+    return subagentRunner.interrupt(id);
   }
 
-  /** 清空全部任务记录（测试/重置用；运行中任务不受影响） */
   clear(): void {
-    this.jobs.clear();
-    this.queue = [];
-  }
-
-  private drain(): void {
-    while (this.running < MAX_CONCURRENT && this.queue.length > 0) {
-      const id = this.queue.shift()!;
-      const job = this.jobs.get(id);
-      if (!job) continue;
-      void this.run(job);
-    }
-  }
-
-  private async run(job: BackgroundJob): Promise<void> {
-    const deps = this.deps!;
-    this.running++;
-    job.status = "running";
-    job.startedAt = Date.now();
-    const pid = this.jobPids.get(job.id);
-    if (pid) processManager.update(pid, { status: "running", startedAt: job.startedAt } as never);
-
-    try {
-      const agent = deps.createAgent(job.agentId);
-      if (!agent) throw new Error(`未知专家: ${job.agentId}`);
-
-      const sessionId = deps.sessionStore.createSession(job.agentId).id;
-      job.sessionId = sessionId;
-
-      // 后台任务**显式**安装"立即拒绝"通道：此前只是"不注册"，实际会回落到 stdin 交互提示，
-      // 让任务白等 30 秒，且用户可能在提示里选择持久化授权（审计 session 为空）
-      const previousConfirm = setConfirmProvider(async () => null);
-      const previousAsk = setAskProvider(async () => null);
-
-      // 仅收集文本摘要；确认/提问一律自动拒绝（fail-closed）
-      const callbacks: StreamCallbacks = {
-        onTextDelta: (text) => {
-          job.summary = (job.summary + text).slice(-2000);
-        },
-      };
-
-      let result: AgentRunResult;
-      try {
-        result = await agent.runStream(
-          { instruction: job.prompt, sessionId, mode: deps.mode ?? "auto" },
-          deps.workingDir,
-          callbacks,
-        );
-      } finally {
-        setConfirmProvider(previousConfirm);
-        setAskProvider(previousAsk);
-      }
-
-      if (!job.summary && result.text) job.summary = result.text.slice(-2000);
-      job.status = result.truncated ? "failed" : "done";
-      if (job.status === "failed" && !job.error) {
-        job.error = "任务未完成（可能已达迭代上限）";
-      }
-      auditLogger.log({
-        timestamp: Date.now(),
-        agentId: job.agentId,
-        sessionId,
-        action: "job:done",
-        target: job.prompt.slice(0, 100),
-        result: job.status === "done" ? "success" : "error",
-        detail: `job=${job.id}`,
-      });
-    } catch (err) {
-      job.status = "failed";
-      job.error = (err as Error).message;
-      auditLogger.log({
-        timestamp: Date.now(),
-        agentId: job.agentId,
-        sessionId: job.sessionId ?? "",
-        action: "job:failed",
-        target: job.prompt.slice(0, 100),
-        result: "error",
-        detail: `job=${job.id}`,
-      });
-    } finally {
-      job.finishedAt = Date.now();
-      this.running--;
-      const pid = this.jobPids.get(job.id);
-      if (pid) {
-        processManager.update(pid, { status: job.status, endedAt: job.finishedAt } as never);
-        processManager.unregister(pid);
-      }
-      eventBus.broadcast({
-        type: "job/done",
-        jobId: job.id,
-        status: job.status,
-        agentId: job.agentId,
-        summary: job.summary.slice(0, 200),
-        error: job.error,
-      });
-      this.drain();
-    }
+    subagentRunner.clear();
   }
 }
 

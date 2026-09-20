@@ -18,6 +18,8 @@ import type {
 import type { BaseAgent } from "../agents/base-agent.js";
 import type { ModelRouter } from "./model-router.js";
 import { WORKER_SESSION_PREFIX } from "../memory/session-store.js";
+import { runWithoutChannel } from "../hooks/channel-scope.js";
+import { isRestrictedTool } from "./subagent-rules.js";
 
 const MAX_STEPS = 8;
 const MAX_PARALLEL = 3;
@@ -144,12 +146,17 @@ export class TeamCoordinator {
           callbacks?.onStepStart?.(step.id, step.expertId, step.description);
 
           try {
-            const agent = this.agents[step.expertId];
-            if (!agent) throw new Error(`未知专家: ${step.expertId}`);
+            const base = this.agents[step.expertId];
+            if (!base) throw new Error(`未知专家: ${step.expertId}`);
 
-            const result = await agent.run(
-              { instruction, mode: "auto", sessionId: `${workerBase}-${step.id}` },
-              workingDir,
+            // wk- worker 与子智能体同权：无确认通道（fail-closed），且不暴露控制面工具（深度 1；
+            // 显式剔除，避免用户把控制面工具写进 YAML tools 时被 worker 看见）
+            const agent = base.fork({
+              tools: base.getConfig().tools.filter((t) => !isRestrictedTool(t)),
+              subagents: false,
+            });
+            const result = await runWithoutChannel(() =>
+              agent.run({ instruction, mode: "auto", sessionId: `${workerBase}-${step.id}` }, workingDir),
             );
 
             const summary = result.text.length > 3000 ? result.text.slice(0, 3000) + "..." : result.text;
@@ -202,9 +209,9 @@ export class TeamCoordinator {
     callbacks?: StreamCallbacks,
     signal?: AbortSignal,
   ): Promise<CoordinatorResult> {
-    const agent1 = this.agents[agentA];
-    const agent2 = this.agents[agentB];
-    if (!agent1 || !agent2) {
+    const base1 = this.agents[agentA];
+    const base2 = this.agents[agentB];
+    if (!base1 || !base2) {
       return {
         text: `辩论模式需要两个有效专家，当前可用: ${Object.keys(this.agents).join(", ")}`,
         plan: { steps: [], goal: instruction, estimatedSteps: 0 },
@@ -213,10 +220,13 @@ export class TeamCoordinator {
         source: "llm",
       };
     }
+    // wk- worker 与子智能体同权：无确认通道（fail-closed），且不暴露控制面工具（深度 1）
+    const agent1 = base1.fork({ tools: base1.getConfig().tools.filter((t) => !isRestrictedTool(t)), subagents: false });
+    const agent2 = base2.fork({ tools: base2.getConfig().tools.filter((t) => !isRestrictedTool(t)), subagents: false });
 
     callbacks?.onToolCall?.(agentA, "第一轮分析", "debate-a1");
     const workerBase = `${WORKER_SESSION_PREFIX}${randomUUID()}`;
-    const r1 = await agent1.run({ instruction, mode: "auto", sessionId: `${workerBase}-a1` }, workingDir);
+    const r1 = await runWithoutChannel(() => agent1.run({ instruction, mode: "auto", sessionId: `${workerBase}-a1` }, workingDir));
     if (signal?.aborted) {
       return {
         text: "辩论已中断",
@@ -228,7 +238,7 @@ export class TeamCoordinator {
     }
 
     callbacks?.onToolCall?.(agentB, "第一轮分析", "debate-b1");
-    const r2 = await agent2.run({ instruction, mode: "auto", sessionId: `${workerBase}-b1` }, workingDir);
+    const r2 = await runWithoutChannel(() => agent2.run({ instruction, mode: "auto", sessionId: `${workerBase}-b1` }, workingDir));
     if (signal?.aborted) {
       return {
         text: "辩论已中断",
@@ -242,11 +252,11 @@ export class TeamCoordinator {
     // 互审: 每个 agent 审视对方结论
     const critiqueA = `请批判性地审视以下来自 ${agentA} 的分析，指出遗漏、矛盾或可改进之处:\n\n${r1.text.slice(0, 3000)}`;
     callbacks?.onToolCall?.(agentB, "审视对方结论", "debate-b2");
-    const cr2 = await agent2.run({ instruction: critiqueA, mode: "auto", sessionId: `${workerBase}-b2` }, workingDir);
+    const cr2 = await runWithoutChannel(() => agent2.run({ instruction: critiqueA, mode: "auto", sessionId: `${workerBase}-b2` }, workingDir));
 
     const critiqueB = `请批判性地审视以下来自 ${agentB} 的分析，指出遗漏、矛盾或可改进之处:\n\n${r2.text.slice(0, 3000)}`;
     callbacks?.onToolCall?.(agentA, "审视对方结论", "debate-a2");
-    const cr1 = await agent1.run({ instruction: critiqueB, mode: "auto", sessionId: `${workerBase}-a2` }, workingDir);
+    const cr1 = await runWithoutChannel(() => agent1.run({ instruction: critiqueB, mode: "auto", sessionId: `${workerBase}-a2` }, workingDir));
 
     // 综合报告
     const text = this.synthesizeDebate(instruction, agentA, agentB, r1.text, r2.text, cr1.text, cr2.text);

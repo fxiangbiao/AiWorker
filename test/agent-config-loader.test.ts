@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   saveAgentConfig,
   loadAgentConfigFromDir,
+  loadAllAgentConfigs,
   hasAgentConfig,
   deleteAgentConfig,
 } from "../src/core/agent-config-loader.js";
@@ -24,6 +25,7 @@ const cfg: AgentConfig = {
   skills: ["skill-a"],
   plugins: ["my-plugin"],
   strictTools: true,
+  subagents: true,
   permissions: { defaultMode: "plan", allowedTools: ["fs_read"], deniedTools: ["terminal_exec"] },
 };
 
@@ -50,8 +52,23 @@ describe("agent-config-loader", () => {
     expect(loaded!.skills).toEqual(["skill-a"]);
     expect(loaded!.plugins).toEqual(["my-plugin"]);
     expect(loaded!.strictTools).toBe(true);
+    expect(loaded!.subagents).toBe(true);
     expect(loaded!.permissions.defaultMode).toBe("plan");
     expect(loaded!.permissions.deniedTools).toEqual(["terminal_exec"]);
+  });
+
+  it("内置 7 个专家默认开启「并行子智能体」开关", () => {
+    const all = loadAllAgentConfigs();
+    for (const id of ["default", "coding", "research", "data-analysis", "financial", "product-ops", "game-dev"]) {
+      expect(all[id]?.subagents, `${id} 应开启 subagents`).toBe(true);
+    }
+  });
+
+  it("research / default 提示词写明并行子智能体的触发条件", () => {
+    const all = loadAllAgentConfigs();
+    expect(all["research"]?.systemPrompt).toContain("并行调研");
+    expect(all["research"]?.systemPrompt).toContain("spawn_agent");
+    expect(all["default"]?.systemPrompt).toContain("并行子智能体");
   });
 
   it("hasAgentConfig / deleteAgentConfig", () => {

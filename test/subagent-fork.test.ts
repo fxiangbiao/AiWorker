@@ -187,11 +187,20 @@ describe("Sprint 52 fork 与审批门", () => {
     expect(cfg.never_auto_approve).toContain("send_message");
   });
 
-  it("默认智能体白名单显式列出四个控制类工具（opt-in 通道已接通）", async () => {
-    const { readFileSync } = await import("node:fs");
-    const yaml = readFileSync(resolve(process.cwd(), "config", "agents", "default.yaml"), "utf-8");
-    for (const t of ["spawn_agent", "send_message", "list_agents", "interrupt_agent"]) {
-      expect(yaml, `default.yaml 应列出 ${t}`).toContain(t);
+  it("内置智能体通过 subagents 开关放行四个控制类工具（opt-in 通道已接通）", async () => {
+    const { loadAllAgentConfigs } = await import("../src/core/agent-config-loader.js");
+    const { filterVisibleTools } = await import("../src/core/agent-loop.js");
+    const all = loadAllAgentConfigs();
+    const control = ["spawn_agent", "send_message", "list_agents", "interrupt_agent"];
+    for (const id of ["default", "research", "coding"]) {
+      const cfg = all[id]!;
+      expect(cfg.subagents, `${id} 应开启 subagents 开关`).toBe(true);
+      const available = control.map((name) => ({
+        type: "function" as const,
+        function: { name, description: name, parameters: { type: "object", properties: {} } },
+      }));
+      const visible = filterVisibleTools(available, cfg, () => false).map((t) => t.function.name);
+      expect(visible, `${id} 应看到四个控制类工具`).toEqual(control);
     }
   });
 

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseNaturalSchedule } from "../src/core/nl-schedule.js";
+import { parseNaturalSchedule, reconcileCron, stripScheduleWords } from "../src/core/nl-schedule.js";
 
 describe("23. 自然语言调度解析", () => {
   it("每天早上8点 → 0 8 * * *，剥离时间表达", () => {
@@ -66,5 +66,72 @@ describe("23. 自然语言调度解析", () => {
   it("无法识别返回 null", () => {
     expect(parseNaturalSchedule("帮我写个程序")).toBeNull();
     expect(parseNaturalSchedule("")).toBeNull();
+  });
+
+  it("「每个周六」与「每周六」等价（个 前缀不再漏解析）", () => {
+    const a = parseNaturalSchedule("每个周六，提醒我起立做运动");
+    expect(a).toEqual({ cron: "0 0 * * 6", prompt: "提醒我起立做运动" });
+    expect(parseNaturalSchedule("每周六，提醒我起立做运动")).toEqual(a);
+  });
+
+  it("「每个工作日 / 每个周末 / 每个小时 / 每个月」同样识别", () => {
+    expect(parseNaturalSchedule("每个工作日9点提醒我")).toEqual({ cron: "0 9 * * 1-5", prompt: "提醒我" });
+    expect(parseNaturalSchedule("每个周末10点整理相册")?.cron).toBe("0 10 * * 0,6");
+    expect(parseNaturalSchedule("每个小时检查一次")?.cron).toBe("0 * * * *");
+    expect(parseNaturalSchedule("每个月1号8点生成账单")?.cron).toBe("0 8 1 * *");
+  });
+
+  it("只命中时刻、星期词不被识别时也不静默降级成每天", () => {
+    expect(parseNaturalSchedule("每逢周六下午3点提醒我锻炼")?.cron).toBe("0 15 * * 6");
+  });
+
+  it("任务正文里的星期词不覆盖已识别的频率", () => {
+    expect(parseNaturalSchedule("每天9点提醒我周六有活动")?.cron).toBe("0 9 * * *");
+  });
+
+  it("剥离时间表达后清掉残留标点", () => {
+    expect(stripScheduleWords("每周六，提醒我起立做运动").prompt).toBe("提醒我起立做运动");
+    // 句尾标点不贴着被剥离片段 → 保留（避免吃掉任务名自带的标点，如 "检查 a.b."）
+    expect(stripScheduleWords("每天10点提醒我。").prompt).toBe("提醒我。");
+    expect(stripScheduleWords("提醒我运动")).toEqual({ prompt: "提醒我运动", matched: false });
+  });
+
+  it("reconcileCron：模型丢掉星期/时刻时按原句修回", () => {
+    expect(reconcileCron("每个周六，提醒我起立做运动", "30 10 * * *")).toEqual({
+      cron: "30 10 * * 6",
+      notes: ["星期按原句改为 6"],
+    });
+    expect(reconcileCron("每天早上8点生成早报", "0 10 * * *").cron).toBe("0 8 * * *");
+    expect(reconcileCron("每周一到周五9点签到", "0 10 * * *").cron).toBe("0 9 * * 1-5");
+    expect(reconcileCron("每天10点提醒我运动", "0 10 * * 6").cron).toBe("0 10 * * *");
+    expect(reconcileCron("提醒我运动", "30 10 * * *")).toEqual({ cron: "30 10 * * *", notes: [] });
+    expect(reconcileCron("每隔一段时间提醒我", "not-a-cron")).toEqual({ cron: "not-a-cron", notes: [] });
+  });
+
+  it("「周天」出现在区间任一端都能识别（审核 F1）", () => {
+    expect(parseNaturalSchedule("每周一到周天9点签到")?.cron).toBe("0 9 * * 1-7");
+    // 反序区间在规则路径退回单日（周日），不生成 cron-parser 拒绝的 7-5
+    expect(parseNaturalSchedule("每周天到周五9点签到")?.cron).toBe("0 9 * * 0");
+  });
+
+  it("反序星期区间不产生无效 cron、也不误改模型结果（审核 F1）", () => {
+    const r = reconcileCron("每逢周天到周五提醒我锻炼", "0 9 * * 5");
+    expect(r.cron).toBe("0 9 * * 5");
+    expect(r.notes).toEqual([]);
+  });
+
+  it("时刻线索不覆盖间隔字段（审核 F2：9点每30分钟）", () => {
+    const r = reconcileCron("9点每30分钟提醒我喝水", "*/30 * * * *");
+    expect(r.cron).toBe("*/30 * * * *");
+    expect(r.notes.length).toBeGreaterThan(0);
+    expect(r.notes.join()).toContain("保留模型给出的");
+    // 具体值仍然会被原句时刻修正
+    expect(reconcileCron("9点提醒我", "0 10 * * *").cron).toBe("0 9 * * *");
+  });
+
+  it("只在剥离片段贴边时清标点，任务名自带的结尾标点保留（审核 F7）", () => {
+    expect(stripScheduleWords("每天9点检查 a.b.").prompt).toBe("检查 a.b.");
+    expect(stripScheduleWords("每天9点，提醒我").prompt).toBe("提醒我");
+    expect(stripScheduleWords("提醒我，每天9点").prompt).toBe("提醒我");
   });
 });

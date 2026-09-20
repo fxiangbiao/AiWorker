@@ -75,7 +75,7 @@
 
 - 配置**唯一来源** `config/agents/<id>.yaml`（内置 TS 默认 + YAML 覆盖，无运行时覆盖层）
 - `reloadAgent(id)` 热重载免重启
-- 工具白名单 `filterVisibleTools`：mcp 前缀匹配 + strictTools 豁免规则；受限工具需显式列出；`readOnly` 走闭集
+- 工具白名单 `filterVisibleTools`：mcp 前缀匹配 + strictTools 豁免规则；受限工具需显式列出**或**由智能体 `subagents: true` 开关放行（7 个内置专家默认全开；strictTools 下开关不例外）；`readOnly` 走闭集
 
 ### 3.3 多智能体协作
 
@@ -121,13 +121,14 @@
 
 Sprint 52 引入，`core/subagent-runner.ts` 状态机 `queued → running → idle | failed`：
 
-- **控制面 4 工具**（`subagent-tools.ts`）：`spawn_agent` / `send_message` / `list_agents` / `interrupt_agent`。主 agent 默认白名单开通（opt-in）；worker 子代调用一律拒绝（深度 1）
+- **控制面 4 工具**（`subagent-tools.ts`）：`spawn_agent` / `send_message` / `list_agents` / `interrupt_agent`。受限工具，由智能体配置的 `subagents: true` 开关放行（7 内置专家默认全开；也可逐个列入 `tools`）；worker 子代一律拒绝（深度 1，`fork` 时显式 `subagents: false`）
+- **触发入口**（1.9.1 统一）：① 工具 `spawn_agent`（受限工具 + 逐次确认，headless 不可用）；② TUI `/bg [--readonly] <任务>`（绑定当前会话）；③ `POST /api/v1/subagents`；④ 定时任务。`/jobs`、`POST /jobs` 与 `scheduler` 经 `core/job-runner.ts` 兼容层落到同一 runner（状态映射 `idle ↔ done`，超配额抛错而非排队）；TUI `/subagents` 提供列表 / `send` / `stop` / `close`
 - **隔离**：子会话 `wk-` 前缀独立 session；每次 spawn 经 `BaseAgent.fork()` 深拷贝配置派生实例
 - **轮边界注入**：运行中 `send_message` 在 step 边界送达；`interrupt` 后补发消息会自动重新排队
-- **安全不降级**：受限工具双层校验（`subagent-rules.ts` 常量 + 执行层 `visibleSet` 硬校验）；HTTP 控制端点带写门禁（token + 403/401/400）
+- **安全不降级**：受限工具双层校验（`subagent-rules.ts` 常量 + 执行层 `visibleSet` 硬校验）；HTTP 控制端点带写门禁（token + 403/401/400）；子智能体的 confirm/ask 由 `hooks/channel-scope.ts` 的**异步作用域**直接 fail-closed（不替换进程级 provider，因此不锁父会话）
 - **可撤销**：子会话写登记到父 spawn turn 的 manifest（`subagent-ownership.ts`），父 `/rewind N` 连带回滚；父空闲时 spawn 的子写不可回滚（manifest 缺失 → `checkpoint:rejected` 审计，诚实边界）
-- **可观测**：`processManager.stats()` 含 `subagent` 计数，Web 进程面板实时可见；`?purge=1` 关闭续接资格
-- **约束**：并发上限 4（只计 queued/running）；deny-provider 有 10 分钟 run watchdog + 5s 关停宽限
+- **可观测**：`processManager.stats()` 含 `subagent` 计数，Web 进程面板实时可见；控制台「子智能体」Tab（1.9.1）列出状态 / 轮次 / 父子 token / 父会话，可追问·中断·关闭；WS 广播 `subagent/spawned|done|failed`；`?purge=1` 关闭续接资格
+- **约束**：并发上限 4（只计 queued/running）；单 run 10 分钟看门狗（防挂死占并发槽位）+ shutdown 5s 宽限；confirm/ask 由 `hooks/channel-scope.ts` 的异步作用域在子智能体侧 fail-closed（已与全局 provider 解耦）
 
 ---
 
@@ -139,7 +140,7 @@ manifest 落 `data/apps/<id>/app.json`，五类应用：**tool / skill / agent /
 
 ### 6.2 进程模型（一切皆进程）
 
-Agent 会话 / 应用 / 后台任务 / 定时任务 / 子智能体统一由 `processManager` 登记（`process/start|update|end` 广播），Web「进程」视图实时可见，附带 token 资源仪表。
+Agent 会话 / 应用 / 后台任务 / 定时任务 / 子智能体统一由 `processManager` 登记（`process/start|update|end` 广播），Web「进程」视图实时可见，附带 token 资源仪表；控制台「子智能体」Tab（1.9.1）按状态/轮次/父子 token 列出全部子智能体，可追问、中断、关闭。后台执行 1.9.1 起统一为 `subagentRunner`（`/bg`、`POST /jobs`、scheduler 经 `job-runner.ts` 兼容层落同一 runner），因此**新条目一律登记为 `subagent`**，`kind: "job"` 仅作为历史类型保留（面板与类型定义仍在，不再产生新条目）。
 
 - 生命周期：`installed → starting → running → stopping → stopped`；`destroyed` 终态
 - 崩溃恢复：service/app 子进程意外退出 → 心跳检测 → 指数退避重启（1s/2s/4s，≤3 次）→ 仍失败置 failed 告警
@@ -239,7 +240,7 @@ Verify 推广后验证（完整 A/B → 回归超阈值 → 自动回滚，全�
 
 ### 10.2 Web UI（`web/`）
 
-Svelte 5 + Vite；API 前缀 `/api/v1`；WS 实时总线 `/api/v1/ws`（chat SSE + eventBus 双写）；store 在 `lib/stores/`。布局：左侧导航（对话/应用/进程/任务）+ 右侧面板（文件变更/文档预览/应用预览）+ SystemPanel 多 Tab（上下文/智能体/技能/MCP/插件/应用/进程/设备/进化/调度/配置/轨迹/审计）。信息架构：设置与控制台分离（web-ia-restructure）。
+Svelte 5 + Vite；API 前缀 `/api/v1`；WS 实时总线 `/api/v1/ws`（chat SSE + eventBus 双写）；store 在 `lib/stores/`。布局：左侧导航（对话/应用/进程/任务）+ 右侧面板（文件变更/文档预览/应用预览）+ SystemPanel 多 Tab（三组：观测 = 上下文/轨迹/审计/进化；资源 = 智能体/子智能体/技能/MCP/插件/应用/进程/调度；系统 = 设备与运行时）。信息架构：设置与控制台分离（web-ia-restructure）。
 
 ### 10.3 设备（`src/media/`）
 

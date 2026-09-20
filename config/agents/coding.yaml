@@ -32,6 +32,7 @@ tools:
   - terminal_exec
   - web_search
   - fs_edit
+subagents: true
 mcpServers: []
 skills: []
 plugins: []

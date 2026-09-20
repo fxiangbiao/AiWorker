@@ -43,6 +43,7 @@ tools:
   - web_search
   - fs_edit
 
+subagents: true
 mcpServers: []
 
 permissions:

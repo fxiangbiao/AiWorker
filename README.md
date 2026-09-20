@@ -3,7 +3,7 @@
 > 个人 AI Agent 助手 → AI OS — 多智能体协作 + MCP + Skills + Hooks + 自进化
 
 <!-- 版本徽章与 package.json 同步更新 -->
-![version](https://img.shields.io/badge/version-1.9.0-blue)
+![version](https://img.shields.io/badge/version-1.9.1-blue)
 ![node](https://img.shields.io/badge/Node-%3E%3D22-339933)
 ![typescript](https://img.shields.io/badge/TypeScript-5.x-3178C6)
 ![license](https://img.shields.io/badge/license-MulanPSL2.0-green)
@@ -309,7 +309,7 @@ headless 的执行语义：不初始化 TUI、不打印 banner 与状态区、�
 | `interrupt_agent` | 中断当前轮并保留会话（转 `idle`，可继续追问） |
 
 ```bash
-# CLI：主智能体侧直接对话即可（默认智能体已显式启用这四个工具）
+# CLI：主智能体侧直接对话即可（默认智能体已开启「并行子智能体」开关）
 > 帮我并行调研 A、B、C 三个方案的优缺点
 
 # HTTP（写面三件套：跨站 403 → 缺 token 401 → 参数 400）
@@ -326,11 +326,26 @@ DELETE /api/v1/subagents/:id?purge=1      # 彻底关闭并释放并发槽位
 | 默认只读 | `readOnly` 缺省 `true`：工具面收窄为闭集 `fs_read / fs_list / web_search / web_fetch`，且权限模式收窄为 `ask` |
 | 并发 | 默认并发 4、每父会话 4、全局 8（超限返回错误而非排队）；`MAX_PENDING=5` |
 | 深度 1 | 子智能体的工具面**不含**四个控制类工具，执行层再按 `wk-` 前缀硬校验一次（双层） |
-| 安全边界 | 子智能体无确认通道（fail-closed 立即拒绝）；`spawn_agent` / `send_message` 在 `never_auto_approve` 清单内，**每次都需人工确认**，headless 下不可用 |
+| 安全边界 | 子智能体无确认通道（fail-closed 立即拒绝，**用异步作用域隔离实现，不再替换进程级 provider**——此前会连父会话的确认通道一起顶掉）；`spawn_agent` / `send_message` 在 `never_auto_approve` 清单内，**每次都需人工确认**，headless 下不可用 |
 | 只读 ≠ 零磁盘写入 | 只读指**不改用户工作目录内容**；输出溢出落盘（`<data>/spills/`）、检查点、遥测仍会写入数据目录 |
 | 中断分层承诺 | 轮边界中断**必达**；工具级真中断已实现：`terminal_exec` 消费 `ToolContext.signal`，abort 时按进程树终止（Windows `taskkill /T /F`，POSIX 进程组 `SIGKILL`） |
-| 可观测 | WS 事件 `subagent/spawned\|done\|failed`；审计 `subagent:*` 带 `actor_session_id`；进程面板独立「子智能体」类型 |
+| 可观测 | 控制台「子智能体」tab（1.9.1：列出状态/轮次/父子 token/所属父会话，可追问、中断、关闭）；WS 事件 `subagent/spawned\|done\|failed`；审计 `subagent:*` 带 `actor_session_id`；进程面板独立「子智能体」类型（**徽标只计活动，已结束可续接的单独标注**，不再像是"还在跑"） |
 | 诚实边界 | 无 worktree/副本隔离——多个子智能体同写一个文件会互相覆盖；运行中插话仅在**轮边界**注入；`wk-` 会话不在会话列表展示 |
+
+**怎么触发**（四条路，同一套 `subagentRunner`）：
+
+1. **对话里由主智能体发起**：它调 `spawn_agent`（**受限工具**，需要智能体配置里的「并行子智能体」开关 `subagents: true` 放行——7 个内置专家默认全开；也可以继续把这 4 个工具逐个写进 `tools`）。因该工具在 `never_auto_approve` 清单内，**每次都要人工确认**；headless（`-p`）下没有确认通道 → fail-closed 不可用。
+2. **TUI `/bg [--readonly] <任务>`**：用户显式提交，绑定当前会话为父会话（改动可随 `/rewind` 连带回滚），缺省完整工具面。
+3. **HTTP `POST /api/v1/subagents`**：脚本/外部程序入口（`/api/v1/jobs` 是同一实现的兼容视图）。
+4. **定时任务**：`/schedule` 到点后经兼容层起子智能体（超配额时本轮跳过并写 `schedule:fire` 审计，不再像旧的 jobRunner 那样排队）。
+
+**查看与操作**：TUI `/subagents`（列表 / `send` / `stop` / `close`）、Web 控制台「子智能体」tab、进程面板 `subagent` 计数。
+
+**开关口径**：`subagents: true` 写在 `config/agents/<id>.yaml`（Web **控制台 →「智能体」→「并行子智能体」**勾选框即此字段；自定义智能体表单默认不勾选），开启后 4 个控制面工具进入该专家的可见工具面，无需逐个列入 `tools`（`strictTools: true` 时开关不例外，仍需显式列出）；`readOnly` 模式不生效，子智能体自身恒为关闭（深度 1）。**注意路由**：「调研/分析/对比/报告」类需求会路由到 `research` 专家，因此开关必须开在**实际接活的专家**上（7 个内置专家现已默认全开）。
+
+**模型为什么不一定会派**：工具可见 ≠ 模型一定调用。实测一次「帮我并行调研对比分析 ubuntu/fedora/rocky 的差异」时，`research` 已经拿到了 `spawn_agent`，但它把"并行"实现成**同一步里并发多个 `web_search`/`web_fetch`**（18 步 66 次调用，0 次 spawn）。因此 1.9.1 同时补了**触发条件层面的引导**：`spawn_agent` 的工具描述写明"多个独立对象 → 每个对象各调用一次"，`research` 与 `default` 的 systemPrompt 也加了"并行调研"小节（每个对象一个只读子智能体 → `list_agents` 跟进 → 汇总）。仍属概率性行为，不是硬性保证；若你希望强制走子智能体，需要在 systemPrompt 里写得更硬。
+
+> 统一说明（1.9.1）：后台执行只保留 `subagentRunner` 一套；`jobRunner` 退化为兼容视图（`src/core/job-runner.ts`），状态映射 `idle ↔ done`。并发上限由 subagentRunner 决定（4 / 每父 4 / 全局 8），**超限抛错**而非排队；旧的 `job-` id 不再产生。
 
 
 ## 交互界面
@@ -345,9 +360,10 @@ DELETE /api/v1/subagents/:id?purge=1      # 彻底关闭并释放并发槽位
 | `/plan <任务>` | 多专家 DAG 协作 |
 | `/debate <话题>` | 双专家辩论 |
 | `/app <list\|info\|install\|start\|stop\|destroy>` | AI OS 应用生命周期管理 |
-| `/bg <任务>` | 提交后台任务（不阻塞交互，完成 WS 推送） |
-| `/jobs [cancel <id>]` | 查看/取消后台任务 |
-| `/schedule` | 定时任务管理：`add "<cron>\|自然语言>" "<任务>" [agentId]` / `remove <id>` |
+| `/bg [--readonly] <任务>` | 提交后台**子智能体**（不阻塞交互；绑定当前会话，可续接/可中断；`--readonly` 收窄为只读闭集） |
+| `/subagents [send <id> <消息> \| stop <id> \| close <id>]` | 子智能体：列表（**全部**，含各父会话）/ 追问 / 中断 / 关闭（TUI 为本地单用户界面，不做会话归属限制；工具与 HTTP 路径仍有归属/权限校验） |
+| `/jobs [cancel <id>]` | 后台任务兼容视图（`done` 即子智能体 `idle` 可续接；`cancel` 即中断） |
+| `/schedule` | 定时任务管理：`add "<cron>\|自然语言>" "<任务>" [agentId]` / `remove <id>`（自然语言先走规则解析；规则失败再走模型兜底，**兜底结果按原句校验并自动修复**，例如原句的「周六」不会被丢掉） |
 | `/install <路径> [-f]` | 安装 .aw 包或裸格式（.md 技能 / .json MCP / 插件目录，自动识别） |
 | `/pkg export <类型> <名称> [--raw]` | 打包导出 .aw；`--raw` 输出裸格式；`/pkg list` 查看可导出资产 |
 | `/skill <名称>` / `/技能名` | 手动激活技能 |
@@ -505,11 +521,11 @@ npm run web:dev      # 开发模式 → localhost:5173（API 代理到 3000）
 | `/api/v1/apps/:id/start\|stop\|destroy` | POST | 应用生命周期操作 |
 | `/api/v1/processes` | GET | 进程列表（Agent/App/Job/子智能体）+ 统计 |
 | `/api/v1/packages/export\|peek\|import\|list` | GET/POST | .aw 资产包导出/预览/导入/列表（支持裸格式） |
-| `/api/v1/jobs` | GET/POST/DELETE | 后台任务列表/提交/取消 |
+| `/api/v1/jobs` | GET/POST/DELETE | 后台任务**兼容视图**（统一到子智能体：id 为 `sub-`、`done` 即 `idle`）；POST 体 `{agentId, prompt, readOnly?, parentSessionId?}`（`readOnly` 缺省 `false`）；写操作需 `X-AiWorker-Token` 且非跨站 |
 | `/api/v1/subagents` | GET/POST | 子智能体列表（`?parentSessionId=`）/ 起一个（`{agentId, task, readOnly?, parentSessionId?}`；写操作需 `X-AiWorker-Token` 且非跨站） |
 | `/api/v1/subagents/:id/messages` | POST | 向子智能体追加一轮（需 token 且非跨站） |
 | `/api/v1/subagents/:id` | DELETE | 中断（保留会话）；`?purge=1` 彻底关闭并释放槽位（需 token 且非跨站） |
-| `/api/v1/schedule` | GET/POST/DELETE | 定时任务（支持自然语言） |
+| `/api/v1/schedule` | GET/POST/DELETE | 定时任务（支持自然语言）；写操作需 `X-AiWorker-Token` 且非跨站 |
 | `/api/v1/confirm` / `/api/v1/ask` | POST | 确认卡片 / 提问卡片响应 |
 | `/api/v1/ws` | WS | WebSocket 实时事件总线 |
 

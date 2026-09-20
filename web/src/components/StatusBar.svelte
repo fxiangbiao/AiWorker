@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { fmtN } from "$lib/utils/format";
   import { currentModel, totalTokens, promptTokens, completionTokens, contextWindow, serverOnline } from "$lib/stores/status";
-  import { apps, processStats, loadApps, loadProcesses, initAppsWs } from "$lib/stores/apps.svelte";
+  import { apps, processStats, loadApps, loadProcesses, initAppsWs, activeSubagents } from "$lib/stores/apps.svelte";
   import { openSettings } from "$lib/stores/shell.svelte";
   import { API } from "$lib/stores/chat.svelte";
   import { Cpu, Box, ShieldCheck } from "lucide-svelte";
@@ -15,8 +15,8 @@
   }
   /** 运行中的应用数（含系统插件；业务语义） */
   const runningApps = $derived($apps.filter((a) => a.status === "running").length);
-  /** 运行中的进程总数（Agent 会话 + 应用 + 后台任务；来自进程注册表） */
-  const procCount = $derived($processStats.agent + $processStats.app + $processStats.job);
+  /** 运行中的进程总数（Agent 会话 + 应用 + 任务 + **活动的**子智能体；来自进程注册表） */
+  const procCount = $derived($processStats.agent + $processStats.app + $processStats.job + $activeSubagents);
 
   /**
    * 权限模式徽章（Sprint 50 / IA 重构）：权限面板从右栏搬进「设置 → 安全」后，

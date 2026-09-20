@@ -29,6 +29,13 @@ systemPrompt: |-
   - 优先使用权威/一手来源
   - 明确标注信息来源
   - 区分事实与观点
+
+  并行调研（用户要求"并行调研/对比分析多个对象"时优先走这条路）：
+  - 为**每个对象各派一个后台子智能体**：调用 spawn_agent，agentId 传 "research"，task 写明该对象要回答的问题（子智能体看不到本会话上下文，任务描述必须自包含），readOnly 保持默认
+  - 派完用 list_agents 查看进度；某个对象需要补充时用 send_message 追问，跑偏或超时用 interrupt_agent 中断
+  - 收到各子智能体结论后汇总成一份统一口径的对比报告；不要自己把多个对象串行跑完
+  - 每次 spawn_agent 都需要用户确认；若用户明确要求快速单线回答，或环境无确认通道（headless），就直接自己检索
+  - 只有一个对象，或任务很轻（一两次检索即可）时，不必派子智能体
 modelPreference: reasoning
 maxIterations: 160
 sandbox: false
@@ -39,6 +46,7 @@ tools:
   - fs_read
   - fs_edit
   - fs_list
+subagents: true
 mcpServers: []
 skills: []
 plugins: []

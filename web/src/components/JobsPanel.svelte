@@ -14,6 +14,8 @@
     summary: string;
     error?: string;
     finishedAt?: number;
+    /** 被用户中断（状态仍是可续接，但不能显示成"完成"） */
+    interrupted?: boolean;
   }
 
   let jobs = $state<Job[]>([]);
@@ -47,7 +49,9 @@
   }
 
   onWsEvent((data) => {
-    if (data.type === "job/done") void load();
+    // 兼容视图：子智能体与进程事件同样改变这份列表（新派生 / 状态变化），别等本轮结束才刷新
+    const type = typeof data.type === "string" ? data.type : "";
+    if (type === "job/done" || type.startsWith("subagent/") || type.startsWith("process/")) void load();
   });
 
   void load();
@@ -60,16 +64,18 @@
   </div>
 
   {#if jobs.length === 0}
-    <div class="jp-empty">{loading ? "加载中…" : "暂无任务（/bg 提交）"}</div>
+    <div class="jp-empty">{loading ? "加载中…" : "暂无后台任务（/bg <任务> 提交，或对话中让主智能体派生）"}</div>
   {:else}
     <div class="jp-list">
       {#each jobs as j (j.id)}
         <div class="jp-item">
-          <span class="jp-dot" style:background={statusColor(j.status)}></span>
+          <span class="jp-dot" style:background={j.interrupted ? "var(--warn)" : statusColor(j.status)}></span>
           <div class="jp-body">
             <div class="jp-prompt">{j.prompt.slice(0, 60)}{j.prompt.length > 60 ? "…" : ""}</div>
             <div class="jp-meta">
-              <span style:color={statusColor(j.status)}>{j.status}</span>
+              <span style:color={j.interrupted ? "var(--warn)" : statusColor(j.status)}>
+                {j.interrupted ? "已中断 · 可续接" : j.status === "done" ? "完成" : j.status === "running" ? "运行中" : j.status === "queued" ? "排队中" : "失败"}
+              </span>
               <span>{j.agentId}</span>
             </div>
             {#if j.status === "failed" && j.error}<div class="jp-err">{j.error.slice(0, 80)}</div>{/if}
@@ -77,6 +83,7 @@
         </div>
       {/each}
     </div>
+    <div class="jp-note">兼容视图：done 即子智能体 idle（可续接）；追问/中断请到控制台「子智能体」</div>
   {/if}
 </div>
 
@@ -97,4 +104,5 @@
   .jp-prompt { font-size: 12px; font-weight: 500; word-break: break-all; }
   .jp-meta { font-size: 11px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; }
   .jp-err { font-size: 11px; color: var(--error); margin-top: 2px; word-break: break-all; }
+  .jp-note { font-size: 11px; color: var(--dim); padding: 6px 4px 0; }
 </style>

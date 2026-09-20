@@ -3,7 +3,7 @@
  * /api/v1/apps /api/v1/processes 拉取 + WS 订阅（app/* process/*）实时刷新
  * 窗口体系（Sprint 35）：openWindows 打开集合 + winStates 位置持久化（localStorage）
  */
-import { writable, get } from "svelte/store";
+import { writable, derived, get } from "svelte/store";
 import { API, store, saveMessages, loadMessages, ensureActiveChat, bumpChatTurn, type UIMessage } from "./chat.svelte";
 import { onWsEvent } from "./ws.svelte";
 
@@ -55,6 +55,16 @@ export interface AppWinState {
 export const apps = writable<AppInfo[]>([]);
 export const processes = writable<OsProcess[]>([]);
 export const processStats = writable<{ agent: number; app: number; job: number; subagent: number }>({ agent: 0, app: 0, job: 0, subagent: 0 });
+
+/**
+ * 子智能体按"是否还在干活"拆分（Sprint 52 收尾）：
+ * idle 是**已结束但可续接**的终态、进程条目会保留，直接拿 `processStats.subagent` 计数会显示成"还在运行"
+ */
+export const activeSubagents = derived(
+  processes,
+  ($p) => $p.filter((x) => x.kind === "subagent" && (x.status === "running" || x.status === "queued" || x.status === "starting")).length,
+);
+export const resumableSubagents = derived(processes, ($p) => $p.filter((x) => x.kind === "subagent" && x.status === "idle").length);
 /** 资源仪表（Sprint 42 A3）：全局 token 占用（/processes 附带） */
 export const processResources = writable<{ tokens: { total: number; prompt: number; completion: number } } | null>(null);
 

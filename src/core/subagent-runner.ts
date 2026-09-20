@@ -8,8 +8,7 @@ import { eventBus } from "../server/event-bus.js";
 import type { BaseAgent } from "../agents/base-agent.js";
 import type { SessionStore } from "../memory/session-store.js";
 import type { StreamCallbacks, PermissionMode, AgentRunResult } from "../types.js";
-import { setConfirmProvider } from "../hooks/confirm-channel.js";
-import { setAskProvider } from "../tools/ask-channel.js";
+import { runWithoutChannel } from "../hooks/channel-scope.js";
 import { auditLogger } from "./audit-logger.js";
 import { processManager } from "./process-manager.js";
 import { WORKER_SESSION_PREFIX } from "../memory/session-store.js";
@@ -25,6 +24,8 @@ export interface SubagentHandle {
   status: "queued" | "running" | "idle" | "failed";
   abortRequested: boolean;
   readOnly: boolean;
+  /** spawn 时的任务原文（pending 会被逐轮消费，任务原文单独留存供观测） */
+  task: string;
   rounds: number;
   pending: string[];
   summary: string;
@@ -44,7 +45,7 @@ export interface SubagentRunnerDeps {
   maxPending?: number;
   maxPerParent?: number;
   maxGlobal?: number;
-  /** 单次 run 总时长上限（看门狗，默认 10 分钟）：防挂死持有 deny 通道与并发槽位 */
+  /** 单次 run 总时长上限（看门狗，默认 10 分钟）：防挂死长期占用并发槽位 */
   runTimeoutMs?: number;
 }
 
@@ -64,9 +65,6 @@ export class SubagentRunner {
   private pids = new Map<string, string>();
   private abortControllers = new Map<string, AbortController>();
   private runningPromises = new Set<Promise<void>>();
-  private denyRefCount = 0;
-  private savedConfirm: ReturnType<typeof setConfirmProvider> = null;
-  private savedAsk: ReturnType<typeof setAskProvider> = null;
 
   init(deps: SubagentRunnerDeps): void {
     this.deps = deps;
@@ -125,6 +123,7 @@ export class SubagentRunner {
       status: "queued",
       abortRequested: false,
       readOnly: opts?.readOnly !== false,
+      task: prompt,
       rounds: 0,
       pending: [prompt],
       summary: "",
@@ -137,6 +136,15 @@ export class SubagentRunner {
     this.pids.set(id, pid);
     processManager.register({ kind: "subagent", pid, subagentId: id, status: "queued" });
 
+    eventBus.broadcast({
+      type: "subagent/spawned",
+      subagentId: id,
+      agentId,
+      status: "queued",
+      readOnly: handle.readOnly,
+      parentSessionId: handle.parentSessionId,
+    });
+
     this.drain();
     return id;
   }
@@ -146,9 +154,11 @@ export class SubagentRunner {
     if (!h) return false;
     if (h.status === "failed") return false;
 
+    // 队列上限对所有状态生效（idle/queued 分支此前无上限，新入口 TUI/HTTP/Web 面板可无界堆积）
+    const maxPending = this.deps?.maxPending ?? DEFAULT_MAX_PENDING;
+    if (h.pending.length >= maxPending) return false;
+
     if (h.status === "running") {
-      const maxPending = this.deps?.maxPending ?? DEFAULT_MAX_PENDING;
-      if (h.pending.length >= maxPending) return false;
       h.pending.push(message);
       return true;
     }
@@ -232,18 +242,6 @@ export class SubagentRunner {
     return count;
   }
 
-  cancel(id: string): boolean {
-    const h = this.handles.get(id);
-    if (h && h.status === "queued") {
-      h.status = "failed";
-      h.lastError = "已取消";
-      h.finishedAt = Date.now();
-      this.queue = this.queue.filter((q) => q !== id);
-      return true;
-    }
-    return false;
-  }
-
   clear(): void {
     for (const h of this.handles.values()) unregisterChild(h.sessionId);
     this.handles.clear();
@@ -267,7 +265,7 @@ export class SubagentRunner {
       }
       ac.abort();
     }
-    // 上限等待：挂死的 run 不能阻塞进程退出（看门狗兜底释放 deny 通道）
+    // 上限等待：挂死的 run 不能阻塞进程退出（看门狗兜底终止）
     const pending = [...this.runningPromises];
     if (pending.length > 0) {
       await Promise.race([
@@ -291,25 +289,6 @@ export class SubagentRunner {
       const p = this.run(h);
       this.runningPromises.add(p);
       void p.finally(() => this.runningPromises.delete(p));
-    }
-  }
-
-  private installDenyProvider(): void {
-    this.denyRefCount++;
-    if (this.denyRefCount === 1) {
-      this.savedConfirm = setConfirmProvider(async () => null);
-      this.savedAsk = setAskProvider(async () => null);
-    }
-  }
-
-  private uninstallDenyProvider(): void {
-    if (this.denyRefCount <= 0) return;
-    this.denyRefCount--;
-    if (this.denyRefCount === 0) {
-      setConfirmProvider(this.savedConfirm);
-      setAskProvider(this.savedAsk);
-      this.savedConfirm = null;
-      this.savedAsk = null;
     }
   }
 
@@ -361,15 +340,7 @@ export class SubagentRunner {
 
     const ac = new AbortController();
     this.abortControllers.set(handle.id, ac);
-    this.installDenyProvider();
-    let denyReleased = false;
-    const releaseDeny = (): void => {
-      if (denyReleased) return;
-      denyReleased = true;
-      this.uninstallDenyProvider();
-    };
-    // 看门狗：单次 run 挂死（LLM 流不返回且不响应 signal）时强制释放 deny 通道，
-    // 否则 refCount 永不为 0 → 整个进程的 confirm/ask 静默拒绝（功能性 DoS）
+    // 看门狗：单次 run 挂死（LLM 流不返回且不响应 signal）时强制终止并释放并发槽位
     const runTimeoutMs = deps.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const watchdog = setTimeout(() => {
       if (handle.status !== "running") return;
@@ -386,7 +357,6 @@ export class SubagentRunner {
         detail: handle.lastError,
       });
       ac.abort();
-      releaseDeny();
     }, runTimeoutMs);
     watchdog.unref?.();
 
@@ -405,15 +375,16 @@ export class SubagentRunner {
         if (!agent) throw new Error(`未知专家: ${handle.agentId}`);
 
         // per-spawn 副本：隔离 mode 与工具面（同名并发不互踩）
-        // 工具面一律剔除控制类工具（深度 1）；readOnly 再收窄到只读闭集（关闭 MCP/插件豁免）
+        // 工具面一律剔除控制类工具（深度 1，subagents:false 同时关掉配置开关这条路径）；readOnly 再收窄到只读闭集（关闭 MCP/插件豁免）
         const parentTools = agent.getConfig().tools;
         const spawnAgent = handle.readOnly
           ? agent.fork({
               tools: parentTools.filter((t) => READ_ONLY_TOOLS.has(t)),
               strictTools: true,
               readOnly: true,
+              subagents: false,
             })
-          : agent.fork({ tools: parentTools.filter((t) => !isRestrictedTool(t)) });
+          : agent.fork({ tools: parentTools.filter((t) => !isRestrictedTool(t)), subagents: false });
 
         // 模式只允许收窄不许放宽：readOnly 强制 ask（权限层只读），否则沿用父会话当前模式
         const parentMode = deps.getMode();
@@ -427,11 +398,14 @@ export class SubagentRunner {
 
         let result: AgentRunResult;
         try {
-          result = await spawnAgent.runStream(
-            { instruction: prompt, sessionId: handle.sessionId, mode },
-            deps.workingDir,
-            callbacks,
-            ac.signal,
+          // 子智能体上下文内 confirm/ask 一律 fail-closed（作用域隔离，不改全局 provider）
+          result = await runWithoutChannel(() =>
+            spawnAgent.runStream(
+              { instruction: prompt, sessionId: handle.sessionId, mode },
+              deps.workingDir,
+              callbacks,
+              ac.signal,
+            ),
           );
         } catch (err) {
           if (ac.signal.aborted || handle.abortRequested) break;
@@ -493,7 +467,6 @@ export class SubagentRunner {
       handle.finishedAt = Date.now();
       this.runningCount--;
       this.abortControllers.delete(handle.id);
-      releaseDeny();
 
       if (pid) {
         processManager.update(pid, { status: handle.status, endedAt: handle.finishedAt } as never);
