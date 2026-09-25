@@ -1,8 +1,8 @@
-# Sprint 52 — 后台子智能体（P1-1 / 报告差距 4.3-#9）
+﻿# Sprint 52 — 后台子智能体（P1-1 / 报告差距 4.3-#9）
 
 > 依据：`plans/roadmap-next.md` P1-1；`docs/主流Agent产品对比分析报告.md` 差距 **4.3-#9**（报告标为 **P0**）、§7.3 P1 表
 > 版本：1.8.0 → **1.9.0（已升版）**
-> 状态：**全部任务已落地，未提交**（T0/T0.5/T1a/T1b/T2/T3/T5/T6a/T7/T8 完成；T6b 面板按"可砍"未做，进程面板已补 `subagent` 类型）。经**两轮独立 CR + 两轮验证**修复后：1117 例 / 74 文件全绿，`npm run verify` exit 0，svelte-check 0 错
+> 状态：**已落地并推送**（`dc5b04c` 主体 + 随后 11 个修复/文档提交，dev 三端同点）。T0/T0.5/T1a/T1b/T2/T3/T5/T6a/T7/T8 完成；T6b 面板已由 1.9.1 补齐（控制台「子智能体」tab）。经**两轮独立 CR + 两轮验证**修复后：1117 → 1122 例 / 74 文件全绿（S52 收工；1.9.1 补 T6b、统一后台执行、调度解析修复、subagents 开关与行为引导、确认通道作用域隔离，并经安全/诚实性两轮审核后 1153），`npm run verify` exit 0，svelte-check 0 错
 > 裁定：Q1 并发 4 / Q2 回滚走 B（注册表路线）/ Q3 spawn 默认只读 / Q6 中断分层承诺（**已实现工具级真中断**）/ Q7、Q8 已纳入并落地 / **Q4 fork 拆到 S53** / **Q5 `list_agents` 仅主智能体可见**
 > 前置：P1-4 权限记忆（S49 ✅）；S50/S51 产物工作台与 IA 重构（1.8.0 ✅）
 > 审核记录：四轮计划审核见附录 B；**两轮代码 CR 结论**见 CHANGELOG 1.9.0「代码审查修复」节
@@ -30,7 +30,7 @@
 | 能力 | 位置 | 事实 |
 |---|---|---|
 | 后台执行 | `job-runner.ts` | 状态机 `queued→running→done\|failed`；`MAX_CONCURRENT=2`；每次 `submit` 新建会话（`:113`）；`cancel` 仅排队中（`:74-84`）；无 AbortSignal |
-| fail-closed 通道 | `job-runner.ts:116-138` | 显式装 deny-provider，结束后恢复。**注意**：save/restore 是进程级单例（`confirm-channel.ts:15`），并发下会失效（审核 F3） |
+| fail-closed 通道 | `job-runner.ts`（当时行号 116-138） | **开工基线**：显式装 deny-provider，结束后恢复。**注意**：save/restore 是进程级单例（`confirm-channel.ts:15`），并发下会失效（审核 F3）。**1.9.1 已废弃该实现**——它会把父会话的确认通道一起顶掉，改为 `hooks/channel-scope.ts` 的异步作用域隔离（子智能体侧仍 fail-closed） |
 | 可中断循环 | `base-agent.ts:187-192`、`agent-loop.ts:916-925` | `runStream` 支持 signal 并透传；但**工具执行期间 signal 不被观察**（`:455-457` 裸 `Promise.all`） |
 | 可续接会话 | `session-store.ts:185/203/233` | 传入既有 sessionId → `ensureSession` + 追加消息 |
 | 子会话隔离 | `session-store.ts:34/474-478` | `wk-` 前缀被 `listSessions` 过滤 |
@@ -69,7 +69,7 @@
 
 ### 2.1 运行模型
 
-`job-runner.ts` 演进为 `src/core/subagent-runner.ts`（保留 `jobRunner` 导出兼容 `scheduler`）：
+`job-runner.ts` 演进为 `src/core/subagent-runner.ts`（1.9.1 收尾：`job-runner.ts` 退化为**兼容层**，仅转发 `submit`/`list`/`get`/`cancel`/`isInitialized` 并映射 `idle ↔ done`，供 `/jobs`、`POST /jobs`、scheduler 等旧消费方零改动）：
 
 ```ts
 interface SubagentHandle {
@@ -116,7 +116,7 @@ POST   /api/v1/subagents/:id/messages     { message } → send
 DELETE /api/v1/subagents/:id              interrupt
 ```
 
-TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统一 `sub-` 前缀，`/jobs` 作为兼容视图。
+TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统一 `sub-` 前缀，`/jobs` 作为兼容视图。**（已由 1.9.1 落地：`/subagents` 列表 + `send`/`stop`/`close`；`job-runner.ts` 退化为兼容层，`/bg`、`POST /jobs`、`/jobs`、scheduler 全部落 `subagentRunner`，id 统一 `sub-`；`/jobs` 与 Web「任务」tab 保留为兼容视图）**
 
 **`POST /api/v1/agents/:id/config` 必须补写面三件套**（审核 F4）：与 T2/T3 同批，否则受限工具的 opt-in 通道本身可被跨站打开。
 
@@ -126,7 +126,7 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 2. **无确认通道**：子智能体 confirm/ask 立即拒绝。**改进**（审核 F10）：无通道时返回带 `reason: "no-channel"` 的可判别失败，审计 detail 带该原因，用户文案区分"无通道自动拒绝"与"用户点拒绝"。
 3. **权限口径对齐**（审核 F2）：§2.3 原文"必须预先授权才能写"是**错的**——现有模型下零规则即可写非受保护路径。**修正**：子智能体在 auto 模式下可写非受保护路径、执行非危险命令；要收紧需用 `ask` 规则（`{"tool":"fs_write","action":"ask"}` → 无通道 → 硬拒）。**`fs_edit` 补进 `DANGER_TOOLS`**（`:257`）。
 4. **深度 1**：子智能体工具面不含 `spawn_agent`/`send_message`/`interrupt_agent`。**执行层硬校验**（不只是可见性）：handler 内按 `ctx.sessionId.startsWith(WORKER_SESSION_PREFIX)` 拒绝递归 spawn。
-5. **受限工具标记**：`RegisteredTool` 加 `restricted: boolean`；`filterVisibleTools` 对受限工具要求**显式列出**（不参与空白名单全放行）。**绝不按 `mcp_` 前缀推断只读**（审核 F6）。
+5. **受限工具标记**：`RegisteredTool` 加 `restricted: boolean`；`filterVisibleTools` 对受限工具要求**显式列出**（不参与空白名单全放行）。**绝不按 `mcp_` 前缀推断只读**（审核 F6）。**（1.9.1 收尾补 `subagents: true` 开关：开启即放行 4 个控制面工具，7 内置专家默认全开——原设计只改 `default.yaml`，导致被路由到 `research` 的调研类请求根本看不到 `spawn_agent`；`readOnly` 闭集优先，子代 fork 恒 `subagents:false`）**
 6. **`never_auto_approve` 诚实标注**（审核 H2）：清单内工具**不存在"始终允许"路径**（`permission-model.ts:169-171` 拒绝写入 allow 规则；`approval-service.ts:137` 含 `!never`；`:157-159` confirm 不传 remember）。headless 下 `spawn_agent` **不可用**——写进工具描述与 CHANGELOG。注：该清单当前为 `[]`（`config/permissions.json:33`），报告 §7.3 的建议非已实现状态。
 7. **`readOnly` 闭集**（审核 F6/H4）：`config.tools ∩ {fs_read, fs_list, web_search, web_fetch}`。**本期无"只读 MCP"**（注册项无只读元数据、MCP 无 annotations）。长期方案：`RegisteredTool` 加显式 `readOnly: boolean`，缺省 false。T2 用例钉"写型 MCP 在 readOnly 下不可见"。
 8. **工作目录共享**：不做 worktree/副本隔离。多子智能体同时写同一文件会互相覆盖——诚实标注。
@@ -151,7 +151,7 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 
 - **`list_agents`**：按父会话过滤；回答状态/轮次/token/文件/摘要。
 - **控制台「子智能体」tab**：「资源」分组，只读为主。
-- **WS 事件**：`subagent/spawned|message|round-done|done|failed`；`job/done` 保持兼容。
+- **WS 事件**：`subagent/spawned|message|round-done|done|failed`；`job/done` 保持兼容。（落地为 `subagent/spawned|done|failed`——`message`/`round-done` 未实现，Web 面板在存在活动条目时以 3s 轮询补齐轮次/token）
 - **审计**（审核 F9）：`audit_log` 加 `actor_session_id` 列 + 索引；`subagent:*` 带 `trigger: tool|http|cli|scheduler`；`queryBySession` 支持沿父边展开。
 - **成本可见**（P1-5 提前交付）：父子归属字段 + 聚合查询先于面板。面板/TUI/WS 标为超期时可砍。
 
@@ -171,7 +171,7 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 
 - **`pending` 上限**：MAX_PENDING=5，超限返回错误。
 - **`jobs` Map 淘汰**：保留最近 N 条已完成（N=50）。
-- **deny-provider 引用计数**（审核 F3）：`SubagentRunner` running 计数 0→1 时装、1→0 时卸；恢复前身份校验（仅当当前 provider 仍是自己装的才恢复）。补并发用例。
+- **deny-provider 引用计数**（审核 F3）：~~`SubagentRunner` running 计数 0→1 时装、1→0 时卸；恢复前身份校验~~ → **1.9.1 已废弃**：把进程级 provider 换成"一律拒绝"会连**父会话**的确认通道一起顶掉（实测：子智能体运行期间父会话 `spawn_agent`/`send_message` 被 fail-closed 拒绝，功能级自锁）。改为 `src/hooks/channel-scope.ts` 的**异步作用域隔离**（`runWithoutChannel`），子智能体侧仍 fail-closed，父会话不受影响。补并发用例。
 - **spawn 配额**：每父会话 ≤4、全局 ≤8。
 - **token/轮次预算熔断**：单子智能体与每父会话总 token 上限，超限暂停。
 - **`wk-` 会话清理**：`checkpointStore.deleteSession` + spills/snapshots/telemetry 按会话清理接进会话删除路径。
@@ -188,17 +188,17 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 | **T0.5** | 既有缺陷 ① 消息双注 ② pendingTurn 回填 | ✅ 已完成 | 消息序列无重复；重启后 turn 正确 |
 | **T1a** | Runner 状态机：idle/abortRequested/pending 上限/interrupt 语义/mode 来源/per-spawn 实例 | ✅ `subagent-runner.ts`（+`job-runner.ts` 兼容层） | 续接、中断后 idle、pending 上限、同名并发 mode 不互踩 |
 | **T1b** | Windows 杀进程树（探针定分支→已实现） | ✅ `ToolContext.signal` 贯通 + `taskkill /T /F`（posix 进程组） | 副作用探针：abort 后命令完成标记文件确未被写出 |
-| **T2** | 工具面 4 个 + 受限标记 + **执行层硬校验** + readOnly 闭集 | ✅ `subagent-tools.ts`、`subagent-rules.ts`、`agent-loop.ts` 执行层校验、`filterVisibleTools` 规则 | 受限工具空白名单不可见；readOnly 子智能体手工注入 fs_write → 拒绝+审计；写型 MCP 不可见 |
+| **T2** | 工具面 4 个 + 受限标记 + **执行层硬校验** + readOnly 闭集 | ✅ `subagent-tools.ts`、`subagent-rules.ts`、`agent-loop.ts` 执行层校验、`filterVisibleTools` 规则（1.9.1 补 `subagents` 开关，7 内置专家全开） | 受限工具空白名单不可见；readOnly 子智能体手工注入 fs_write → 拒绝+审计；写型 MCP 不可见 |
 | **T3** | 安全接线：权限口径对齐 + fs_edit 补 DANGER_TOOLS（检测输入改路径）+ 审计 actor_session_id + never_auto_approve 诚实标注 + `/agents/:id/{config,reset,delete}` 三路统一写面三件套 | ✅ `permissions.json`、`audit-log.ts`、`approval-service.ts`、`server.ts` | 子智能体写盘 → 可判别拒绝；跨站/缺 token POST agents 三路 → 403/401 |
 | **T5** | 端点 4 个 + 写面三件套 + `?purge=1` | ✅ `server.ts` | 403/401/400/200（11 例） |
 | **T6a** | 父子归属字段 + 聚合查询（P1-5 提前交付） | ✅ `audit-log.ts` schema（含老库迁移） | 逐子智能体与父会话 token 合计可核对 |
-| **T6b** | 面板 + TUI + WS（**可砍**） | ⏭ 未做；仅补进程面板 `subagent` 类型 + WS `subagent/*` 事件 | svelte-check 0 错 |
+| **T6b** | 面板 + TUI + WS（**可砍**） | ✅ 1.9.1：Web 控制台「子智能体」tab（`SubagentsPanel.svelte`：只读为主 + 追问/中断/关闭）+ TUI `/subagents`（列表/send/stop/close）+ `subagent/spawned` 补发；`/bg` 与 `jobRunner` 统一到 subagentRunner | svelte-check 0 错 |
 | **T7** | 回滚 B：注册表 + 钉住 + 拒绝登记 + >20 回合夹具 + 并发同文件 | ✅ `subagent-ownership.ts` + `handlers.ts` 三处接线 + `checkpoint-store` 禁隐式建盘 | 父 `/rewind` 回滚父子全部；>20 回合后子写入被拒+审计（端到端用例） |
 | **T8** | 文档/版本/AGENTS.md | ✅ 1.9.0 | verify 全绿 |
 
 **顺序**：T0 ✅ → T0.5 ✅ → T1a ✅ → T1b ✅ → T2/T3/T5 ✅ → T6a ✅ → T7 ✅ → T6b ⏭ → T8 ✅。
 
-**已拆出**：T4 fork → S53（Q4 裁定）；T6b 按"可砍"未做（核心承诺不依赖它）。
+**已拆出**：T4 fork → S53（Q4 裁定）；T6b 原按"可砍"未做，1.9.1 已补齐（Web 控制台「子智能体」tab）。
 
 ---
 
@@ -219,7 +219,7 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 9. **>20 回合后子写入** → 拒绝登记 + 审计（prune 时序）；
 10. **2 子同写一文件** → 父 manifest 单 entry，hashBefore = 轮首，一次恢复轮首；
 11. **readOnly 子智能体手工注入 fs_write tool_call** → 执行层拒绝 + 审计（F1 核心反例）；
-12. **两个并发任务重叠期间** deny-provider 恒为 deny（F3 并发用例）；
+12. **两个并发任务重叠期间** 子智能体侧 unconfirm 恒为"无通道"、且**父会话通道不受影响**（F3 并发用例；1.9.1 改为作用域隔离后按此口径断言）；
 13. **interrupt 后 pending 为空** + 500ms 后 rounds 不再增长（F4）。
 
 ---
@@ -303,7 +303,7 @@ TUI：`/subagents` 列表/send/stop。`/bg` 保留为 spawn 等价物，id 统�
 |---|---|---|
 | 安全 F1 | 执行层不校验可见性 | §2.3-1 硬校验 |
 | 安全 F2 | 零规则即可写；fs_edit 不在 DANGER_TOOLS | §2.3-3 |
-| 安全 F3 | confirm-channel 并发失效 | §2.7 引用计数 |
+| 安全 F3 | confirm-channel 并发失效 | §2.7 引用计数 → **1.9.1 废弃，改为 `channel-scope` 作用域隔离** |
 | 安全 F4 | /agents/:id/config 无写入门 | §2.2 + T3 |
 | 安全 F7 | mode 静默降级 | §2.1 |
 | 安全 F10 | fail-closed 不可判别 | §2.3-2 |

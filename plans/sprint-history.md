@@ -15,7 +15,7 @@
 | 工程纵深 | 29~33 | 0.4 ~ 0.6.6 | 迭代预算、调度、`.aw` 包、diff 提速、高危拦截修复 |
 | AI OS | 34~42 | 0.7.0 → 1.0.0 | 应用/进程模型、AppFactory、语音视频、进化引擎三期、1.0 整合 |
 | 可信与体验 | 43~51 | 1.1.0 → 1.8.0 | 离线 ASR/TTS、Token 口径、TUI 块视图、CI 门禁、headless、检查点、权限闭环、产物工作台、信息架构重构 |
-| 并行纵深 | 52 | 1.9.0 | 后台子智能体 |
+| 并行纵深 | 52 | 1.9.0 / 1.9.1 | 后台子智能体（1.9.1 补齐 Web 子智能体面板） |
 
 ---
 
@@ -298,12 +298,12 @@
 
 ---
 
-## 并行纵深（Sprint 52 · 1.9.0）
+## 并行纵深（Sprint 52 · 1.9.0 / 1.9.1）
 
 ### Sprint 52 — 后台子智能体：可续接、可控制、可观测、可撤销（1.9.0）
-- 交付：`subagent-runner.ts`（queued/running/idle/failed + abortRequested/pending≤5，MAX_CONCURRENT=4）、控制面 4 工具 `subagent-tools.ts` + `subagent-rules.ts`（无依赖常量模块防循环导入）、`filterVisibleTools` restricted 标记 + `executeToolInner` 执行层硬校验、`ToolContext.signal` 贯通 + `terminal_exec` 进程树 kill（win32 taskkill /T /F）、`subagent-ownership.ts` 回滚归属 B 路线、`/api/v1/subagents` 四端点（写门禁）、审计 actor_session_id 与父子 token 聚合、`BaseAgent.fork()`、`/subagents` TUI、诊断用例 `sprint-52-diagnosis.test.ts`（收工 1120 例/74 文件）
+- 交付：`subagent-runner.ts`（queued/running/idle/failed + abortRequested/pending≤5，MAX_CONCURRENT=4）、控制面 4 工具 `subagent-tools.ts` + `subagent-rules.ts`（无依赖常量模块防循环导入）、`filterVisibleTools` restricted 标记 + `executeToolInner` 执行层硬校验、`ToolContext.signal` 贯通 + `terminal_exec` 进程树 kill（win32 taskkill /T /F）、`subagent-ownership.ts` 回滚归属 B 路线、`/api/v1/subagents` 四端点（写门禁）、审计 actor_session_id 与父子 token 聚合、`BaseAgent.fork()`、TUI `/subagents`（1.9.1）、诊断用例按模块并入 `agent-loop`/`checkpoint`/`tools`/`process-tree`/`llm-adapter`/`memory`/`trace`（收工 1122 例/74 文件）
 - 关键决策：并发 4、回滚走注册表路线 B（子写登记父 spawn turn manifest）、spawn 默认只读闭集、深度 1 执行层硬拒、`list_agents` 仅主智能体可见（防枚举兄弟 sessionId）、mode 只收窄不放宽、fail-closed 拒绝带 `reason:"no-channel"`、fs_edit 补入 DANGER_TOOLS（路径判定）；两轮 CR + 两轮测试修复
-- 遗留/后续：fork 与持久目标 P1-2 拆到 S53；T6b 子智能体面板按"可砍"未做（仅进程面板加 subagent kind）；`never_auto_approve` 无"始终允许"路径；headless 下 spawn 不可用；无 worktree 隔离（并发写同一文件会互相覆盖）；插话只在轮边界送达
+- 遗留/后续：fork 与持久目标 P1-2 拆到 S53；T6b 由 1.9.1 补齐（Web 控制台「子智能体」tab + TUI `/subagents` + `subagent/spawned`）；**计划 §2.1/§2.2 的"一套后台执行"与"`/bg` 成为 spawn 等价物"同由 1.9.1 收尾**——`job-runner.ts` 退化为兼容层（`idle↔done` 映射、超配额抛错而非排队），后台执行只剩 `subagentRunner`；`never_auto_approve` 无"始终允许"路径；无 worktree 隔离（并发写同一文件会互相覆盖）；插话只在轮边界送达
 
 ---
 

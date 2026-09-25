@@ -1,6 +1,6 @@
 /**
- * 后台任务执行器测试（Sprint 30）
- * 覆盖：提交/状态机 / 并发上限排队 / 结果写会话 / 失败 / 取消 / WS 广播
+ * 后台任务兼容层测试（Sprint 52 统一）
+ * 覆盖：jobRunner → subagentRunner 转发 / 状态 idle↔done 映射 / cancel 即中断 / job/done 广播 / 后台无交互通道
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -8,44 +8,69 @@ import { resolve } from "node:path";
 import { makeTestDir, setupEnv, teardownEnv } from "./helpers.js";
 import { SessionStore } from "../src/memory/session-store.js";
 import { JobRunner } from "../src/core/job-runner.js";
+import { subagentRunner } from "../src/core/subagent-runner.js";
 import { eventBus } from "../src/server/event-bus.js";
 import type { BaseAgent } from "../src/agents/base-agent.js";
 import type { Task, StreamCallbacks } from "../src/types.js";
 
 const dir = makeTestDir("job-runner");
 
-function makeAgent(behavior: "ok" | "throw" | "truncated" | "slow" = "ok") {
-  return {
-    runStream: async (task: Task, _wd: string, callbacks: StreamCallbacks) => {
+function makeAgent(behavior: "ok" | "throw" | "truncated" | "hangFirst" = "ok") {
+  let calls = 0;
+  const agent = {
+    runStream: async (_task: Task, _wd: string, callbacks: StreamCallbacks, signal?: AbortSignal) => {
+      calls++;
       callbacks.onTextDelta?.("后台结果摘要");
-      if (behavior === "slow") return new Promise(() => {}); // 永不结束
       if (behavior === "throw") throw new Error("模拟失败");
+      if (behavior === "hangFirst" && calls === 1) {
+        return new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      }
       return {
-        success: behavior !== "truncated",
         text: behavior === "truncated" ? "" : "后台结果摘要",
         truncated: behavior === "truncated",
+        iterations: 1,
+        toolCallsExecuted: 0,
+        messages: [],
       };
     },
-  } as unknown as BaseAgent;
+    getConfig: () => ({
+      tools: ["fs_read", "fs_write", "terminal_exec", "web_search"],
+      mcpServers: [],
+      skills: [],
+      plugins: [],
+      permissions: { defaultMode: "auto", allowedTools: ["*"], deniedTools: [] },
+    }),
+    fork: () => agent,
+  };
+  return agent as unknown as BaseAgent;
 }
 
-describe("21. JobRunner 后台任务", () => {
+describe("21. JobRunner 后台任务（统一到 subagentRunner 后的兼容层）", () => {
   let store: SessionStore;
   let runner: JobRunner;
 
   beforeEach(() => {
     setupEnv(dir);
     store = new SessionStore(resolve(dir, "jobs.db"));
+    subagentRunner.clear();
+    subagentRunner.init({
+      createAgent: () => makeAgent(),
+      workingDir: dir,
+      sessionStore: store,
+      getMode: () => "auto",
+    });
     runner = new JobRunner();
-    runner.init({ createAgent: () => makeAgent(), workingDir: dir, sessionStore: store });
   });
 
   afterEach(() => {
+    subagentRunner.clear();
     store.close();
     teardownEnv();
   });
 
-  function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
+  function waitFor(pred: () => boolean, ms = 5000): Promise<void> {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const tick = () => {
@@ -57,50 +82,58 @@ describe("21. JobRunner 后台任务", () => {
     });
   }
 
-  it("提交 → running → done，结果写会话", async () => {
+  it("submit → 子智能体 id，idle 映射为 done，结果写 wk- 会话", async () => {
     const id = runner.submit("default", "后台任务A");
-    // drain 同步启动，提交后可能已是 running
-    expect(["queued", "running"]).toContain(runner.get(id)!.status);
+    expect(id).toMatch(/^sub-/);
+    expect(runner.isInitialized()).toBe(true);
     await waitFor(() => runner.get(id)!.status === "done");
     const job = runner.get(id)!;
-    expect(job.status).toBe("done");
+    expect(job.prompt).toBe("后台任务A");
     expect(job.summary).toContain("后台结果摘要");
-    expect(job.sessionId).toBeTruthy(); // 创建了独立会话
+    expect(job.sessionId).toMatch(/^wk-/);
+    expect(job.interrupted).toBe(false);
   });
 
-  it("并发上限：第 3 个任务排队，完成后自动开始", async () => {
-    const id1 = runner.submit("default", "任务1");
-    const id2 = runner.submit("default", "任务2");
-    const id3 = runner.submit("default", "任务3");
-    await waitFor(() => runner.get(id1)!.status === "done");
-    await waitFor(() => runner.get(id2)!.status === "done");
-    await waitFor(() => runner.get(id3)!.status === "done");
-    expect(runner.get(id3)!.status).toBe("done");
-  });
-
-  it("失败任务记录 error 与 failed 状态", async () => {
+  it("list 反映同一批对象；失败任务映射 error", async () => {
     const bad = new JobRunner();
-    bad.init({ createAgent: () => makeAgent("throw"), workingDir: dir, sessionStore: store });
+    subagentRunner.clear();
+    subagentRunner.init({
+      createAgent: () => makeAgent("throw"),
+      workingDir: dir,
+      sessionStore: store,
+      getMode: () => "auto",
+    });
     const id = bad.submit("default", "会失败");
     await waitFor(() => bad.get(id)!.status === "failed");
     expect(bad.get(id)!.error).toContain("模拟失败");
+    expect(bad.list().map((j) => j.id)).toContain(id);
+    expect(bad.get("no-such")).toBeUndefined();
   });
 
-  it("取消排队中任务（并发占满时第 3 个保持 queued）", async () => {
-    const busy = new JobRunner();
-    busy.init({ createAgent: () => makeAgent("slow"), workingDir: dir, sessionStore: store });
-    const id1 = busy.submit("default", "慢任务1");
-    const id2 = busy.submit("default", "慢任务2");
-    await waitFor(() => busy.get(id1)!.status === "running" && busy.get(id2)!.status === "running");
-    const id3 = busy.submit("default", "排队任务");
-    expect(busy.get(id3)!.status).toBe("queued");
-    expect(busy.cancel(id3)).toBe(true);
-    expect(busy.get(id3)!.status).toBe("failed");
-    expect(busy.cancel("no-such")).toBe(false);
-    expect(busy.cancel(id1)).toBe(false); // running 不可取消
+  it("cancel 即中断：运行中也能中断，且会话保留可续接", async () => {
+    subagentRunner.clear();
+    // runner 每轮都会 createAgent()，续接用例必须复用同一实例（首轮挂住的计数在实例上）
+    const agent = makeAgent("hangFirst");
+    subagentRunner.init({
+      createAgent: () => agent,
+      workingDir: dir,
+      sessionStore: store,
+      getMode: () => "auto",
+    });
+    const id = runner.submit("default", "长任务");
+    await waitFor(() => subagentRunner.get(id)!.status === "running");
+    expect(runner.cancel(id)).toBe(true);
+    await waitFor(() => subagentRunner.get(id)!.status === "idle");
+    expect(runner.get(id)!.status).toBe("done");
+    // 被中断 ≠ 自然完成：兼容视图要能区分（否则 /jobs、Web 任务面板会显示成"完成"）
+    expect(runner.get(id)!.interrupted).toBe(true);
+    expect(subagentRunner.get(id)!.pending).toHaveLength(0);
+    expect(subagentRunner.send(id, "继续")).toBe(true);
+    await waitFor(() => subagentRunner.get(id)!.rounds >= 1);
+    expect(runner.cancel("no-such")).toBe(false);
   });
 
-  it("完成后广播 job/done 事件", async () => {
+  it("完成后广播 job/done 事件（兼容事件带 resumable）", async () => {
     const events: Array<Record<string, unknown>> = [];
     const unsub = eventBus.subscribe((d) => {
       if ((d as { type?: string }).type === "job/done") events.push(d as Record<string, unknown>);
@@ -111,43 +144,64 @@ describe("21. JobRunner 后台任务", () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
     expect(events[0]!.jobId).toBe(id);
     expect(events[0]!.status).toBe("done");
+    expect(events[0]!.resumable).toBe(true);
   });
 
-  it("后台任务期间确认/提问立即被拒（不落到 stdin 交互提示）", async () => {
+  it("后台运行期间确认/提问立即被拒（不落到 stdin 交互提示），结束后恢复", async () => {
     const { requestConfirm, setConfirmProvider } = await import("../src/hooks/confirm-channel.js");
     const { requestAsk, setAskProvider } = await import("../src/tools/ask-channel.js");
 
-    // 模拟交互态：先注册一个真实 provider（TUI/HTTP 场景）
     const restoreConfirm = setConfirmProvider(async () => "allow");
     const restoreAsk = setAskProvider(async () => "x");
     let confirmAnswer: string | null | undefined;
     let askAnswer: string | null | undefined;
 
-    const probing = new JobRunner();
-    probing.init({
-      createAgent: () =>
-        ({
-          runStream: async () => {
-            confirmAnswer = await requestConfirm("危险操作？", [
-              { value: "allow", label: "允许" },
-              { value: "deny", label: "拒绝" },
-            ]);
-            askAnswer = await requestAsk({ question: "q", options: [], multiple: false });
-            return { success: true, text: "ok", truncated: false };
-          },
-        }) as unknown as BaseAgent,
+    const probing = {
+      runStream: async () => {
+        confirmAnswer = await requestConfirm("危险操作？", [
+          { value: "allow", label: "允许" },
+          { value: "deny", label: "拒绝" },
+        ]);
+        askAnswer = await requestAsk({ question: "q", options: [], multiple: false });
+        return { text: "ok", truncated: false, iterations: 1, toolCallsExecuted: 0, messages: [] };
+      },
+      getConfig: () => ({
+        tools: [],
+        mcpServers: [],
+        skills: [],
+        plugins: [],
+        permissions: { defaultMode: "auto", allowedTools: [], deniedTools: [] },
+      }),
+      fork: () => probing,
+    } as unknown as BaseAgent;
+
+    subagentRunner.clear();
+    subagentRunner.init({
+      createAgent: () => probing,
       workingDir: dir,
       sessionStore: store,
+      getMode: () => "auto",
     });
-
-    const id = probing.submit("default", "需确认的任务");
-    await waitFor(() => probing.get(id)!.status === "done");
-    expect(confirmAnswer).toBeNull(); // 立即拒绝，而不是 30 秒后超时、更不是被放行
+    const id = runner.submit("default", "需确认的任务");
+    await waitFor(() => runner.get(id)!.status === "done");
+    expect(confirmAnswer).toBeNull();
     expect(askAnswer).toBeNull();
 
-    // 任务结束后通道恢复
     expect(await requestConfirm("恢复了吗？", [{ value: "allow", label: "允许" }])).toBe("allow");
     setConfirmProvider(restoreConfirm);
     setAskProvider(restoreAsk);
+  });
+
+  it("超配额时抛错而非排队（旧 jobRunner 行为变更的显式断言）", () => {
+    subagentRunner.clear();
+    subagentRunner.init({
+      createAgent: () => makeAgent(),
+      workingDir: dir,
+      sessionStore: store,
+      getMode: () => "auto",
+      maxPerParent: 1,
+    });
+    runner.submit("default", "第一个", { parentSessionId: "p-1" });
+    expect(() => runner.submit("default", "第二个", { parentSessionId: "p-1" })).toThrow(/上限/);
   });
 });

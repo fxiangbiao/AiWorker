@@ -11,6 +11,7 @@ import { skillsCommands } from "./skills.js";
 import { configCommands } from "./config.js";
 import { pluginsCommands } from "./plugins.js";
 import { jobsCommands } from "./jobs.js";
+import { subagentsCommands } from "./subagents.js";
 import { packageCommands } from "./package.js";
 import { appsCommands } from "./apps.js";
 import { evolutionCommands } from "./evolution.js";
@@ -30,6 +31,7 @@ export function buildCliCommands(): CliCommand[] {
     ...skillsCommands, // skill, skills, skill-evo
     ...pluginsCommands, // plugins, install
     ...jobsCommands, // bg, jobs, schedule
+    ...subagentsCommands, // subagents（子智能体列表/追问/中断/关闭）
     ...packageCommands, // pkg export/list
     ...appsCommands, // app（AI OS 应用生命周期）
     ...evolutionCommands, // evo（AI OS 进化引擎）

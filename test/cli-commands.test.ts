@@ -408,48 +408,162 @@ describe("plugins 命令", () => {
   });
 });
 
-describe("bg / jobs / schedule 命令", () => {
-  it("/bg 提交后台任务并返回任务 ID", async () => {
-    const dir = makeTestDir("cli-jobs");
-    const { jobRunner } = await import("../src/core/job-runner.js");
+describe("bg / jobs / subagents / schedule 命令", () => {
+  /** 统一后 /bg 走 subagentRunner：需要一个可 fork 的最小 agent 桩（hang = 首轮挂住直到被中断，便于断言 running 态） */
+  function stubAgent(behavior: "ok" | "hang" = "ok") {
+    let calls = 0;
+    const agent = {
+      getId: () => "default",
+      getName: () => "测试专家",
+      runStream: async (
+        _t: unknown,
+        _wd: string,
+        cb: { onTextDelta?: (s: string) => void },
+        signal?: AbortSignal,
+      ) => {
+        calls++;
+        cb.onTextDelta?.("后台结果");
+        if (behavior === "hang" && calls === 1) {
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+        }
+        return { text: "后台结果", truncated: false, iterations: 1, toolCallsExecuted: 0, messages: [] };
+      },
+      getConfig: () => ({
+        tools: ["fs_read", "fs_write"],
+        mcpServers: [],
+        skills: [],
+        plugins: [],
+        permissions: { defaultMode: "auto", allowedTools: ["*"], deniedTools: [] },
+      }),
+      fork: () => agent,
+    };
+    return agent as never;
+  }
+
+  function waitForStatus(
+    runner: { get: (id: string) => { status: string } | undefined },
+    id: string,
+    status: string,
+    ms = 5000,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const tick = () => {
+        if (runner.get(id)?.status === status) return resolve();
+        if (Date.now() - start > ms) return reject(new Error(`timeout waiting ${status}`));
+        setTimeout(tick, 20);
+      };
+      tick();
+    });
+  }
+
+  async function initWith(dirName: string, behavior: "ok" | "hang" = "ok") {
+    const dir = makeTestDir(dirName);
+    const { subagentRunner } = await import("../src/core/subagent-runner.js");
     const { SessionStore } = await import("../src/memory/session-store.js");
     const store = new SessionStore(resolve(dir, "jobs.db"));
-    jobRunner.init({
-      createAgent: () =>
-        ({
-          runStream: async () => ({ success: true, text: "ok", truncated: false }),
-        }) as never,
+    subagentRunner.clear();
+    // runner 每轮都会 createAgent()：复用同一实例，才能让"首轮挂住"的计数生效
+    const agent = stubAgent(behavior);
+    subagentRunner.init({
+      createAgent: () => agent,
       workingDir: dir,
       sessionStore: store,
+      getMode: () => "auto",
     });
+    return { dir, store, subagentRunner };
+  }
+
+  it("/jobs cancel 区分「已结束」与「不存在」；列表把中断标为 interrupted", async () => {
+    const { store, subagentRunner } = await initWith("cli-jobs-cancel", "hang");
     const { ctx, writeLines } = makeCtx();
-    await find("bg").handler(ctx, "整理报告", "/bg 整理报告");
-    expect(writeLines.some((l) => l.includes("后台任务已提交") && l.includes("job-"))).toBe(true);
+    const { jobRunner } = await import("../src/core/job-runner.js");
+
+    const finished = jobRunner.submit("default", "跑完的任务");
+    await waitForStatus(subagentRunner, finished, "running");
+    jobRunner.cancel(finished);
+    await waitForStatus(subagentRunner, finished, "idle");
+    writeLines.length = 0;
+    await find("jobs").handler(ctx, `cancel ${finished}`, `/jobs cancel ${finished}`);
+    expect(writeLines.some((l) => l.includes("已结束"))).toBe(true);
+    writeLines.length = 0;
+    await find("jobs").handler(ctx, "cancel sub-nope", "/jobs cancel sub-nope");
+    expect(writeLines.some((l) => l.includes("未找到"))).toBe(true);
+
+    writeLines.length = 0;
+    await find("jobs").handler(ctx, "", "/jobs");
+    expect(writeLines.some((l) => l.includes("interrupted") && l.includes("已中断，可续接"))).toBe(true);
+
+    subagentRunner.clear();
     store.close();
   });
 
-  it("/jobs 空列表提示；/bg 后可列出", async () => {
-    const dir = makeTestDir("cli-jobs2");
-    const { jobRunner } = await import("../src/core/job-runner.js");
-    const { SessionStore } = await import("../src/memory/session-store.js");
-    const store = new SessionStore(resolve(dir, "jobs.db"));
-    jobRunner.init({
-      createAgent: () =>
-        ({
-          runStream: async () => ({ success: true, text: "ok", truncated: false }),
-        }) as never,
-      workingDir: dir,
-      sessionStore: store,
-    });
+  it("/bg 提交后台子智能体并返回 sub- ID；--readonly 收窄为只读", async () => {
+    const { store, subagentRunner } = await initWith("cli-jobs");
     const { ctx, writeLines } = makeCtx();
-    jobRunner.clear();
+
+    await find("bg").handler(ctx, "整理报告", "/bg 整理报告");
+    expect(writeLines.some((l) => l.includes("后台子智能体已提交") && l.includes("sub-"))).toBe(true);
+
+    writeLines.length = 0;
+    await find("bg").handler(ctx, "--readonly 只读任务", "/bg --readonly 只读任务");
+    const id = /sub-[a-z0-9-]+/.exec(writeLines.join("\n"))?.[0];
+    expect(id).toBeTruthy();
+    expect(subagentRunner.get(id!)!.readOnly).toBe(true);
+
+    subagentRunner.clear();
+    store.close();
+  });
+
+  it("/jobs 空列表提示；/bg 后可列出（兼容视图）", async () => {
+    const { store, subagentRunner } = await initWith("cli-jobs2");
+    const { ctx, writeLines } = makeCtx();
+
     await find("jobs").handler(ctx, "", "/jobs");
     expect(writeLines.some((l) => l.includes("暂无后台任务"))).toBe(true);
 
-    jobRunner.submit("default", "任务X");
+    const { jobRunner } = await import("../src/core/job-runner.js");
+    const id = jobRunner.submit("default", "任务X");
     writeLines.length = 0;
     await find("jobs").handler(ctx, "", "/jobs");
-    expect(writeLines.some((l) => l.includes("job-"))).toBe(true);
+    expect(writeLines.some((l) => l.includes(id))).toBe(true);
+
+    subagentRunner.clear();
+    store.close();
+  });
+
+  it("/subagents 列表 / send / stop / close", async () => {
+    const { store, subagentRunner } = await initWith("cli-subagents", "hang");
+    const { ctx, writeLines } = makeCtx();
+    const { jobRunner } = await import("../src/core/job-runner.js");
+    const id = jobRunner.submit("default", "任务Y");
+    await waitForStatus(subagentRunner, id, "running");
+
+    writeLines.length = 0;
+    await find("subagents").handler(ctx, "", "/subagents");
+    expect(writeLines.some((l) => l.includes(id) && l.includes("default"))).toBe(true);
+
+    writeLines.length = 0;
+    await find("subagents").handler(ctx, `send ${id} 追加一轮`, `/subagents send ${id} 追加一轮`);
+    expect(writeLines.some((l) => l.includes("已发送至"))).toBe(true);
+
+    writeLines.length = 0;
+    await find("subagents").handler(ctx, `stop ${id}`, `/subagents stop ${id}`);
+    expect(writeLines.some((l) => l.includes("已中断"))).toBe(true);
+    await waitForStatus(subagentRunner, id, "idle");
+
+    writeLines.length = 0;
+    await find("subagents").handler(ctx, `close ${id}`, `/subagents close ${id}`);
+    expect(writeLines.some((l) => l.includes("已关闭"))).toBe(true);
+    expect(subagentRunner.get(id)).toBeUndefined();
+
+    writeLines.length = 0;
+    await find("subagents").handler(ctx, "send no-such hi", "/subagents send no-such hi");
+    expect(writeLines.some((l) => l.includes("不存在"))).toBe(true);
+
+    subagentRunner.clear();
     store.close();
   });
 
@@ -495,6 +609,26 @@ describe("bg / jobs / schedule 命令", () => {
     await find("schedule").handler(ctx, "", '/schedule add "帮我写个程序"');
     expect(writeLines.some((l) => l.includes("无法解析调度需求"))).toBe(true);
     expect(scheduler.getJobs()).toHaveLength(0);
+  });
+
+  it("/schedule add：LLM 兜底丢掉「周六」时按原句自动修复", async () => {
+    const dir = makeTestDir("cli-schedule-repair");
+    const { scheduler } = await import("../src/core/scheduler.js");
+    scheduler.init({ submit: () => "" }, resolve(dir, "schedule.json"));
+    const { ctx, writeLines } = makeCtx({
+      modelRouter: {
+        ...modelRouterMock(),
+        complete: async () => ({ text: '{"cron":"30 10 * * *","prompt":"提醒我锻炼"}' }),
+      } as never,
+    });
+
+    // "每逢周六" 规则解析不了（星期分支要求「每…周」）→ 走 LLM；模型给的 cron 丢了周六
+    await find("schedule").handler(ctx, "", '/schedule add "每逢周六提醒我锻炼"');
+    const jobs = scheduler.getJobs();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.cron).toBe("30 10 * * 6");
+    expect(jobs[0]!.prompt).toBe("提醒我锻炼");
+    expect(writeLines.some((l) => l.includes("已按原句修正"))).toBe(true);
   });
 
   it("/sessions 显示真实轮数（用户消息数）", async () => {

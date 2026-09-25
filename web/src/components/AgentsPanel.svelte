@@ -9,6 +9,9 @@
   import { Plus, RotateCcw, Trash2, Save, Bot, PencilLine } from "lucide-svelte";
   import ConfirmModal from "./ConfirmModal.svelte";
 
+  /** /agents/:id/{config,reset,delete} 属写面（跨站 403 / 缺 token 401）——此前漏带 token，保存/恢复/删除全部 401 */
+  const TOKEN = typeof window !== "undefined" ? (window.__AIWORKER_TOKEN__ ?? "") : "";
+
   interface AgentCard {
     id: string;
     name: string;
@@ -21,6 +24,7 @@
     mcpServers: string[];
     plugins: string[];
     strictTools: boolean;
+    subagents: boolean;
     permissions: { defaultMode: string; allowedTools: string[]; deniedTools: string[] };
     systemPrompt: string;
     isCustom: boolean;
@@ -63,6 +67,7 @@
       mcpServers: [],
       plugins: [],
       strictTools: false,
+      subagents: false,
       permissions: { defaultMode: "ask", allowedTools: [], deniedTools: [] },
       systemPrompt: "",
       isCustom: true,
@@ -149,7 +154,7 @@
     try {
       const r = await fetch(`${API}/agents/${encodeURIComponent(id)}/config`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-aiworker-token": TOKEN },
         body: JSON.stringify({
           displayName: a.displayName.trim(),
           systemPrompt: a.systemPrompt,
@@ -160,6 +165,7 @@
           mcpServers: a.mcpServers,
           plugins: a.plugins,
           strictTools: a.strictTools,
+          subagents: a.subagents,
           permissions: { defaultMode: a.permissions.defaultMode, allowedTools: a.permissions.allowedTools, deniedTools: a.permissions.deniedTools },
         }),
       });
@@ -184,7 +190,7 @@
     const id = editing.id;
     err = "";
     try {
-      const r = await fetch(`${API}/agents/${encodeURIComponent(id)}/reset`, { method: "POST" });
+      const r = await fetch(`${API}/agents/${encodeURIComponent(id)}/reset`, { method: "POST", headers: { "x-aiworker-token": TOKEN } });
       const d = (await r.json()) as { ok?: boolean; error?: string };
       if (!r.ok || !d.ok) {
         err = d.error ?? "恢复失败";
@@ -203,7 +209,7 @@
     const id = editing.id;
     confirmDel = false;
     try {
-      const r = await fetch(`${API}/agents/${encodeURIComponent(id)}/delete`, { method: "POST" });
+      const r = await fetch(`${API}/agents/${encodeURIComponent(id)}/delete`, { method: "POST", headers: { "x-aiworker-token": TOKEN } });
       const d = (await r.json()) as { ok?: boolean; error?: string };
       if (!r.ok || !d.ok) {
         err = d.error ?? "删除失败";
@@ -300,6 +306,13 @@
             <label class="ap-check">
               <input type="checkbox" bind:checked={editing.strictTools} />
               关闭 mcp/插件工具全局豁免，仅白名单可见
+            </label>
+          </div>
+          <div class="ap-row ap-row-inline">
+            <span class="ap-label">并行子智能体</span>
+            <label class="ap-check">
+              <input type="checkbox" bind:checked={editing.subagents} />
+              允许调用 spawn_agent / send_message / list_agents / interrupt_agent（无需逐个加入白名单；每次仍需确认）
             </label>
           </div>
 

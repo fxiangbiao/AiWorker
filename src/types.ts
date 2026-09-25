@@ -332,6 +332,11 @@ export interface AgentConfig {
   strictTools?: boolean;
   /** 只读模式（Sprint 52 子智能体）：仅允许只读闭集工具，MCP/插件豁免一律失效 */
   readOnly?: boolean;
+  /**
+   * 允许并行调起子智能体（Sprint 52）：开启即放行 4 个控制面工具（spawn_agent / send_message / list_agents / interrupt_agent），
+   * 无需逐个写进 tools；readOnly 模式不适用。子智能体自身恒为 false（深度 1）
+   */
+  subagents?: boolean;
   permissions: {
     defaultMode: PermissionMode;
     allowedTools: string[];

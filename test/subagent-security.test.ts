@@ -90,6 +90,37 @@ describe("Sprint 52 安全反例", () => {
     expect(visible.map((t) => t.function.name)).toEqual(["spawn_agent"]);
   });
 
+  it("subagents 开关开启时控制面工具可见（无需逐个列入白名单）", () => {
+    const available = [def("fs_read"), def("spawn_agent"), def("send_message"), def("list_agents"), def("interrupt_agent")];
+    const visible = filterVisibleTools(available, makeConfig({ tools: ["fs_read"], subagents: true }), () => false);
+    const names = visible.map((t) => t.function.name);
+    expect(names).toEqual(["fs_read", "spawn_agent", "send_message", "list_agents", "interrupt_agent"]);
+  });
+
+  it("subagents 开关缺省关闭，且 readOnly 下不生效（闭集优先）", () => {
+    const available = [def("fs_read"), def("spawn_agent")];
+    const off = filterVisibleTools(available, makeConfig({ tools: ["fs_read"] }), () => false);
+    expect(off.map((t) => t.function.name)).toEqual(["fs_read"]);
+    const readOnly = filterVisibleTools(available, makeConfig({ tools: ["fs_read"], subagents: true, readOnly: true }), () => false);
+    expect(readOnly.map((t) => t.function.name)).toEqual(["fs_read"]);
+  });
+
+  it("strictTools 下 subagents 开关不再自动放行（strict = 仅白名单可见）", () => {
+    const available = [def("fs_read"), def("spawn_agent"), def("send_message")];
+    const strict = filterVisibleTools(
+      available,
+      makeConfig({ tools: ["fs_read"], subagents: true, strictTools: true }),
+      () => false,
+    );
+    expect(strict.map((t) => t.function.name)).toEqual(["fs_read"]);
+    const explicit = filterVisibleTools(
+      available,
+      makeConfig({ tools: ["fs_read", "spawn_agent"], subagents: true, strictTools: true }),
+      () => false,
+    );
+    expect(explicit.map((t) => t.function.name)).toEqual(["fs_read", "spawn_agent"]);
+  });
+
   it("反例：readOnly 闭集只保留四个只读工具", () => {
     const available = [def("fs_read"), def("fs_list"), def("web_search"), def("web_fetch"), def("fs_write"), def("fs_edit"), def("terminal_exec")];
     const visible = filterVisibleTools(available, makeConfig({ readOnly: true }), () => false);

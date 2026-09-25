@@ -168,4 +168,44 @@ describe("14. Team Coordinator", () => {
 
     sessionStore.close();
   }, 10000);
+
+  it("DAG worker 与子智能体同权：无确认通道、不看控制面工具、父会话通道不受影响", async () => {
+    const { TeamCoordinator } = await import("../src/core/team-coordinator.js");
+    const { requestConfirm, setConfirmProvider } = await import("../src/hooks/confirm-channel.js");
+    const restore = setConfirmProvider(async () => "allow");
+    const patches: Array<Record<string, unknown>> = [];
+    let workerAnswer: string | null | undefined;
+    const worker = {
+      run: async () => {
+        workerAnswer = await requestConfirm("worker 危险操作？", [{ value: "allow", label: "允许" }]);
+        return { text: "worker 结果" };
+      },
+      getConfig: () => ({
+        tools: ["fs_read", "spawn_agent", "send_message"],
+        mcpServers: [],
+        skills: [],
+        plugins: [],
+        subagents: true,
+        permissions: { defaultMode: "auto", allowedTools: [], deniedTools: [] },
+      }),
+      fork: (p: Record<string, unknown>) => {
+        patches.push(p);
+        return worker;
+      },
+    };
+    const coordinator = new TeamCoordinator({ default: worker as never }, {} as never);
+    const plan = {
+      steps: [{ id: "s1", description: "调研", expertId: "default", dependsOn: [] as string[], critical: true }],
+      goal: "worker 权限",
+      estimatedSteps: 1,
+    };
+
+    await coordinator.execute(plan as never, testDir, testDir as never);
+    expect(workerAnswer).toBeNull();
+    expect(patches[0]!.subagents).toBe(false);
+    // 控制面工具即使被显式写进 YAML tools，也要从 worker 工具面剔除（不能只靠 subagents:false）
+    expect(patches[0]!.tools).toEqual(["fs_read"]);
+    expect(await requestConfirm("父会话危险操作？", [{ value: "allow", label: "允许" }])).toBe("allow");
+    setConfirmProvider(restore);
+  });
 });

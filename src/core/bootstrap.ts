@@ -550,13 +550,8 @@ ${text}
   });
 
   // ─── 后台任务 + 定时调度（server 与 CLI 模式共用）───
+  // 后台执行统一由 subagentRunner 承担；jobRunner 仅作兼容视图（/jobs、POST /jobs、scheduler）
   const createAgentFn = (agentId: string) => agents[agentId] ?? agents["default"];
-  jobRunner.init({
-    createAgent: createAgentFn,
-    workingDir,
-    sessionStore,
-    mode: defaultMode,
-  });
   subagentRunner.init({
     createAgent: createAgentFn,
     workingDir,

@@ -11,7 +11,7 @@ import { writable } from "svelte/store";
 /** 设置面板的 tab（改配置） */
 export type SettingsTab = "model" | "security" | "workspace" | "interaction" | "about";
 /** 控制台面板的 tab（看系统） */
-export type ConsoleTab = "context" | "trace" | "audit" | "evolution" | "agents" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "schedule" | "devices";
+export type ConsoleTab = "context" | "trace" | "audit" | "evolution" | "agents" | "skills" | "mcp" | "plugins" | "apps" | "processes" | "subagents" | "schedule" | "devices";
 
 export const settingsOpen = writable(false);
 export const consoleOpen = writable(false);

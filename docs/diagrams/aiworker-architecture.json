@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AiWorker 架构",
+    "quality_profile": "showcase",
+    "viewBox": [1500, 680],
+    "repository": {
+      "url": "https://github.com/fxiangbiao/AiWorker",
+      "revision": "8b17c3b3ef75617c4b0c2b0fa77d683d4064becf"
+    },
+    "views": [
+      {
+        "id": "main-path",
+        "label": "认知主链路",
+        "focus": ["user", "ui", "loop", "guard", "exec", "proc"],
+        "note": "从输入、上下文组装、权限裁决到工具执行与进程登记"
+      },
+      {
+        "id": "model-call",
+        "label": "模型调用",
+        "focus": ["loop", "router", "llm"],
+        "note": "profile 路由到 OpenAI 兼容 Provider，模型无关"
+      },
+      {
+        "id": "parallel-and-gen",
+        "label": "后台并行与即时生成",
+        "focus": ["exec", "subagents", "apps", "proc"],
+        "note": "子智能体与即时生成的应用最终都落回统一进程模型"
+      },
+      {
+        "id": "memory-evolution",
+        "label": "记忆与进化",
+        "focus": ["loop", "store", "evo"],
+        "note": "事件溯源是唯一真源，进化引擎读轨迹、写快照"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "用户",
+      "sublabel": "终端 / 浏览器",
+      "pos": [685, 20],
+      "size": [140, 56]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "交互层",
+      "sublabel": "TUI 帧缓冲 · Web UI · CLI",
+      "pos": [655, 121],
+      "size": [200, 62],
+      "sources": [
+        { "path": "src/terminal/screen.ts", "label": "差分帧缓冲" },
+        { "path": "web/src/App.svelte", "label": "Svelte 5 前端" },
+        { "path": "src/index.ts", "label": "CLI 入口" }
+      ]
+    },
+    {
+      "id": "loop",
+      "type": "backend",
+      "label": "认知内核",
+      "sublabel": "agent-loop · 专家路由 · 上下文",
+      "tag": "大脑",
+      "pos": [640, 228],
+      "size": [230, 76],
+      "sources": [
+        { "path": "src/core/agent-loop.ts", "line": 729, "label": "executeToolInner 硬校验" },
+        { "path": "src/core/context-manager.ts", "line": 66, "label": "上下文压缩" },
+        { "path": "src/agents/router.ts", "label": "专家路由" }
+      ]
+    },
+    {
+      "id": "router",
+      "type": "backend",
+      "label": "模型路由",
+      "sublabel": "profile · key 小写存储",
+      "pos": [1030, 233],
+      "size": [180, 66],
+      "sources": [
+        { "path": "src/core/model-router.ts", "line": 77, "label": "ModelRouter" }
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "LLM Provider",
+      "sublabel": "OpenAI 兼容接口",
+      "pos": [1300, 233],
+      "size": [180, 66]
+    },
+    {
+      "id": "guard",
+      "type": "security",
+      "label": "权限与沙箱",
+      "sublabel": "ask / plan / auto · fail-closed",
+      "pos": [640, 374],
+      "size": [230, 62],
+      "sources": [
+        { "path": "src/security/permission-model.ts", "line": 62, "label": "三模式矩阵" },
+        { "path": "src/security/path-policy.ts", "label": "路径单点判定" }
+      ]
+    },
+    {
+      "id": "exec",
+      "type": "backend",
+      "label": "执行层",
+      "sublabel": "工具 · MCP · Skills · Hooks",
+      "tag": "手脚",
+      "pos": [640, 481],
+      "size": [230, 76],
+      "sources": [
+        { "path": "src/core/tool-registry.ts", "line": 206, "label": "ToolRegistry 单例" },
+        { "path": "src/tools/builtin.ts", "label": "9 个内置工具" },
+        { "path": "src/hooks/handlers.ts", "label": "生命周期钩子" }
+      ]
+    },
+    {
+      "id": "subagents",
+      "type": "backend",
+      "label": "子智能体",
+      "sublabel": "queued → running → idle",
+      "pos": [1030, 480],
+      "size": [180, 78],
+      "sources": [
+        { "path": "src/core/subagent-runner.ts", "line": 59, "label": "状态机" },
+        { "path": "src/core/subagent-tools.ts", "label": "控制面 4 工具" }
+      ]
+    },
+    {
+      "id": "apps",
+      "type": "backend",
+      "label": "AppFactory",
+      "sublabel": "描述 → 生成 → 校验 → keep/destroy",
+      "pos": [40, 560],
+      "size": [220, 66],
+      "sources": [
+        { "path": "src/core/app-factory.ts", "line": 65, "label": "即时生成" }
+      ]
+    },
+    {
+      "id": "proc",
+      "type": "backend",
+      "label": "进程层",
+      "sublabel": "processManager 统一登记",
+      "pos": [640, 603],
+      "size": [230, 62],
+      "sources": [
+        { "path": "src/core/process-manager.ts", "line": 12, "label": "ProcessManager 单例" }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "记忆与审计",
+      "sublabel": "事件溯源 · SQLite WAL + FTS5",
+      "pos": [40, 233],
+      "size": [220, 66],
+      "sources": [
+        { "path": "src/memory/session-store.ts", "line": 155, "label": "仅追加真源" },
+        { "path": "src/security/audit-log.ts", "line": 40, "label": "audit 只追加" }
+      ]
+    },
+    {
+      "id": "evo",
+      "type": "backend",
+      "label": "进化闭环",
+      "sublabel": "观察 → 提议 → 确认 → 回滚",
+      "pos": [40, 440],
+      "size": [220, 66],
+      "sources": [
+        { "path": "src/core/evolution-engine.ts", "line": 84, "label": "EvolutionEngine" }
+      ]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "认知内核（大脑）", "wraps": ["loop", "router"], "pad": 26 },
+    { "kind": "security-group", "label": "权限裁决 → 受控执行", "wraps": ["guard", "exec"], "pad": 26 },
+    { "kind": "region", "label": "记忆 · 进化", "wraps": ["store", "evo"], "pad": 26 }
+  ],
+  "connections": [
+    { "id": "user-to-ui", "from": "user", "to": "ui", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "straight" },
+    { "id": "ui-to-loop", "from": "ui", "to": "loop", "label": "消息", "fromSide": "bottom", "toSide": "top", "labelAt": [755, 205] },
+    { "id": "loop-to-router", "from": "loop", "to": "router", "label": "选 profile", "fromSide": "right", "toSide": "left" },
+    { "id": "router-to-llm", "from": "router", "to": "llm", "label": "HTTP 调用", "fromSide": "right", "toSide": "left" },
+    { "id": "loop-to-store", "from": "loop", "to": "store", "label": "事件溯源 · 仅追加", "fromSide": "left", "toSide": "right" },
+    { "id": "loop-to-guard", "from": "loop", "to": "guard", "label": "工具调用", "fromSide": "bottom", "toSide": "top", "labelAt": [755, 339] },
+    { "id": "guard-to-exec", "from": "guard", "to": "exec", "label": "放行 / 拒绝", "fromSide": "bottom", "toSide": "top", "labelAt": [755, 458] },
+    { "id": "exec-to-loop", "from": "exec", "to": "loop", "label": "结果回填 · 迭代", "variant": "dashed", "fromSide": "right", "toSide": "right", "via": [[910, 519], [910, 266]], "labelAt": [910, 340] },
+    { "id": "exec-to-subagents", "from": "exec", "to": "subagents", "label": "spawn_agent", "fromSide": "right", "toSide": "left" },
+    { "id": "exec-to-apps", "from": "exec", "to": "apps", "label": "生成", "fromSide": "left", "toSide": "right" },
+    { "id": "exec-to-proc", "from": "exec", "to": "proc", "label": "登记", "fromSide": "bottom", "toSide": "top", "labelAt": [700, 580] },
+    { "id": "evo-to-store", "from": "evo", "to": "store", "label": "快照 · 回滚", "fromSide": "top", "toSide": "bottom" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "认知内核",
+      "items": [
+        "agent-loop 迭代至最终回答或预算耗尽",
+        "执行层硬校验 visibleSet，白名单外直接拒绝并记审计",
+        "model-router 按 profile 路由，模型无关"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "执行与进程",
+      "items": [
+        "9 个内置工具 + MCP 热插拔 + SKILL.md 技能",
+        "子智能体深度 1、并发上限 4，可续接可中断",
+        "AppFactory 即时生成，destroy 是干净移除"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "安全与记忆",
+      "items": [
+        "无确认通道 fail-closed，高危工具任何模式强制确认",
+        "session_events 仅追加，是消息与轮次的唯一真源",
+        "进化提案仅建议，两段式确认 + 快照可回滚"
+      ]
+    }
+  ]
+}

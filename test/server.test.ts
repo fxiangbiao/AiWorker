@@ -9,7 +9,6 @@ import { resolve, join } from "node:path";
 import { writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { WebSocket as WsClient, type RawData } from "ws";
 import { startServer } from "../src/server.js";
-import { jobRunner } from "../src/core/job-runner.js";
 import { scheduler } from "../src/core/scheduler.js";
 import type { TeamCoordinator } from "../src/core/team-coordinator.js";
 import type { ModelRouter } from "../src/core/model-router.js";
@@ -84,7 +83,7 @@ function mockCoordinator() {
 }
 
 function mockAgent() {
-  return {
+  const agent = {
     runStream: async (
       task: { mode?: string; instruction?: string; explicitSkill?: { name: string; body: string } },
       _wd: string,
@@ -95,7 +94,16 @@ function mockAgent() {
       callbacks.onToolResult?.("terminal_exec", false, "操作被拦截: 当前权限模式(ask)为只读");
       return { success: true, text: "你好" } as never;
     },
+    getConfig: () => ({
+      tools: [],
+      mcpServers: [],
+      skills: [],
+      plugins: [],
+      permissions: { defaultMode: "auto", allowedTools: [], deniedTools: [] },
+    }),
+    fork: () => agent,
   };
+  return agent;
 }
 
 let server: Server | undefined;
@@ -1777,14 +1785,18 @@ describe("HTTP Server — 后台任务与定时调度", () => {
   let server4: Server | undefined;
   let base4: string;
   let store4: SessionStore;
+  let token4: string;
 
   beforeAll(async () => {
     setupEnv(testDir);
     store4 = new SessionStore(resolve(testDir, "jobs-server.db"));
-    jobRunner.init({
+    const { subagentRunner } = await import("../src/core/subagent-runner.js");
+    subagentRunner.clear();
+    subagentRunner.init({
       createAgent: () => mockAgent() as never,
       workingDir: testDir,
       sessionStore: store4,
+      getMode: () => "auto",
     });
     scheduler.init({ submit: () => "" }, resolve(testDir, "schedule-server.json"));
     const deps = {
@@ -1801,6 +1813,7 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     await new Promise<void>((resolve) => server4!.once("listening", () => resolve()));
     const port = (server4!.address() as AddressInfo).port;
     base4 = `http://127.0.0.1:${port}`;
+    token4 = readFileSync(resolve(testDir, "server-token"), "utf-8").trim();
   });
 
   afterAll(() => {
@@ -1812,36 +1825,60 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     teardownEnv();
   });
 
-  it("POST /jobs 提交返回 id，GET /jobs 列表可见", async () => {
+  it("POST /jobs 提交返回 sub- id，GET /jobs 列表可见（统一到子智能体）", async () => {
     const resp = await fetch(`${base4}${API}/jobs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4 },
       body: JSON.stringify({ agentId: "default", prompt: "后台任务" }),
     });
     expect(resp.status).toBe(200);
     const { id } = (await resp.json()) as { id: string };
-    expect(id).toMatch(/^job-/);
+    expect(id).toMatch(/^sub-/);
 
     const list = await (await fetch(`${base4}${API}/jobs`)).json();
     expect((list.jobs as Array<{ id: string }>).some((j) => j.id === id)).toBe(true);
   });
 
-  it("POST /jobs 缺 prompt 返回 400", async () => {
-    const resp = await fetch(`${base4}${API}/jobs`, {
+  it("POST /jobs 写面三件套：缺 token → 401；跨站 → 403；缺 prompt → 400", async () => {
+    const noToken = await fetch(`${base4}${API}/jobs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "x" }),
+    });
+    expect(noToken.status).toBe(401);
+
+    const crossSite = await fetch(`${base4}${API}/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4, "Sec-Fetch-Site": "cross-site" },
+      body: JSON.stringify({ prompt: "x" }),
+    });
+    expect(crossSite.status).toBe(403);
+
+    const missingPrompt = await fetch(`${base4}${API}/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4 },
       body: JSON.stringify({}),
     });
-    expect(resp.status).toBe(400);
+    expect(missingPrompt.status).toBe(400);
   });
 
-  it("GET /schedule 空列表；POST 添加；DELETE 移除", async () => {
+  it("DELETE /jobs/:id 无 token → 401；不存在 → 404", async () => {
+    const noToken = await fetch(`${base4}${API}/jobs/sub-x`, { method: "DELETE" });
+    expect(noToken.status).toBe(401);
+    const missing = await fetch(`${base4}${API}/jobs/sub-x`, {
+      method: "DELETE",
+      headers: { "X-AiWorker-Token": token4 },
+    });
+    expect(missing.status).toBe(404);
+  });
+
+  it("GET /schedule 空列表；POST 添加；DELETE 移除（写面需 token）", async () => {
     const empty = await (await fetch(`${base4}${API}/schedule`)).json();
     expect(empty.jobs).toEqual([]);
 
     const add = await fetch(`${base4}${API}/schedule`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4 },
       body: JSON.stringify({ cron: "0 8 * * *", prompt: "早报", agentId: "default" }),
     });
     expect(add.status).toBe(200);
@@ -1850,16 +1887,35 @@ describe("HTTP Server — 后台任务与定时调度", () => {
     expect(list.jobs).toHaveLength(1);
     const id = (list.jobs as Array<{ id: string }>)[0]!.id;
 
-    const del = await fetch(`${base4}${API}/schedule/${id}`, { method: "DELETE" });
+    const del = await fetch(`${base4}${API}/schedule/${id}`, { method: "DELETE", headers: { "X-AiWorker-Token": token4 } });
     expect(del.status).toBe(200);
     const after = await (await fetch(`${base4}${API}/schedule`)).json();
     expect(after.jobs).toHaveLength(0);
   });
 
+  it("POST/DELETE /schedule 写面三件套：缺 token → 401；跨站 → 403", async () => {
+    const noToken = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cron: "0 8 * * *", prompt: "x" }),
+    });
+    expect(noToken.status).toBe(401);
+
+    const crossSite = await fetch(`${base4}${API}/schedule`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4, "Sec-Fetch-Site": "cross-site" },
+      body: JSON.stringify({ cron: "0 8 * * *", prompt: "x" }),
+    });
+    expect(crossSite.status).toBe(403);
+
+    const delNoToken = await fetch(`${base4}${API}/schedule/sched-x`, { method: "DELETE" });
+    expect(delNoToken.status).toBe(401);
+  });
+
   it("POST /schedule 非法 cron 返回 400", async () => {
     const resp = await fetch(`${base4}${API}/schedule`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4 },
       body: JSON.stringify({ cron: "not-cron", prompt: "x" }),
     });
     expect(resp.status).toBe(400);
@@ -1868,7 +1924,7 @@ describe("HTTP Server — 后台任务与定时调度", () => {
   it("POST /schedule 支持自然语言（无 cron 字段）", async () => {
     const add = await fetch(`${base4}${API}/schedule`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4 },
       body: JSON.stringify({ prompt: "每天晚上9点写日记" }),
     });
     expect(add.status).toBe(200);
@@ -1881,7 +1937,7 @@ describe("HTTP Server — 后台任务与定时调度", () => {
   it("POST /schedule 自然语言无法解析返回 400", async () => {
     const resp = await fetch(`${base4}${API}/schedule`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-AiWorker-Token": token4 },
       body: JSON.stringify({ prompt: "随便写点东西" }),
     });
     expect(resp.status).toBe(400);

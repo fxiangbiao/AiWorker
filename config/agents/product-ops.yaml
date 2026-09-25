@@ -38,6 +38,7 @@ tools:
   - web_search
   - web_fetch
 
+subagents: true
 mcpServers: []
 
 permissions:

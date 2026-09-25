@@ -4,7 +4,7 @@
    * Agent/App/Job 三类进程实时列表（WS 事件驱动）；打开时拉取最新
    */
   import { onMount } from "svelte";
-  import { processes, processStats, processResources, loadProcesses, apps } from "$lib/stores/apps.svelte";
+  import { processes, processStats, processResources, loadProcesses, apps, activeSubagents, resumableSubagents } from "$lib/stores/apps.svelte";
   import { Brain, Box, ListChecks, RefreshCw, Gauge, Bot } from "lucide-svelte";
 
   function fmtTime(ts: number): string {
@@ -32,6 +32,17 @@
 
   const KIND_LABEL = { agent: "Agent", app: "应用", job: "任务", subagent: "子智能体" } as const;
   const KIND_ICON = { agent: Brain, app: Box, job: ListChecks, subagent: Bot } as const;
+
+  /** 状态中文化：idle 是"已结束但可续接"的终态，不是"还在跑" */
+  const STATUS_LABEL: Record<string, string> = {
+    starting: "启动中",
+    running: "运行中",
+    queued: "排队中",
+    idle: "已结束 · 可续接",
+    done: "已完成",
+    failed: "失败",
+    stopped: "已停止",
+  };
 
   function statusColor(status: string): string {
     switch (status) {
@@ -75,8 +86,11 @@
     <span class="pp-stat"><Brain size={12} /> {$processStats.agent}</span>
     <span class="pp-stat"><Box size={12} /> {$processStats.app}</span>
     <span class="pp-stat"><ListChecks size={12} /> {$processStats.job}</span>
-    {#if $processStats.subagent > 0}
-      <span class="pp-stat" title="后台子智能体"><Bot size={12} /> {$processStats.subagent}</span>
+    {#if $activeSubagents > 0}
+      <span class="pp-stat" title="活动中的后台子智能体（运行/排队）"><Bot size={12} /> {$activeSubagents}</span>
+    {/if}
+    {#if $resumableSubagents > 0}
+      <span class="pp-stat pp-idle" title="已结束但保留会话，可 send_message 续接"><Bot size={12} /> 可续接 {$resumableSubagents}</span>
     {/if}
     {#if $processResources}
       <span class="pp-stat pp-res" title="本次运行累计 token（全局）"><Gauge size={12} /> tok {fmtNum($processResources.tokens.total)} <span class="pp-res-sub">入 {fmtNum($processResources.tokens.prompt)} · 出 {fmtNum($processResources.tokens.completion)}</span></span>
@@ -89,7 +103,7 @@
     <div class="pp-list">
       {#each $processes as p (p.pid)}
         {@const Icon = KIND_ICON[p.kind] ?? ListChecks}
-        <div class="pp-item">
+        <div class="pp-item" class:pp-item-idle={p.kind === "subagent" && p.status === "idle"}>
           <span class="pp-ico" style:color={statusColor(p.status)}><Icon size={14} /></span>
           <div class="pp-body">
             <div class="pp-name">
@@ -100,7 +114,7 @@
               {#if p.kind === "subagent" && p.subagentId}<span class="pp-sub">{String(p.subagentId).slice(0, 18)}</span>{/if}
             </div>
             <div class="pp-meta">
-              <span style:color={statusColor(p.status)}>{p.status}</span>
+              <span style:color={statusColor(p.status)}>{STATUS_LABEL[p.status] ?? p.status}</span>
               {#if typeof p.startedAt === "number"}
                 <span>{fmtTime(p.startedAt)}</span>
               {/if}
@@ -127,6 +141,7 @@
   .pp-refresh:hover { background: var(--hover-bg); color: var(--primary); }
   .pp-stats { display: flex; gap: 12px; padding: 0 4px 6px; font-size: 12px; color: var(--dim); }
   .pp-stat { display: flex; align-items: center; gap: 4px; }
+  .pp-idle { color: var(--dim); }
   .pp-res { margin-left: auto; color: var(--primary); }
   .pp-res-sub { color: var(--dim); font-weight: 400; }
   .pp-dur { color: var(--warn); }
@@ -137,6 +152,7 @@
     padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
   }
   .pp-ico { display: flex; align-items: center; padding-top: 1px; }
+  .pp-item-idle { opacity: .65; }
   .pp-body { flex: 1; min-width: 0; }
   .pp-name { font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
   .pp-sub { font-size: 11px; color: var(--dim); font-weight: 400; }

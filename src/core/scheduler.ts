@@ -36,7 +36,8 @@ export function loadScheduleConfig(configPath?: string): ScheduledJob[] {
     const parsed = JSON.parse(raw) as { jobs?: Array<Partial<ScheduledJob> & { id?: string; cron?: string; prompt?: string }> };
     return (parsed.jobs ?? [])
       .map((j, i) => ({
-        id: j.id ?? `job-${i}`,
+        // 手写 config/schedule.json 缺 id 时的回落命名（独立于后台任务的 sub- 命名空间）
+        id: j.id ?? `sched-legacy-${i}`,
         cron: j.cron ?? "",
         prompt: j.prompt ?? "",
         agentId: j.agentId ?? "default",
@@ -137,7 +138,20 @@ export class Scheduler {
         result: "success",
         detail: `cron=${job.cron}`,
       });
-      this.deps?.submit(job.agentId, job.prompt);
+      try {
+        this.deps?.submit(job.agentId, job.prompt);
+      } catch (err) {
+        // 统一到 subagentRunner 后超配额会抛错（旧 jobRunner 是排队）；本轮跳过并记审计，避免打断定时器重排
+        auditLogger.log({
+          timestamp: Date.now(),
+          agentId: job.agentId,
+          sessionId: "",
+          action: "schedule:fire",
+          target: job.id,
+          result: "error",
+          detail: (err as Error).message,
+        });
+      }
       // 重新调度下一轮
       this.schedule(job);
     }, delay);

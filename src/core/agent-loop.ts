@@ -861,6 +861,8 @@ async function executeToolInner(
  * 默认宽松：MCP 工具（mcp_ 前缀）与插件注册的工具豁免（即插即用，专家默认可见）；
  * strictTools 开启后关闭豁免，仅白名单可见（白名单支持 "mcp_<server>_" 前缀条目）；
  * 受限工具（restricted）不参与空白名单全放行，必须显式列出才可见（Sprint 52 T2）；
+ * subagents 开关开启时放行 4 个控制面工具（等价于显式列出，Sprint 52 收尾）；
+ * strictTools 下关闭该开关的自动放行——strict 的语义就是"仅白名单可见"，开关不例外；
  * readOnly 为闭集模式：只保留只读工具，MCP/插件豁免一律失效（Sprint 52 §2.3-7）
  */
 export function filterVisibleTools(
@@ -872,14 +874,16 @@ export function filterVisibleTools(
   if (config.readOnly === true) {
     return available.filter((t) => READ_ONLY_TOOLS.has(t.function.name));
   }
+  const subagentsOn = config.subagents === true && config.strictTools !== true;
   if (config.tools.length === 0) {
-    return available.filter((t) => !restricted(t.function.name));
+    return available.filter((t) => !restricted(t.function.name) || subagentsOn);
   }
   const strict = config.strictTools === true;
   return available.filter(
     (t) =>
       config.tools.includes(t.function.name) ||
       config.tools.some((x) => x.endsWith("_") && t.function.name.startsWith(x)) ||
+      (subagentsOn && restricted(t.function.name)) ||
       (!strict && !restricted(t.function.name) && (t.function.name.startsWith("mcp_") || isPluginRegistered(t.function.name))),
   );
 }

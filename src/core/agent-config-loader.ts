@@ -24,6 +24,7 @@ interface YamlAgentConfig {
   skills?: string[];
   plugins?: string[];
   strictTools?: boolean;
+  subagents?: boolean;
   permissions?: {
     defaultMode?: string;
     allowedTools?: string[];
@@ -47,6 +48,7 @@ function normalizeAgentConfig(yaml: YamlAgentConfig): AgentConfig {
     skills: yaml.skills ?? [],
     plugins: yaml.plugins ?? [],
     strictTools: yaml.strictTools ?? false,
+    subagents: yaml.subagents ?? false,
     permissions: {
       defaultMode: (yaml.permissions?.defaultMode ?? "ask") as PermissionMode,
       allowedTools: yaml.permissions?.allowedTools ?? [],
@@ -70,6 +72,7 @@ function toYamlConfig(config: AgentConfig): YamlAgentConfig {
     skills: config.skills,
     plugins: config.plugins,
     strictTools: config.strictTools,
+    subagents: config.subagents,
     permissions: {
       defaultMode: config.permissions.defaultMode,
       allowedTools: config.permissions.allowedTools,

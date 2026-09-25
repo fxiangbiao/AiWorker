@@ -7,8 +7,12 @@
   import TracePanel from "./TracePanel.svelte";
   import AppsPanel from "./AppsPanel.svelte";
   import ProcessesPanel from "./ProcessesPanel.svelte";
+  import SubagentsPanel from "./SubagentsPanel.svelte";
   import AgentsPanel from "./AgentsPanel.svelte";
   import EvolutionPanel from "./EvolutionPanel.svelte";
+
+  /** 写面接口（/jobs DELETE、/schedule POST/DELETE）需进程 token（跨站 403 / 缺 token 401） */
+  const TOKEN = typeof window !== "undefined" ? (window.__AIWORKER_TOKEN__ ?? "") : "";
 
   /** 控制台 tab 与 shell store 同构（`ConsoleTab`），此处别名只为可读性 */
   type SystemTab = ConsoleTab;
@@ -365,7 +369,7 @@
     schedMsg = "";
     fetch(`${API}/schedule`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-aiworker-token": TOKEN },
       // 自然语言优先（后端解析为 cron）；否则用 cron + 任务
       body: JSON.stringify(
         nl
@@ -373,9 +377,9 @@
           : { cron: newCron.trim(), prompt, agentId: newAgent.trim() || "default" },
       ),
     })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) { schedMsg = d.error; return; }
+      .then(async (r) => ({ status: r.status, body: (await r.json()) as { error?: string } }))
+      .then(({ status, body }) => {
+        if (body.error) { schedMsg = status === 401 ? "缺少写权限 token（请从服务端重新打开页面）" : body.error; return; }
         newPrompt = "";
         newNlPrompt = "";
         loadSchedule();
@@ -384,13 +388,13 @@
   }
 
   function removeSchedule(id: string) {
-    fetch(`${API}/schedule/${id}`, { method: "DELETE" })
+    fetch(`${API}/schedule/${id}`, { method: "DELETE", headers: { "x-aiworker-token": TOKEN } })
       .then(() => loadSchedule())
       .catch(() => {});
   }
 
   function cancelJob(id: string) {
-    fetch(`${API}/jobs/${id}`, { method: "DELETE" })
+    fetch(`${API}/jobs/${id}`, { method: "DELETE", headers: { "x-aiworker-token": TOKEN } })
       .then(() => loadSchedule())
       .catch(() => {});
   }
@@ -571,6 +575,7 @@
     <button class="sp-nav" class:active={tab === "evolution"} onclick={() => switchTab("evolution")}>进化</button>
     <div class="sp-nav-group">资源</div>
     <button class="sp-nav" class:active={tab === "agents"} onclick={() => switchTab("agents")}>智能体</button>
+    <button class="sp-nav" class:active={tab === "subagents"} onclick={() => switchTab("subagents")}>子智能体</button>
     <button class="sp-nav" class:active={tab === "skills"} onclick={() => switchTab("skills")}>技能</button>
     <button class="sp-nav" class:active={tab === "mcp"} onclick={() => switchTab("mcp")}>MCP</button>
     <button class="sp-nav" class:active={tab === "plugins"} onclick={() => switchTab("plugins")}>插件</button>
@@ -834,6 +839,8 @@
       <AppsPanel />
     {:else if tab === "processes"}
       <ProcessesPanel />
+    {:else if tab === "subagents"}
+      <SubagentsPanel />
     {:else if tab === "schedule"}
       <div class="sp-section"><div class="sp-row"><span>定时任务（config/schedule.json）</span></div></div>
       {#if schedList.length === 0}

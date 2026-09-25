@@ -1,4 +1,92 @@
-# Changelog
+﻿# Changelog
+
+## 1.9.1 (2026-09-20)
+
+### 子智能体可观测补齐 + 一套后台执行 + 调度解析修复（Sprint 52 T6b + 收尾）
+
+#### 代码审核（安全轮 + 诚实性轮）后的修复与未修项
+
+审核方式：两名独立审核员只读审查未提交 diff 并实跑单测（安全轮另做了写端点全量枚举）。以下为**已修**项：
+
+- **wk- worker 与子智能体同权**（安全审核 F2，本轮引入的可见性泄漏）：`team-coordinator` 的 DAG 与辩论 worker 此前直接用共享单例 agent 跑（`wk-` 会话），既能看到 4 个控制面工具、又能拿到父回合的真实确认通道。现两条路径都改为 `agent.fork({ subagents: false })` + `runWithoutChannel(...)`，与子智能体口径一致（调用仍被执行层 wk- 硬校验拒绝）
+- **`list_agents` 归属校验**（F6）：此前接受任意 `parentSessionId`，提示注入下可横向读取别的会话的任务原文/摘要。现在只允许本会话，与 `send_message`/`interrupt_agent` 一致
+- **`send()` 队列上限对所有状态生效**（F7）：此前只有 running 分支检查 `MAX_PENDING=5`，idle/queued 可无界堆积（新入口 TUI/HTTP/Web 面板放大）。现统一
+- **`strictTools` 下 `subagents` 开关不放行**（F10）：strictTools 的语义是"仅白名单可见"，此前开关是独立 OR 项、可绕过。现要求显式列出，并补该组合的用例
+- **Web 新建自定义智能体默认不勾选「并行子智能体」**（安全 F9 / 诚实性 #1）：表单此前写死 `subagents: true`，与"自定义智能体默认关"的表述矛盾
+- **定时任务 legacy id 命名空间**（诚实性 #11）：手写 `config/schedule.json` 缺 id 时不再回落 `job-<i>`，改为 `sched-legacy-<i>`
+- **JobsPanel 订阅补齐**（诚实性 #12）：兼容视图此前只听 `job/done`，新派生的子智能体要等本轮结束才出现；现同时订阅 `subagent/*` 与 `process/*`
+- **文档一致性 11 处**（诚实性轮 #2~#13）：`roadmap` 基线数字（1125→1148），`docs/AiWorker架构.md` 三处（已删除的 deny-provider 机制描述、受限工具缺 `subagents` 开关、Tab 清单含不存在的「配置」tab 与错误分组），README/CHANGELOG 的入口路径（「设置」→「控制台」）与「默认智能体已显式启用这四个工具」，`sprint-52` 计划三处 deny-provider 自相矛盾，`nl-schedule` 用例数（7→6），`subagent-runner` 过期注释与死方法 `cancel()`，AGENTS.md 工具清单漏 `terminal_session`，1.9.0 段两处追补"1.9.1 已改作用域隔离"
+
+**未修（需单独裁定，已在审核报告中标出）**：
+
+- **【高】确认通道应答面无门禁**（安全 F1，既存）：`POST /confirm`、`/ask` 无跨站/ token 校验，`/api/v1/ws` 升级不校验 Origin/token 且 `eventBus` 全量广播 `confirm_request`（含 `confirmId` 与选项），配合 `Access-Control-Allow-Origin: *` 与同样无门禁的 `POST /chat`，可形成"访问恶意页面 → 批准高危操作/驱动智能体"链路；`cf-<ts36>` id 可枚举
+- **【中】读面无鉴权**（F3）：`GET /subagents|/jobs|/schedule` 跨站可读，泄露子智能体任务原文/摘要与定时任务内容
+- **【中】`config/schedule.json` 未跟踪且未 gitignore**（F4）：`git add -A` 会把它变成"仓库级定时执行"，且该文件当前含一条真实任务
+- **【低】其他**：HTTP 子智能体端点无会话归属校验（F5，与工具层口径不一致）；`never_auto_approve` 仅含 `spawn_agent`/`send_message`（F8，`interrupt_agent`/`list_agents` 在 auto 模式免确认）；写端点全量枚举显示 **34 个里 22 个**无门禁（含 `/packages/import`、`/apps/*`、会话写、`/evolution/*`、`/media/download`）
+
+#### 代码审核（正确性轮）后的修复
+
+第三名审核员用 `%TEMP%` 脚本实跑复现了本轮新代码里的两个真 bug，均已修并补回归用例：
+
+- **反序/缺「天」星期区间会修出无效或错误的 cron**（高）：`DOW_RANGE_RE` / `DOW_CUE_RANGE_RE` 第 2 组漏了「天」，`周天到周五` → `7-5`（cron-parser 拒绝）；更隐蔽的是 `每周一到周天` 会**把模型正确的 `1-7` 改成 `1`** 并附上一句自信的修正说明。现在两端字符类都含「天」，且 `a > b`（跨周回绕）一律视为无线索、不参与修补（规则路径退到单日）；`/schedule add` 在修补后**必须复验** `nextFireAt`，修出无效 cron 就回退模型原值并说明
+- **时刻线索覆盖 `*/N` 间隔字段**（中）：`9点每30分钟` + 模型给的 `*/30 * * * *` 会被改成"每天 9:00"。现在间隔/枚举类字段（`*`、`*/N`、`a-b`、`a,b`）不被时刻线索覆盖，并在提示里说明"保留模型给出的字段"
+- **兼容视图把"被中断"显示成"完成"**（中）：`interrupt()` 后状态是 `idle` → `toJob` 映射 `done`，`/jobs`、Web 任务面板、调度 tab 都把取消说成完成（旧实现是 `failed + 已取消`）。现在 `BackgroundJob` 增加 `interrupted` 标记，TUI 显示 `interrupted`+「已中断，可续接」，Web 显示「已中断 · 可续接」并置橙色；`/jobs cancel` 区分"已结束"（灰）与"未找到"（红），HTTP 端已结束返回 409 而非 404
+- **子智能体面板**：动作错误与读取错误拆成两个 state（此前 `act()` 写完错误紧接 `load()` 会把提示清掉，401/404/队列已满在界面上完全看不到）；`onWsEvent` 改为随面板卸载退订（此前每次切回 tab 都新增一个永不释放的 handler，切 N 次后一次事件触发 N 次刷新）；切换条目与点"追问"时清空草稿（此前跨条目串草稿）
+- **`/plan`、`/debate` worker 的 fork 同时剔除控制面工具**：仅靠 `subagents:false` 无法移除**显式写进 YAML `tools`** 的控制面工具（`filterVisibleTools` 是"显式列出 **或** 开关"），现在 fork 时一并按 `isRestrictedTool` 过滤，并补断言
+- **`stripScheduleWords` 标点清理收窄**：只在被剥离片段贴着句子首/尾时清边界标点，任务名自带的结尾标点不再被吃掉（`检查 a.b.` 不再变成 `检查 a.b`）
+- **测试**：新增反序区间、"周天"在区间两端、`*/N` 不被覆盖、贴边清标点、`interrupted` 标记、`/jobs cancel` 两种提示、worker 工具面剔除等用例
+
+#### 修复：子智能体运行期间，主会话的确认通道被顶掉（功能级自锁）
+
+- **现场证据**：一次「并行调研三款 AI 办公产品」的会话里，父会话第 3 个对象的 `spawn_agent` 在 22:38:56 被「无确认通道，已自动拒绝（fail-closed）」拒绝，而两个子智能体的运行窗口是 22:38:26 → 22:39:40/46；随后的 `send_message`（22:39:49）同样被拒。结果是 3 个对象只派成 2 个、追问也没发出去
+- **根因**：`subagentRunner` 每个 run 开始都调用 `installDenyProvider()`，把**进程级单例** confirm/ask provider 换成"一律拒绝"（`src/hooks/confirm-channel.ts` 的 `let provider`），于是**父会话**（Web SSE provider，`src/server.ts` 的 `runWithChannels`）被一起顶掉——**只要有任何子智能体在跑，主智能体所有需确认的操作（`spawn_agent`/`send_message`/高危命令）都会被自动拒绝**。原实现只把这种全局拒绝当成"run 挂死 10 分钟"的极端情形（看门狗注释），没意识到它是运行中的常态；此外还存在"父回合结束 restore 旧 provider、子智能体结束又 restore 自己保存的过期 provider"的陈旧复活隐患
+- **修法：异步作用域隔离**（新增 `src/hooks/channel-scope.ts`）：`subagentRunner` 用 `runWithoutChannel()` 包住每一轮子智能体执行；`requestConfirm` / `requestAsk`（全项目仅有的两个汇聚点）在该作用域内**立即返回 null**，**不再替换任何全局 provider**。子智能体侧 fail-closed 语义完全不变，父会话通道全程可用；refcount / saved provider / 看门狗里的 release 全部删除（它们本身就是缺陷来源）
+- **测试**：新增 `channel-scope.test.ts`（作用域内 confirm/ask 立即 null；作用域外父会话不受影响；**子智能体挂起期间父会话仍能拿到真实应答**；嵌套异步链保持抑制）；`subagent-runner` 补「运行期间父会话确认/提问通道不受影响」，F11 改为断言全局 provider **从未被替换**
+
+#### 修复：进程面板把"已结束·可续接"的子智能体显示成在运行
+
+- **现象**：会话早已结束，"进程"面板仍显示 2 个子智能体像是还在跑
+- **原因**：`idle` 是**已结束但可续接**的终态（`endedAt` 已写），`subagentRunner` 特意保留其进程条目以便续接/回滚归属/观测；但面板直接拿 `processStats.subagent`（进程条目数）当"运行中"展示，状态还显示英文 `idle`
+- **修法**：新增 `activeSubagents` / `resumableSubagents` 派生 store；面板徽标只计**活动**（运行/排队），另列「可续接 N」（灰显）；状态中文化（运行中/排队中/已结束 · 可续接/失败…），`idle` 条目整体置灰；状态栏「进程」计数补上**活动的**子智能体（此前 `/bg` 统一到子智能体后这类任务在状态栏漏计）
+
+#### 补齐：让模型真的去派子智能体（行为层引导）
+
+- **背景证据**：开关与工具都到位后，实测「帮我并行调研对比分析 ubuntu、fedora、rocky 这 3 个 Linux 发行版的差异」仍然 0 次 `spawn_agent`。查运行实例确认工具**已发给模型**（`GET /api/v1/agents` 显示 7 专家 `subagents: true`；`/agents/meta` 里 4 个控制面工具均已注册），该回合 18 步 66 次调用全是 `web_search`/`web_fetch`，且**没有任何确认事件**——模型看到了工具，但把"并行"实现成"同一步内并发多个检索调用"。根因是**触发条件缺位**：`spawn_agent` 的描述只讲能力不讲场合，`research` 的 systemPrompt 也从未提到子智能体
+- **A：系统提示词**：`research.yaml` 新增「并行调研」小节（每个对象各派一个只读子智能体 → `list_agents` 跟进 → `send_message` 追问 → 汇总对比；单对象/轻量任务不派；无确认通道时自己检索）；`default.yaml` 新增「并行子智能体」小节（同一口径）
+- **B：工具契约**：`spawn_agent` 的 description 补上"何时使用"（多个独立对象 → **每个对象各调用一次**）、参数语义（`task` 必须自包含，子智能体看不到父会话上下文）与确认成本
+- **诚实边界**：这是**概率性引导，不是硬保证**——模型仍可能选择自行并发工具调用；要强制走子智能体需要写更硬的提示词或另做触发规则。每次 `spawn_agent` 仍逐次需用户确认（`never_auto_approve`），因此"3 个对象并行调研"会弹 3 次确认
+
+#### 修复：对话里根本调不起子智能体（旗舰用法失效）
+
+- **现场复现**：`帮我并行调研 RAG、Graph RAG、LLM Wiki 三个技术方案的优缺点` 全程没有派任何子智能体。查库确认该回合被交给 **`research`** 专家（`turn_logs.agent_id=research`，10 轮 / 28 次工具调用），而 `research.yaml` 的工具面里**没有** `spawn_agent`——受限工具必须显式列出才可见，于是模型连工具都看不到；S52 当时只给 `default.yaml` 开了这 4 个工具，而"调研/分析/对比/报告"类请求按路由规则（`router.ts`）都会落到 `research`，所以 README 里那条旗舰示例必然失败
+- **修法：新增智能体配置开关 `subagents`（界面名「并行子智能体」）**：开启即放行 `spawn_agent` / `send_message` / `list_agents` / `interrupt_agent`，无需逐个写进 `tools`（继续逐个列也仍然有效）。**7 个内置专家默认全开**，自定义智能体默认关——以后新增智能体只需打开这个开关。配置链路全打通：`AgentConfig.subagents` → YAML 读写（`agent-config-loader` 三个方向）→ `/api/v1/agents` 响应 → `POST /agents/:id/config` → Web **控制台 →「智能体」**勾选框（此前保存智能体会丢未知字段，已一并补齐；自定义智能体表单默认不勾选）
+- **边界不变**：`readOnly` 闭集优先于该开关（只读子智能体看不到控制类工具）；子智能体 fork 时**显式** `subagents: false`，深度 1 不再依赖"子智能体自己的 YAML 恰好没开"
+- **测试**：`agent-config-loader` 补开关往返 + 7 内置专家默认开启断言；`subagent-security` 补「开关开启即可见 / 缺省关闭且 readOnly 下不生效」；`subagent-runner` 补「子代 fork 恒 `subagents:false`」；`subagent-fork` 的 opt-in 断言从"YAML 里逐个列出"改为按开关 + `filterVisibleTools` 端到端校验
+
+#### 修复：自然语言调度静默丢字段
+
+- **「每**个**周六」解析不出来**（`src/core/nl-schedule.ts`）：星期/工作日/周末/每月/每小时等频率分支此前写作 `每\s*周…`，不接受「每」与时间单位之间的「个」，于是「每个周六，提醒我起立做运动」整句解析失败（「每周六…」却正常）。现在统一为 `每\s*个?\s*…`，并补「每个工作日 / 每个周末 / 每个小时 / 每个月1号」用例
+- **任务描述残留标点/孤立字**：剥离时间表达后没清边界标点，「每周六，提醒我起立做运动」的任务名会变成「，提醒我起立做运动」（前导逗号）；「每个工作日9点提醒我」会变成「每个提醒我」。现在剥离后清理边界标点与空白——**只在被剥离片段贴着句子首/尾时清**，不吃任务名自带的结尾标点（「检查 a.b.」不再变成「检查 a.b」）
+- **只命中时刻、星期词不被识别时静默降级成「每天」**：如「每逢周六下午3点提醒我锻炼」此前生成 `0 15 * * *`（每天 15:00，周六丢了）。现在规则路径也过一遍线索校验（见下），生成 `0 15 * * 6`
+- **LLM 兜底结果不再"说了就算"**：`/schedule add` 的模型兜底此前只校验 cron 语法，**不检查原句里的星期/日期/时刻是否落进 cron**——这正是现场那条错误任务的来源：原句「每个周六，提醒我起立做运动」被模型编成 `30 10 * * *`（每天 10:30）并被静默采纳。现在新增 `reconcileCron(text, cron)`：从原句提取星期（含区间/工作日/周末/「每天」）/日期/时刻线索，**按原句自动修复**对应 cron 字段，并把修正说明回报给用户（「已按原句修正模型结果: 星期按原句改为 6」）；原句未提及的字段仍保留模型选择（如自选时刻）
+- **测试**：`nl-schedule` 补 6 组用例（「每个」前缀、残留标点、每逢周六、任务正文星期词不误判、`reconcileCron` 的四类修复与两类不动）；`cli-commands` 补「LLM 兜底丢掉周六 → 自动修回 `30 10 * * 6`」端到端用例
+
+#### 子智能体可观测补齐 + 一套后台执行
+
+- **Web 控制台新增「子智能体」tab**（`web/src/components/SubagentsPanel.svelte`，「资源」分组内紧接「智能体」）：列出全部子智能体，逐条显示任务原文、状态（运行中 / 排队中 / 可续接 / 中断中 / 失败）、专家 id、`sub-xxx`、只读标记、轮次、父子 token（入/出）、待处理消息数、运行时长、所属父会话、摘要与错误；展开可见完整 `wk-` 会话 id 与 pending 队列
+- **面板动作**：追问（运行中入队、空闲起新一轮）、中断当前轮（保留会话可续接）、关闭并释放槽位（`?purge=1`），全部走写面三件套（`x-aiworker-token`）
+- **实时刷新**：订阅 WS `subagent/*` 与 `process/start|end`；运行中的轮次/token 没有对应事件，仅在存在活动条目时每 3s 轻量轮询（无活动即空转跳过，面板卸载即停）
+- **TUI 新增 `/subagents`**（`src/commands/subagents.ts`）：列表（状态 / 轮次 / 父子 token / 父会话 / 摘要）+ `send <id> <消息>`（运行中入队、空闲起新一轮）+ `stop <id>`（中断保留会话）+ `close <id>`（释放槽位）。此前 TUI 侧没有任何子智能体入口，计划 §2.2 承诺的 `/subagents` 一直是空的
+- **后台执行统一为一套**（计划 §2.1 原意）：`src/core/job-runner.ts` 退化为**兼容层**，只转发 `subagentRunner` 并映射 `idle ↔ done`，因此 `/bg`、`/jobs`、`POST /jobs`、`DELETE /jobs/:id`、scheduler 全部落到同一 runner。`/bg [--readonly] <任务>` 绑定当前会话为父会话、缺省完整工具面（与旧 `/bg` 能力对齐），`/jobs` 与 Web「任务」tab 保留为兼容视图（`done` 即 `idle` 可续接）
+- **语义变化（诚实标注）**：并发上限从旧的 2 改为 subagentRunner 的 4 / 每父 4 / 全局 8，且**超限抛错而非排队**（scheduler 到点超配额时本轮跳过并写 `schedule:fire` error 审计，不再打断后续重排）；`cancel` 由"仅排队中可取消"变为 interrupt（运行中也能中断，会话保留可续接）；任务 id 由 `job-` 变为 `sub-`（**后台任务**命名空间；定时任务仍是独立的 `sched-` 命名空间，手写配置缺 id 时回落 `sched-legacy-<i>`）
+- **进程登记口径**：新条目一律为 `kind: "subagent"`；`kind: "job"` 仅作历史类型保留（类型定义、进程面板分支与既有用例仍在，不再产生新条目）
+- **安全补齐**（统一后 `/jobs` 等价于"起一个可写子智能体"）：`POST /api/v1/jobs` 与 `DELETE /api/v1/jobs/:id` 此前**没有任何写面校验**，现补 `isCrossSiteRequest` 403 + `X-AiWorker-Token` 401，与 `/subagents` 三个端点一致；同一批把 `POST /api/v1/schedule`、`DELETE /api/v1/schedule/:id` 也收口（定时任务到点会自动派子智能体，与 `/jobs` 同类）。**口径更正**：审核时逐一枚举了全部 34 个写端点，未加门禁的是 **22 个**（含 `/chat`、`/plan`、`/debate`、`/packages/import`、`/apps/*`、`/confirm`、`/ask`、会话写、`/media/download`、`/evolution/*`）——所以 `/jobs` 并不是"少数例外"，服务端 CORS 又对任意来源开放（`Access-Control-Allow-Origin: *` + OPTIONS 放行 `Content-Type`/`X-AiWorker-Token`），这些端点可被跨站页面直接调用。本轮**只收口了与后台执行同类的两条**，其余作为独立安全债列出（未修）
+- **修复：Web 三处写调用漏带 token**（服务端早已加门禁，属既存 401）：`AgentsPanel` 的保存/恢复默认/删除（`/agents/:id/{config,reset,delete}`）从 1.9.0 起就一直被 401 拒；`SystemPanel` 的定时任务添加/移除与后台任务取消（`/schedule`、`/jobs/:id`）在本轮加门禁后同样会 401。现全部补 `x-aiworker-token`，并对 401 给出明确提示（"缺少写权限 token"）而不是含糊的"保存失败"
+- **`subagent/spawned` 事件补齐**：1.9.0 的 CHANGELOG/README 已声明广播该事件，但代码只发了 `done|failed`。现在 `spawn()` 成功后补发（带 `subagentId`/`agentId`/`status`/`readOnly`/`parentSessionId`），Web 面板与 TUI 可即时看到新派生的子智能体
+- **`SubagentHandle.task`**：留存任务原文（`pending` 会被逐轮消费掉），`list_agents` 与 Web 面板据此显示"在做什么"
+- **测试**：`job-runner.test.ts` 重写为兼容层语义（转发 / `idle↔done` 映射 / cancel 即中断 / `job/done` 带 `resumable` / 后台无交互通道 / 超配额抛错）；`cli-commands.test.ts` 补 `/bg --readonly`、`/subagents` 全动作与调度修复用例；`server.test.ts` 补 `/jobs` 三件套反例与 DELETE 401/404；`subagent-runner` 补 `subagent/spawned` 断言；`nl-schedule` 补 6 组解析与修复用例。全量 **1122 → 1153 例 / 75 文件**全绿，`npm run verify` exit 0，svelte-check 0 错 58 warnings（与基线持平）
+- **文档同步**：README（命令表 / API 表 / 「怎么触发」与统一说明）、`AGENTS.md`（CLI 表 + "后台执行只有一套"）、`docs/AiWorker架构.md`（§五 触发入口与可观测、§六 进程模型、§10 Web tab 清单）、`plans/roadmap-next.md`（P1-1 ✅S52，基线 1.9.1/1153）、`plans/sprint-history.md`（S52 交付与遗留改为已收尾）、`plans/sprint-52-background-subagents.md`（§2.1/§2.2 标注已落地）
+- 诚实边界不变：无 worktree/副本隔离、深度 1、运行中插话仅轮边界送达、headless 下 `spawn_agent` 不可用、`never_auto_approve` 无"始终允许"路径
 
 ## 1.9.0 (2026-09-12)
 
@@ -16,7 +104,7 @@
 - **工具级真中断（T1b）**：`ToolContext.signal` 从 `agent-loop` 贯通到工具层，`terminal_exec` 首次真正消费它——abort 时按**进程树**终止（Windows `taskkill /T /F`，POSIX 进程组 `SIGKILL`；Windows 上 `exec` 的 pid 是 `cmd.exe`，真实命令是孙进程，`exec` 自带的 `signal` 选项实测不可靠）。分层承诺：轮边界中断**必达**，工具级中断已实现并有端到端副作用探针（abort 后原命令的完成标记文件确实未被写出）
 - **回滚归属（Q2 路线 B）**：新增 `src/core/subagent-ownership.ts` 记录 `childSessionId → { parentSessionId, parentTurnAtSpawn }`；`captureDiff` 三处登记点改问 `owner(ctx.sessionId)`，**子智能体的写操作登记到父会话 spawn 时所在回合**，所以父 `/rewind <n>` 天然一次回滚父子全部改动（`rewind-service` 无需改动）。`parentTurnAtSpawn` 在 spawn 时钉住、口径复用 `pendingTurn`（不读 checkpoint 目录——两口径已实测分叉）
 - **拒绝隐式建盘（T7 前提 4）**：`checkpoint-store.capture` / `markUnrestorable` 与 `recordAfter` 改为**要求 manifest 已由 `beginTurn` 建立**，不存在即拒绝并写审计 `checkpoint:rejected`。此前 `ensureManifest` 会为已 prune 的回合重建目录（缺 `messageSeqBefore` → `/rewind` blocker → `ok:false`，且 `beginTurn` 的 prune 会连坐删掉一个合法回合）。父空闲期间 spawn 的子智能体改动因此**不参与回滚**——这是路线 B 的固有代价，已写进 README 与审计
-- **并发/资源护栏**：并发 4（可注入）、每父会话 4、全局 8，超限**返回错误而非排队**；`MAX_PENDING=5`；已完成条目保留 50 条；deny-provider 改**引用计数**（并发下 save/restore 单例会失效）；新增 run **看门狗**（默认 10 分钟）——挂死的 run 会永久持有 deny 通道，使整个进程的 confirm/ask 静默拒绝（功能性 DoS），超时强制释放；`shutdown` 带 5s 宽限上限并接线到 `runtime.shutdown` 首位
+- **并发/资源护栏**：并发 4（可注入）、每父会话 4、全局 8，超限**返回错误而非排队**；`MAX_PENDING=5`（1.9.1 起对 idle/queued 同样生效）；已完成条目保留 50 条；deny-provider 改**引用计数**（并发下 save/restore 单例会失效；**该机制 1.9.1 已整体废弃，改作用域隔离**）；新增 run **看门狗**（默认 10 分钟）——挂死的 run 会永久持有 deny 通道，使整个进程的 confirm/ask 静默拒绝（功能性 DoS），超时强制释放；`shutdown` 带 5s 宽限上限并接线到 `runtime.shutdown` 首位
 - **审计与可观测**：`audit_log` 新增 `actor_session_id` 列 + 索引（老库自动 `ALTER TABLE` 迁移）；`subagent:*` 事件带父会话归属；WS 广播 `subagent/spawned|done|failed`，`job/done` 兼容事件带 `resumable` 标记；进程注册新增 `kind:"subagent"`（此前误标为"后台任务"）
 - **安全接线（同批）**：`/agents/:id/config`、`/reset`、`/delete` **三条路径统一写面三件套**（此前只有 `/config` 有门，跨站可删自定义智能体、可把内置智能体 reset 回默认从而放宽白名单）；`fs_edit` 补进 `DANGER_TOOLS`，且危险检测输入与 `fs_write` 对齐改为**只检测路径**（原先把 `JSON.stringify(args)` 喂给命令文本型正则：普通编辑永远 `safe`，而"编辑一个含 `rm -rf` 字样的文档"反而被判高危）；`spawn_agent` / `send_message` 列入 `never_auto_approve`（每次都确认，headless 下不可用，不存在"始终允许"路径）
 - **测试**：新增 `subagent-runner`（18 例）/ `subagent-tools`（7 例）/ `subagent-security`（11 例：执行层越权拒绝 + 只读闭集 + 写型 MCP 不可见 + 深度 1 四工具全拒 + fork 隔离 + `fs_edit` 误伤回归）/ `subagent-fork`（10 例）/ `subagents-api`（11 例：三件套 + purge + 父会话校验），`checkpoint.test.ts` 补回滚 B 端到端与 prune 时序；`sprint-52-diagnosis` 的 D2-c 从"signal 不传递"改写为"abort 立即杀进程树"断言。全量 **1117 例 / 74 文件**全绿，`npm run verify` exit 0，`svelte-check` 0 错 58 warnings（与基线持平）
@@ -36,7 +124,7 @@
 - **`capture` 拒绝条件不可达（中，复审）**：原判据 `!manifest && turn > keepTurns` 与目标场景不匹配——prune 保留**最大**的 N 个回合，被 prune 的是**小号**，而路线 B 要写的正是小号，条件永假；同一改动里 `capture` 内补 `prune()` 还会把刚补建的低位回合立刻删掉。现改为"manifest 不存在即拒绝"（与 `beginTurn` 唯一建盘口径一致）
 - **`fs_edit` 进 DANGER_TOOLS 是表面修复（中，复审）**：目标没达到（普通编辑仍 `safe` 放行）还引入新误伤（编辑含 `rm -rf` 字样的文件被判高危）。现检测输入与 `fs_write` 对齐为路径，并补误伤回归用例
 - **`interrupt` 后紧随的 `send_message` 静默搁置（中，复审）**：`send` 对 `running` 入 pending 并回报成功，但 run 因 `abortRequested` 直接 break、不再消费也不重新入队 → 消息要等"下一次 send"才被处理。现 run 退出前把中断窗口内新到的 pending 重新入队
-- **deny-provider 无看门狗（中，复审）**：一次挂死的 run 让引用计数永不为 0 → 整个进程的 confirm/ask 永久静默拒绝。现加 run 看门狗强制释放，`shutdown` 也带上限等待
+- **deny-provider 无看门狗（中，复审）**：一次挂死的 run 让引用计数永不为 0 → 整个进程的 confirm/ask 永久静默拒绝。现加 run 看门狗强制释放，`shutdown` 也带上限等待。**（1.9.1 追补：该整机制已废弃——deny-provider 连父会话通道一起顶掉，改为 `hooks/channel-scope.ts` 异步作用域隔离；看门狗保留，仅用于防挂死占并发槽位）**
 - **HTTP spawn 丢弃 `mode` / 不校验父会话（中，复审）**：类型里声明了 `mode` 却从未传递（文档与实现不一致），伪造 `parentSessionId` 会写入指向不存在会话的脏归属记录。现从类型移除 `mode`（模式由父会话当前模式决定），并对父会话存在性校验
 - **子智能体路由硬编码 `/api/v1` 前缀 + 带 query 时匹配失败（中，复审）**：`/subagents` 的 messages / DELETE 路由违反 `apiUrl` 唯一前缀约定；且 GET 用 `url === apiUrl(...)` 比较，带 `?parentSessionId=` 时不匹配而落到 404。现统一走 `apiUrl` 与 pathname 比较
 - **`BaseAgent.fork()` 机制正确但零测试（中，复审）**：确认 `agents/` 全仓无 `#private`、子类无可变状态、`applyDeclaredSkills` 用 marker 替换而非追加（不会重复注入）；但测试里的假 `fork` 忽略 patch，使 runner 层的只读隔离**从未真正被测**。现补真 `BaseAgent` 用例（副本改 mode/tools/mcp/skills/plugins 不影响原实例、同名并发互不干扰、只读闭集恰为四个工具）

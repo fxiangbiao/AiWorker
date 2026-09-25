@@ -1,7 +1,10 @@
 /**
  * 提问通道 — ask_user 工具的用户回答分发
  * 对齐 confirm-channel 的 provider 模式：CLI 走 stdin 自由文本；HTTP Server 走 SSE ask_user 事件挂起 + POST /api/v1/ask 响应
+ * 子智能体上下文（runWithoutChannel 作用域）内一律 fail-closed，且不触碰全局 provider
  */
+
+import { isChannelSuppressed } from "../hooks/channel-scope.js";
 
 export interface AskRequest {
   id: string;
@@ -70,6 +73,7 @@ export async function requestAsk(
   options: string[] = [],
   multiple = false,
 ): Promise<string | null> {
+  if (isChannelSuppressed()) return null;
   askWaiting = true;
   try {
     if (provider) {

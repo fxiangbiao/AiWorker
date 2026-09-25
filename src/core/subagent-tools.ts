@@ -17,10 +17,13 @@ const spawnAgentDef: ToolDefinition = {
   function: {
     name: "spawn_agent",
     description:
-      "起一个后台子智能体执行独立任务。子智能体可续接、可中断、可观测。" +
-      "默认只读（readOnly 缺省 true）；readOnly:false 需用户逐次确认（该工具在永不自动批准清单内）。" +
-      "返回子智能体 id，后续可用 send_message/list_agents/interrupt_agent 控制。" +
-      "注意：无确认通道（headless / 子智能体内部）时此工具不可用。",
+      "起一个后台子智能体执行独立任务（可续接、可中断、可观测）。" +
+      "何时用：用户要求并行处理多个独立对象时（多方案/多产品/多版本的调研对比、多数据源分析、多文件审查），**为每个对象各调用一次**，" +
+      "而不是自己串行跑完全部对象；单对象或轻量任务不必使用。" +
+      "参数：agentId 为专家 id（如 research/default/coding），task 为该对象的完整任务描述（子智能体看不到本会话上下文）。" +
+      "默认只读（readOnly 缺省 true，工具面收窄为 fs_read/fs_list/web_search/web_fetch）；readOnly:false 可写但要用户逐次确认（本工具在永不自动批准清单内，每次调用都需确认）。" +
+      "返回子智能体 id，随后用 list_agents 看进度、send_message 追问、interrupt_agent 中断。" +
+      "注意：无确认通道（headless / 子智能体内部）时不可用。",
     parameters: {
       type: "object",
       properties: {
@@ -53,11 +56,11 @@ const listAgentsDef: ToolDefinition = {
   type: "function",
   function: {
     name: "list_agents",
-    description: "列出当前父会话下的子智能体状态（id/agentId/status/rounds/usage/summary）。仅主智能体可见。",
+    description: "列出当前会话的子智能体状态（id/agentId/status/task/rounds/usage/summary）。仅主智能体可见；只能查本会话。",
     parameters: {
       type: "object",
       properties: {
-        parentSessionId: { type: "string", description: "父会话 id（可选，缺省为当前会话）" },
+        parentSessionId: { type: "string", description: "父会话 id（仅允许传当前会话，其他会话会被拒绝）" },
       },
     },
   },
@@ -150,12 +153,17 @@ const listAgentsHandler: ToolHandler = async (args, ctx): Promise<ToolResult> =>
   const rejected = rejectWorkerCall("list_agents", ctx, args);
   if (rejected) return rejected;
 
-  const parentSessionId = (args.parentSessionId as string | undefined) ?? ctx.sessionId;
-  const list = subagentRunner.list(parentSessionId);
+  // 归属校验（与 send/interrupt 一致）：只允许查本会话，防止提示注入下横向读取别的会话的任务原文/摘要
+  const requested = typeof args.parentSessionId === "string" && args.parentSessionId ? args.parentSessionId : undefined;
+  if (requested && requested !== ctx.sessionId) {
+    return fail("无权查询其他会话的子智能体");
+  }
+  const list = subagentRunner.list(ctx.sessionId);
   const summary = list.map((h) => ({
     id: h.id,
     agentId: h.agentId,
     status: h.status,
+    task: h.task.slice(0, 100),
     rounds: h.rounds,
     usage: h.usage,
     summary: h.summary.slice(0, 100),

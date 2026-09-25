@@ -45,6 +45,15 @@ describe("Sprint 52 Subagent Tools", () => {
     expect(toolRegistry.getHandler("interrupt_agent")).toBeTruthy();
   });
 
+  it("spawn_agent 描述写明触发条件（多个独立对象 → 每个对象各调用一次）", () => {
+    const def = toolRegistry
+      .getAll()
+      .map((t) => t.definition)
+      .find((d) => d.function.name === "spawn_agent")!;
+    expect(def.function.description).toContain("每个对象各调用一次");
+    expect(def.function.description).toContain("task");
+  });
+
   it("spawn_agent handler 拒绝子智能体递归生成（深度1）", async () => {
     const handler = toolRegistry.getHandler("spawn_agent")!;
     const ctx: ToolContext = {
@@ -109,6 +118,21 @@ describe("Sprint 52 Subagent Tools", () => {
     expect(result.success).toBe(true);
     const parsed = JSON.parse(result.content);
     expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  it("list_agents 拒绝查询其他会话（防提示注入横向读取）", async () => {
+    const handler = toolRegistry.getHandler("list_agents")!;
+    const ctx: ToolContext = {
+      agentId: "default",
+      sessionId: "main-session",
+      workingDir: dir,
+      permissions: "auto",
+    };
+    const other = await handler({ parentSessionId: "other-session" }, ctx);
+    expect(other.success).toBe(false);
+    expect(other.error).toContain("无权查询其他会话");
+    const same = await handler({ parentSessionId: "main-session" }, ctx);
+    expect(same.success).toBe(true);
   });
 
   it("interrupt_agent handler 不存在返回失败", async () => {
